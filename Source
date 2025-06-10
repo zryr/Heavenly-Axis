@@ -1,149 +1,102 @@
--- Create the GUI elements
-local ScreenGui = Instance.new("ScreenGui")
-local Frame = Instance.new("Frame")
-local TitleBar = Instance.new("Frame")
-local TitleLabel = Instance.new("TextLabel")
-local CloseButton = Instance.new("TextButton")
-local CopyButton = Instance.new("TextButton")
+--[[
+   Jump Button Editor V2
+    Original by Syshi. 
+]]
 
--- Buttons for position and size adjustment
-local UpButton = Instance.new("TextButton")
-local DownButton = Instance.new("TextButton")
-local LeftButton = Instance.new("TextButton")
-local RightButton = Instance.new("TextButton")
-local BiggerButton = Instance.new("TextButton")
-local SmallerButton = Instance.new("TextButton")
+-- --- Script Setup & Services ---
+local Players = game:GetService("Players")
+local UserInputService = game:GetService("UserInputService")
 
--- Parent the GUI to the player's PlayerGui
-ScreenGui.Parent = game.Players.LocalPlayer:WaitForChild("PlayerGui")
-ScreenGui.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+local HttpService = nil
+local success_get_http_service, service_instance = pcall(function() return game:GetService("HttpService") end)
+if success_get_http_service and service_instance then HttpService = service_instance end
 
--- Set up the Frame
-Frame.Parent = ScreenGui
-Frame.BackgroundColor3 = Color3.new(0, 0, 0)
-Frame.Size = UDim2.new(0, 320, 0, 200) -- Reduced height for less space below
-Frame.Position = UDim2.new(0.5, -160, 0.5, -100)
+local LocalPlayer = Players.LocalPlayer
+local PlayerGui = LocalPlayer:WaitForChild("PlayerGui")
 
--- Set up the TitleBar
-TitleBar.Parent = Frame
-TitleBar.BackgroundColor3 = Color3.new(0.5, 0.5, 0.5)
-TitleBar.Size = UDim2.new(1, 0, 0, 30)
-TitleBar.Position = UDim2.new(0, 0, 0, 0)
+-- --- Debug & Executor Info ---
+local EXECUTOR_NAME = "Unknown"
+if typeof(identifyexecutor) == "function" then
+    local success, result = pcall(identifyexecutor); if success and result and type(result) == "string" and result:match("%S") then EXECUTOR_NAME = result else EXECUTOR_NAME = "IdentifyFailedOrEmpty" end
+else EXECUTOR_NAME = "IdentifyNotPresent" end
 
--- Set up the TitleLabel
-TitleLabel.Parent = TitleBar
-TitleLabel.Text = "Jump Button Size Changer V1"
-TitleLabel.Size = UDim2.new(1, -30, 1, 0)
-TitleLabel.Position = UDim2.new(0, 0, 0, 0)
-TitleLabel.BackgroundTransparency = 1
-TitleLabel.TextColor3 = Color3.new(1, 1, 1)
-TitleLabel.TextScaled = true
-
--- Set up the CloseButton
-CloseButton.Parent = TitleBar
-CloseButton.BackgroundColor3 = Color3.new(1, 0, 0)
-CloseButton.Size = UDim2.new(0, 30, 1, 0)
-CloseButton.Position = UDim2.new(1, -30, 0, 0)
-CloseButton.Text = "X"
-CloseButton.TextColor3 = Color3.new(1, 1, 1)
-CloseButton.TextScaled = true
-
--- Set up the CopyButton
-CopyButton.Parent = Frame
-CopyButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-CopyButton.Size = UDim2.new(1, -10, 0, 40)
-CopyButton.Position = UDim2.new(0, 5, 0, 35)
-CopyButton.Text = "Save Changes | Place Script In Autoexecute"
-
--- Set up the movement buttons
-UpButton.Parent = Frame
-UpButton.Size = UDim2.new(0.25, -5, 0, 40)
-UpButton.Position = UDim2.new(0, 5, 0, 80)
-UpButton.Text = "Up"
-UpButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
-DownButton.Parent = Frame
-DownButton.Size = UDim2.new(0.25, -5, 0, 40)
-DownButton.Position = UDim2.new(0.25, 0, 0, 80)
-DownButton.Text = "Down"
-DownButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
-LeftButton.Parent = Frame
-LeftButton.Size = UDim2.new(0.25, -5, 0, 40)
-LeftButton.Position = UDim2.new(0.5, 0, 0, 80)
-LeftButton.Text = "Left"
-LeftButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
-RightButton.Parent = Frame
-RightButton.Size = UDim2.new(0.25, -5, 0, 40)
-RightButton.Position = UDim2.new(0.75, 0, 0, 80)
-RightButton.Text = "Right"
-RightButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
--- Set up the size buttons
-BiggerButton.Parent = Frame
-BiggerButton.Size = UDim2.new(0.5, -10, 0, 40)
-BiggerButton.Position = UDim2.new(0, 5, 0, 130)
-BiggerButton.Text = "Bigger"
-BiggerButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
-SmallerButton.Parent = Frame
-SmallerButton.Size = UDim2.new(0.5, -10, 0, 40)
-SmallerButton.Position = UDim2.new(0.5, 5, 0, 130)
-SmallerButton.Text = "Smaller"
-SmallerButton.BackgroundColor3 = Color3.new(0.8, 0.8, 0.8)
-
--- Variables to track changes
-local xChange, yChange, sizeChange = 0, 0, 0
-
-local function updateJumpButton(xDelta, yDelta, sizeDelta)
-    local jumpButton = game:GetService("Players").LocalPlayer.PlayerGui.TouchGui.TouchControlFrame.JumpButton
-    xChange = xChange + xDelta
-    yChange = yChange + yDelta
-    sizeChange = sizeChange + sizeDelta
-    jumpButton.Position = UDim2.new(jumpButton.Position.X.Scale, jumpButton.Position.X.Offset + xDelta, jumpButton.Position.Y.Scale, jumpButton.Position.Y.Offset + yDelta)
-    jumpButton.Size = UDim2.new(jumpButton.Size.X.Scale, jumpButton.Size.X.Offset + sizeDelta, jumpButton.Size.Y.Scale, jumpButton.Size.Y.Offset + sizeDelta)
-end
-
--- Button click functions
-UpButton.MouseButton1Click:Connect(function()
-    updateJumpButton(0, -5, 0)
+-- --- AkaliNotif Library ---
+local AkaliNotif, NotifyModule; local NOTIFY_FUNC
+local success_nl, err_nl = pcall(function()
+    local raw_script_content, http_method_used = nil, "None"
+    if typeof(HttpGet) == "function" then http_method_used = "Global HttpGet"; raw_script_content = HttpGet("https://raw.githubusercontent.com/Kinlei/Dynissimo/main/Scripts/AkaliNotif.lua")
+    elseif typeof(game.HttpGet) == "function" then http_method_used = "game.HttpGet"; raw_script_content = game:HttpGet("https://raw.githubusercontent.com/Kinlei/Dynissimo/main/Scripts/AkaliNotif.lua")
+    elseif HttpService and typeof(HttpService.HttpGetAsync) == "function" then http_method_used = "HttpService:HttpGetAsync"; raw_script_content = HttpService:HttpGetAsync("https://raw.githubusercontent.com/Kinlei/Dynissimo/main/Scripts/AkaliNotif.lua")
+    else error("No suitable HttpGet function for AkaliNotif.") end
+    if not raw_script_content or raw_script_content == "" then error("Fetched AkaliNotif content nil/empty via " .. http_method_used) end
+    AkaliNotif = loadstring(raw_script_content); if AkaliNotif then NotifyModule = AkaliNotif(); if NotifyModule and NotifyModule.Notify and typeof(NotifyModule.Notify) == "function" then NOTIFY_FUNC = NotifyModule.Notify else error("AkaliNotif module/Notify func invalid.") end else error("Failed loadstring AkaliNotif raw content.") end
 end)
+if not success_nl then warn("JumpButtonEditorV2: AkaliNotif FAILED to load. Error: ", tostring(err_nl)); NOTIFY_FUNC = nil end
 
-DownButton.MouseButton1Click:Connect(function()
-    updateJumpButton(0, 5, 0)
-end)
+-- --- Configuration ---
+local SLIDER_MIN_SIZE_OFFSET = -40; local SLIDER_MAX_SIZE_OFFSET = 100; local DRAG_SENSITIVITY = 1
 
-LeftButton.MouseButton1Click:Connect(function()
-    updateJumpButton(-5, 0, 0)
-end)
+-- --- Variables ---
+local jumpButton; local originalJumpPos, originalJumpSize
+local currentXChange, currentYChange, currentSizeChange = 0,0,0
+local isDraggingJumpButton, isDraggingSliderThumb = false,false
+local dragStartMousePos_JumpButton, dragStartButtonPosOffsets
+local dragStartMousePos_SliderThumb, dragStartSliderValue
+local positionEditingEnabled = false; local jumpButtonInputBeganConn
+local jumpButtonHighlight = nil
 
-RightButton.MouseButton1Click:Connect(function()
-    updateJumpButton(5, 0, 0)
-end)
+-- --- GUI Elements ---
+local SizeOffsetBox
 
-BiggerButton.MouseButton1Click:Connect(function()
-    updateJumpButton(0, 0, 5)
-end)
+-- --- GUI Creation ---
+local ScreenGui=Instance.new("ScreenGui");ScreenGui.Name="JumpButtonEditorV2_GUI";ScreenGui.ZIndexBehavior=Enum.ZIndexBehavior.Sibling;ScreenGui.ResetOnSpawn=false
+local Frame=Instance.new("Frame");Frame.Name="MainFrame";Frame.Parent=ScreenGui;Frame.BackgroundColor3=Color3.fromRGB(30,30,30);Frame.BorderColor3=Color3.fromRGB(80,80,80);Frame.BorderSizePixel=1;Frame.Size=UDim2.new(0,340,0,280); Frame.Position=UDim2.new(0.5,-170,0.5,-140) -- Increased height and adjusted Y position
+local TitleBar=Instance.new("Frame");TitleBar.Name="TitleBar";TitleBar.Parent=Frame;TitleBar.BackgroundColor3=Color3.fromRGB(50,50,50);TitleBar.Size=UDim2.new(1,0,0,30)
+local TitleLabel=Instance.new("TextLabel");TitleLabel.Name="Title";TitleLabel.Parent=TitleBar;TitleLabel.Text="Jump Button Editor V2";TitleLabel.Size=UDim2.new(1,-30,1,0);TitleLabel.BackgroundTransparency=1;TitleLabel.TextColor3=Color3.fromRGB(220,220,220);TitleLabel.TextScaled=true;TitleLabel.Font=Enum.Font.SourceSansSemibold
+local CloseButton=Instance.new("TextButton");CloseButton.Name="Close";CloseButton.Parent=TitleBar;CloseButton.BackgroundColor3=Color3.fromRGB(200,50,50);CloseButton.Size=UDim2.new(0,30,1,0);CloseButton.Position=UDim2.new(1,-30,0,0);CloseButton.Text="X";CloseButton.TextColor3=Color3.fromRGB(255,255,255);CloseButton.Font=Enum.Font.SourceSansBold;CloseButton.TextScaled=true
+local TogglePositionButton=Instance.new("TextButton");TogglePositionButton.Name="TogglePosition";TogglePositionButton.Parent=Frame;TogglePositionButton.BackgroundColor3=Color3.fromRGB(70,70,180);TogglePositionButton.Size=UDim2.new(0,180,0,35);TogglePositionButton.Position=UDim2.new(0.5,-90,0,40);TogglePositionButton.Text="Enable Drag Position";TogglePositionButton.TextColor3=Color3.fromRGB(255,255,255);TogglePositionButton.Font=Enum.Font.SourceSansSemibold;TogglePositionButton.TextScaled=true
+local tip1=Instance.new("TextLabel",TogglePositionButton);tip1.Name="TipDrag";tip1.BackgroundTransparency=1;tip1.Text="(Drag Jump Button With Finger/Mouse)";tip1.TextColor3=Color3.fromRGB(200,200,200);tip1.TextWrapped=true;tip1.TextScaled=false;tip1.Font=Enum.Font.SourceSansLight;tip1.TextSize=13;tip1.Size=UDim2.new(1,0,0,20);tip1.Position=UDim2.new(0,0,1,-1)
 
-SmallerButton.MouseButton1Click:Connect(function()
-    updateJumpButton(0, 0, -5)
-end)
+local currentY = 40 + 35 + 20 + 10
 
--- Function to copy script to clipboard
-local function copyToClipboard()
-    local script = string.format([[
-local jumpButton = game:GetService("Players").LocalPlayer.PlayerGui.TouchGui.TouchControlFrame.JumpButton
-jumpButton.Position = UDim2.new(jumpButton.Position.X.Scale, jumpButton.Position.X.Offset + %d, jumpButton.Position.Y.Scale, jumpButton.Position.Y.Offset + %d)
-jumpButton.Size = UDim2.new(jumpButton.Size.X.Scale, jumpButton.Size.X.Offset + %d, jumpButton.Size.Y.Scale, jumpButton.Size.Y.Offset + %d)
-]], xChange, yChange, sizeChange, sizeChange)
-    
-    setclipboard(script)
-end
+local SizeOffsetLabel = Instance.new("TextLabel", Frame); SizeOffsetLabel.Text = "Size Offset (px):"; SizeOffsetLabel.Size = UDim2.new(0,120,0,25); SizeOffsetLabel.Position = UDim2.new(0,10,0,currentY); SizeOffsetLabel.BackgroundTransparency=1; SizeOffsetLabel.TextColor3=Color3.fromRGB(220,220,220); SizeOffsetLabel.TextXAlignment = Enum.TextXAlignment.Left; SizeOffsetLabel.Font = Enum.Font.SourceSans; SizeOffsetLabel.TextSize = 15
+SizeOffsetBox = Instance.new("TextBox", Frame); SizeOffsetBox.Size = UDim2.new(0,70,0,25); SizeOffsetBox.Position = UDim2.new(0,135,0,currentY); SizeOffsetBox.PlaceholderText = "0"; SizeOffsetBox.Text = "0"; SizeOffsetBox.ClearTextOnFocus = false; SizeOffsetBox.Font = Enum.Font.SourceSansSemibold; SizeOffsetBox.BackgroundColor3 = Color3.fromRGB(50,50,50); SizeOffsetBox.TextColor3 = Color3.fromRGB(220,220,220); SizeOffsetBox.BorderColor3 = Color3.fromRGB(100,100,100); SizeOffsetBox.TextSize = 14
+currentY = currentY + 25 + 5
 
-CopyButton.MouseButton1Click:Connect(copyToClipboard)
+local SizeSliderTextLabel=Instance.new("TextLabel");SizeSliderTextLabel.Name="SizeSliderTextLabel";SizeSliderTextLabel.Parent=Frame;SizeSliderTextLabel.Text="Size Slider:";SizeSliderTextLabel.BackgroundTransparency=1;SizeSliderTextLabel.TextColor3=Color3.fromRGB(220,220,220);SizeSliderTextLabel.TextXAlignment=Enum.TextXAlignment.Left;SizeSliderTextLabel.Size=UDim2.new(0,100,0,20);SizeSliderTextLabel.Position=UDim2.new(0,10,0,currentY);SizeSliderTextLabel.Font=Enum.Font.SourceSans; SizeSliderTextLabel.TextSize = 15
+currentY = currentY + 20 + 5
 
--- Function to close the GUI
-CloseButton.MouseButton1Click:Connect(function()
-    ScreenGui:Destroy()
-end)
+local SliderTrack=Instance.new("Frame");SliderTrack.Name="SliderTrack";SliderTrack.Parent=Frame;SliderTrack.BackgroundColor3=Color3.fromRGB(80,80,80);SliderTrack.BorderSizePixel=0;SliderTrack.Size=UDim2.new(1,-20,0,10);SliderTrack.Position=UDim2.new(0,10,0,currentY)
+local SliderThumb=Instance.new("TextButton");SliderThumb.Name="SliderThumb";SliderThumb.Parent=SliderTrack;SliderThumb.BackgroundColor3=Color3.fromRGB(120,120,220);SliderThumb.BorderSizePixel=1;SliderThumb.BorderColor3=Color3.fromRGB(150,150,250);SliderThumb.Size=UDim2.new(0,20,0,20);SliderThumb.Position=UDim2.new(0,-10,0.5,-10);SliderThumb.Text="";SliderThumb.ZIndex=2
+currentY = currentY + 10 + 20 -- Increased spacing here
+
+local ResetButton=Instance.new("TextButton");ResetButton.Name="Reset";ResetButton.Parent=Frame;ResetButton.BackgroundColor3=Color3.fromRGB(200,100,50);ResetButton.Size=UDim2.new(0.45,-10,0,40);ResetButton.Position=UDim2.new(0.025,0,0,currentY);ResetButton.Text="Reset All";ResetButton.TextColor3=Color3.fromRGB(255,255,255);ResetButton.Font=Enum.Font.SourceSansSemibold;ResetButton.TextScaled=true
+local SaveButton=Instance.new("TextButton");SaveButton.Name="SaveButton";SaveButton.Parent=Frame;SaveButton.BackgroundColor3=Color3.fromRGB(70,180,70);SaveButton.Size=UDim2.new(0.45,-10,0,40);SaveButton.Position=UDim2.new(0.525,0,0,currentY);SaveButton.Text="Save Changes";SaveButton.TextColor3=Color3.fromRGB(255,255,255);SaveButton.Font=Enum.Font.SourceSansSemibold;SaveButton.TextScaled=true
+local tip2=Instance.new("TextLabel",SaveButton);tip2.Name="TipAutoexec";tip2.BackgroundTransparency=1;tip2.Text="(Copies script for Autoexec)";tip2.TextColor3=Color3.fromRGB(200,200,200);tip2.TextWrapped=true;tip2.TextScaled=false;tip2.Font=Enum.Font.SourceSansLight;tip2.TextSize=13;tip2.Size=UDim2.new(1,0,0,20);tip2.Position=UDim2.new(0,0,1,-1)
+local CreditsLabel=Instance.new("TextLabel");CreditsLabel.Name="CreditsLabel";CreditsLabel.Parent=Frame;CreditsLabel.Text="Original by Syshi. V2 inspired by Danechka.";CreditsLabel.BackgroundTransparency=1;CreditsLabel.TextColor3=Color3.fromRGB(150,150,150);CreditsLabel.Font=Enum.Font.SourceSansItalic;CreditsLabel.TextSize=12;CreditsLabel.TextXAlignment=Enum.TextXAlignment.Center;CreditsLabel.Size=UDim2.new(1,0,0,20);CreditsLabel.Position=UDim2.new(0,0,1,-25) -- This will be relative to the new frame height
+
+-- --- Helper Functions & Core Logic ---
+local function updateJumpButtonAppearance()if not jumpButton or not originalJumpPos or not originalJumpSize then return end;local npX,npY,nsX,nsY=originalJumpPos.X.Offset+currentXChange,originalJumpPos.Y.Offset+currentYChange,originalJumpSize.X.Offset+currentSizeChange,originalJumpSize.Y.Offset+currentSizeChange;if nsX<=0 then nsX=1 end;if nsY<=0 then nsY=1 end;jumpButton.Position=UDim2.new(originalJumpPos.X.Scale,npX,originalJumpPos.Y.Scale,npY);jumpButton.Size=UDim2.new(originalJumpSize.X.Scale,nsX,originalJumpSize.Y.Scale,nsY)end
+local function updateAllUIToCurrentValues()if SizeOffsetBox then SizeOffsetBox.Text=tostring(math.floor(currentSizeChange))end;local tr=SLIDER_MAX_SIZE_OFFSET-SLIDER_MIN_SIZE_OFFSET;if tr==0 then SliderThumb.Position=UDim2.new(0,-SliderThumb.AbsoluteSize.X/2,0.5,-SliderThumb.AbsoluteSize.Y/2);return end;local p=math.max(0,math.min(1,(currentSizeChange-SLIDER_MIN_SIZE_OFFSET)/tr));SliderThumb.Position=UDim2.new(p,-SliderThumb.AbsoluteSize.X*p,0.5,-SliderThumb.AbsoluteSize.Y/2)end
+local function setupJumpButtonInputHandlers()if jumpButtonInputBeganConn then jumpButtonInputBeganConn:Disconnect()end;if jumpButton and jumpButton:IsA("GuiButton")then jumpButtonInputBeganConn=jumpButton.InputBegan:Connect(function(i)if not positionEditingEnabled then return end;if(i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch)then isDraggingJumpButton=true;dragStartMousePos_JumpButton=UserInputService:GetMouseLocation();dragStartButtonPosOffsets=Vector2.new(jumpButton.Position.X.Offset,jumpButton.Position.Y.Offset)end end)end end
+local function initialize()local s,e=pcall(function()jumpButton=PlayerGui:WaitForChild("TouchGui",7):WaitForChild("TouchControlFrame",7):WaitForChild("JumpButton",7)end);if not s or not jumpButton then warn("JumpButtonEditorV2 Init: Could not find jump button.",e);TitleLabel.Text="Error: JumpBtn Not Found";TitleLabel.TextColor3=Color3.fromRGB(255,100,100);TogglePositionButton.Active,SliderThumb.Active,ResetButton.Active,SaveButton.Active=false,false,false,false;TogglePositionButton.BackgroundColor3,SliderThumb.BackgroundColor3,ResetButton.BackgroundColor3,SaveButton.BackgroundColor3=Color3.fromRGB(100,100,100),Color3.fromRGB(100,100,100),Color3.fromRGB(100,100,100),Color3.fromRGB(100,100,100);return end;originalJumpPos,originalJumpSize=jumpButton.Position,jumpButton.Size;currentXChange,currentYChange,currentSizeChange=0,0,0;setupJumpButtonInputHandlers();updateJumpButtonAppearance();updateAllUIToCurrentValues();ScreenGui.Parent=PlayerGui end
+local function removeHighlight() if jumpButtonHighlight then jumpButtonHighlight:Destroy(); jumpButtonHighlight = nil end end
+
+-- --- GUI Event Handlers ---
+CloseButton.MouseButton1Click:Connect(function()if jumpButtonInputBeganConn then jumpButtonInputBeganConn:Disconnect()end;if jumpButton then jumpButton.Active=true end;removeHighlight();ScreenGui:Destroy()end)
+TogglePositionButton.MouseButton1Click:Connect(function()positionEditingEnabled=not positionEditingEnabled;if jumpButton then if positionEditingEnabled then TogglePositionButton.Text="Disable Drag Position";TogglePositionButton.BackgroundColor3=Color3.fromRGB(180,70,70);jumpButton.Active=true;jumpButton.Draggable=false;if not jumpButtonHighlight then jumpButtonHighlight=Instance.new("UIStroke",jumpButton);jumpButtonHighlight.Color=Color3.fromRGB(0,255,0);jumpButtonHighlight.Thickness=2;jumpButtonHighlight.ApplyStrokeMode=Enum.ApplyStrokeMode.Border end else TogglePositionButton.Text="Enable Drag Position";TogglePositionButton.BackgroundColor3=Color3.fromRGB(70,70,180);isDraggingJumpButton=false;jumpButton.Active=true;jumpButton.Draggable=false;removeHighlight()end end end)
+ResetButton.MouseButton1Click:Connect(function()if not jumpButton or not originalJumpPos or not originalJumpSize then return end;currentXChange,currentYChange,currentSizeChange=0,0,0;updateJumpButtonAppearance();updateAllUIToCurrentValues();isDraggingJumpButton=false;if positionEditingEnabled then positionEditingEnabled=false;TogglePositionButton.Text="Enable Drag Position";TogglePositionButton.BackgroundColor3=Color3.fromRGB(70,70,180);removeHighlight()end;if jumpButton then jumpButton.Active=true;jumpButton.Draggable=false end end)
+local function handleTextBoxInput(textBox)local num=tonumber(textBox.Text);if num==nil then num=0 end;currentSizeChange=math.clamp(num,SLIDER_MIN_SIZE_OFFSET,SLIDER_MAX_SIZE_OFFSET);updateJumpButtonAppearance();updateAllUIToCurrentValues()end
+SizeOffsetBox.FocusLost:Connect(function(ep)if ep then handleTextBoxInput(SizeOffsetBox)end end);SizeOffsetBox:GetPropertyChangedSignal("Text"):Connect(function()if not SizeOffsetBox:IsFocused()then handleTextBoxInput(SizeOffsetBox)end end)
+SaveButton.MouseButton1Click:Connect(function()local oBT=SaveButton.Text;local oTT=tip2.Text;local sci=string.format("(Executor: %s)",EXECUTOR_NAME);local sc=string.format([[-- Jump Button Editor V2 - Autoexec Script
+-- Original by Syshi. V2 inspired by Danechka. %s
+-- Settings: XOffset=%d, YOffset=%d, SizeOffset=%d
+local s,jBtn=pcall(function()return game:GetService("Players").LocalPlayer.PlayerGui:WaitForChild("TouchGui",7):WaitForChild("TouchControlFrame",7):WaitForChild("JumpButton",7)end)
+if s and jBtn then local op,os=jBtn.Position,jBtn.Size;jBtn.Position=UDim2.new(op.X.Scale,op.X.Offset+(%d),op.Y.Scale,op.Y.Offset+(%d));jBtn.Size=UDim2.new(os.X.Scale,os.X.Offset+(%d),os.Y.Scale,os.Y.Offset+(%d))else warn("Autoexec Script (Jump Button Editor V2): JumpBtn NF")end]],sci,math.floor(currentXChange),math.floor(currentYChange),math.floor(currentSizeChange),math.floor(currentXChange),math.floor(currentYChange),math.floor(currentSizeChange),math.floor(currentSizeChange));local function dn(t,d,dr)if NOTIFY_FUNC then NOTIFY_FUNC({Title=t,Description=d,Duration=dr or 5})else SaveButton.Text=t:sub(1,20);tip2.Text=d:sub(1,35)end end;if typeof(setclipboard)=="function"then local s_sc,e_sc=pcall(function()setclipboard(sc)end);if s_sc then dn("Script Copied!","Paste in Autoexec manually.",7)else warn("JumpButtonEditorV2 Save: 'setclipboard' FAILED. Error: ",tostring(e_sc));warn("JumpButtonEditorV2 Save: Script for manual copy:\n"..sc);dn("Copy Failed!","See console for script.",7)end else warn("JumpButtonEditorV2 Save: 'setclipboard' N/A.");warn("JumpButtonEditorV2 Save: Script for manual copy:\n"..sc);dn("No Clipboard!","See console for script.",7)end;task.wait(3);SaveButton.Text=oBT;tip2.Text=oTT end)
+SliderThumb.InputBegan:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then isDraggingSliderThumb=true;dragStartMousePos_SliderThumb=i.Position.X;dragStartSliderValue=currentSizeChange;SliderThumb.BackgroundColor3=Color3.fromRGB(150,150,250)end end)
+UserInputService.InputChanged:Connect(function(i)if isDraggingSliderThumb and(i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch)then local tw=SliderTrack.AbsoluteSize.X;if tw==0 then return end;local mdx=i.Position.X-dragStartMousePos_SliderThumb;local vd=(mdx/tw)*(SLIDER_MAX_SIZE_OFFSET-SLIDER_MIN_SIZE_OFFSET);currentSizeChange=math.clamp(dragStartSliderValue+vd,SLIDER_MIN_SIZE_OFFSET,SLIDER_MAX_SIZE_OFFSET);updateJumpButtonAppearance();updateAllUIToCurrentValues()end;if isDraggingJumpButton and positionEditingEnabled and(i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch)then if not jumpButton or not originalJumpPos or not dragStartMousePos_JumpButton or not dragStartButtonPosOffsets then return end;local cmp=UserInputService:GetMouseLocation();local md=(cmp-dragStartMousePos_JumpButton)*DRAG_SENSITIVITY;currentXChange=(dragStartButtonPosOffsets.X+md.X)-originalJumpPos.X.Offset;currentYChange=(dragStartButtonPosOffsets.Y+md.Y)-originalJumpPos.Y.Offset;updateJumpButtonAppearance();updateAllUIToCurrentValues()end end)
+UserInputService.InputEnded:Connect(function(i)if isDraggingSliderThumb and(i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch)then isDraggingSliderThumb=false;SliderThumb.BackgroundColor3=Color3.fromRGB(120,120,220)end;if isDraggingJumpButton and(i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch)then isDraggingJumpButton=false end end)
+local frameDragging,frameDragStart,frameStartPos=false;TitleBar.InputBegan:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then frameDragging=true;frameDragStart=i.Position;frameStartPos=Frame.Position end end);TitleBar.InputEnded:Connect(function(i)if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then frameDragging=false end end);UserInputService.InputChanged:Connect(function(i)if frameDragging and(i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch)then local d=i.Position-frameDragStart;Frame.Position=UDim2.new(frameStartPos.X.Scale,frameStartPos.X.Offset+d.X,frameStartPos.Y.Scale,frameStartPos.Y.Offset+d.Y)end end)
+
+-- --- Initialization ---
+initialize()
