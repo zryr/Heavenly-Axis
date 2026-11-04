@@ -361,7 +361,14 @@ function Transform:apply(layout, options)
             if entry.experimental == false then
                 self.discovery.approved[record.key] = nil
                 self.discovery:_classify(record)
-                if record.experimental then pcall(write, record.object, record.baseline) end
+                if record.experimental then
+                    -- Revocation restores the baseline once. Remember the handled
+                    -- request even though this target is now intentionally skipped,
+                    -- so unrelated HUD events cannot repeatedly fight its layout.
+                    local restored = pcall(write, record.object, record.baseline)
+                    self.receipts[record.object] = Util.copy(entry)
+                    if not restored then self.log("Original properties unavailable while revoking experimental approval") end
+                end
             end
             local allowed, reason = self:_allowed(record, entry, options)
             if allowed and not Util.equal(entry.size, record.baseline.size) then

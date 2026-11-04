@@ -282,6 +282,47 @@ flush()
 check(#pending == 0, "Stabilization stops after the quiet-period check")
 check(not discovery.byObject[quick].experimental, "Stable normal target does not require experimental editing")
 
+-- Lifecycle receipts permit restoration of new instances without fighting existing scripts.
+local lifecycle = create("Frame", "LifecycleReceipt", screen)
+flush()
+local lifecycleKey = key(lifecycle)
+local lifecycleEntry = Discovery.serialize(lifecycle)
+lifecycleEntry.descriptor = Util.copy(discovery.byObject[lifecycle].descriptor)
+lifecycleEntry.position.xo = 35
+check(transform:apply({[lifecycleKey] = lifecycleEntry}) == 1, "Initial lifecycle request applies")
+flush()
+lifecycle.Position = UDim2.new(0, 777, 0, 0)
+applied, skipped = transform:apply({[lifecycleKey] = lifecycleEntry}, {onlyNew = true})
+check(applied == 0 and skipped == 0 and lifecycle.Position.X.Offset == 777,
+    "unrelated lifecycle events never re-enforce the same request against an existing object")
+lifecycle:Destroy(); flush()
+lifecycle = create("Frame", "LifecycleReceipt", screen); flush()
+check(key(lifecycle) == lifecycleKey and transform:apply({[lifecycleKey] = lifecycleEntry}, {onlyNew = true}) == 1,
+    "a recreated exact identity receives saved properties despite the old instance receipt")
+flush()
+near(lifecycle.Position.X.Offset, 35, "Recreated lifecycle position restored once")
+
+local revoked = create("Frame", "RevokedReceipt", managed)
+flush()
+local revokedKey = key(revoked)
+local revokedEntry = Discovery.serialize(revoked)
+revokedEntry.descriptor = Util.copy(discovery.byObject[revoked].descriptor)
+revokedEntry.position.xo, revokedEntry.experimental = 12, true
+check(transform:apply({[revokedKey] = revokedEntry}, {experimental = true}) == 1,
+    "explicitly approved managed target may be adjusted")
+flush()
+revokedEntry.experimental = false
+transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
+near(revoked.Position.X.Offset, 0, "Revocation restores original position once")
+revoked.Position = UDim2.new(0, 444, 0, 0) -- Its owning layout resumes control.
+local writesAfterRevoke = 0
+local revokeConnection = revoked:GetPropertyChangedSignal("Position"):Connect(function() writesAfterRevoke = writesAfterRevoke + 1 end)
+transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
+transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
+check(writesAfterRevoke == 0 and revoked.Position.X.Offset == 444 and not discovery.byObject[revoked].editable,
+    "revoked approval never restores the baseline repeatedly during unrelated HUD events")
+revokeConnection:Disconnect()
+
 local connections = {}
 for _, connection in ipairs(discovery.connections) do connections[#connections + 1] = connection end
 for _, list in pairs(discovery.objectConnections) do for _, connection in ipairs(list) do connections[#connections + 1] = connection end end
