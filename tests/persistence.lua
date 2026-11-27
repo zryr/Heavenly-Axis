@@ -141,9 +141,31 @@ check(contextual:draft(portraitState), "portrait recovery can coexist with lands
 local portraitPath = contextual:_draftPath()
 check(files[portraitPath] and files[landscapePath], "orientation drafts never overwrite one another")
 check(not contextual:draft(state), "stale scheduled draft cannot overwrite a changed context")
+local pinnedState = Util.copy(state)
+pinnedState.preferences.grid = false
+check(contextual:draft(pinnedState, context) and Util.equal(contextual:loadDraft(context), pinnedState),
+    "an explicitly pinned edit can update its original landscape draft from portrait")
 check(contextual:clearDraft() and files[landscapePath], "clearing current orientation retains other recovery")
 scopedContext.orientation = "landscape"
-check(Util.equal(contextual:loadDraft(), state), "live context selects original recovery again")
+check(Util.equal(contextual:loadDraft(), pinnedState), "live context selects original recovery again")
+local rawLandscapeDraft = files[landscapePath]
+faults.read = landscapePath
+local unreadableDraft, _, unreadableBlocked = contextual:loadDraft()
+check(not unreadableDraft and unreadableBlocked, "a known present but unreadable draft is flagged for explicit recovery")
+faults.read = nil
+files[landscapePath] = "corrupt contextual draft"
+local damagedDraft, _, damagedBlocked = contextual:loadDraft()
+local _, _, unrelatedBlocked = contextual:loadDraft(portraitState.context)
+check(not damagedDraft and damagedBlocked and not unrelatedBlocked, "only the damaged draft's own orientation reports a recovery blocker")
+local savedBeforeDiscard = files[Storage.FILES.saved]
+check(contextual:clearDraft() and files[landscapePath] == nil and files[Storage.FILES.saved] == savedBeforeDiscard,
+    "explicitly discarding a damaged contextual draft preserves the saved profile")
+local wrongContextRaw = http:JSONEncode({version = Config.VERSION, draft = true, state = portraitState})
+files[landscapePath] = wrongContextRaw
+local wrongDraft, _, wrongBlocked = contextual:loadDraft()
+check(not wrongDraft and not wrongBlocked and not contextual:clearDraft() and files[landscapePath] == wrongContextRaw,
+    "misfiled drafts from another orientation are neither offered nor deleted")
+files[landscapePath] = rawLandscapeDraft
 scopedContext.place = "201"
 check(contextual:loadDraft() == nil, "place recovery is isolated")
 check(fresh:draft(state), "legacy generic draft slot remains supported")
@@ -173,6 +195,8 @@ profiles:save({[key] = target}, {}, {})
 check(profiles:active().layout[missingKey] == nil, "deliberate removal or remapping is not resurrected from prior profile")
 check(profiles:export() ~= nil, "manual JSON export available")
 check(profiles:rename(created.id, "Renamed") and profiles:active().name == "Renamed", "profile rename")
+local renameExport = profiles:import(profiles:export())
+check(renameExport.profiles[1].name == "Landscape controls", "export omits unsaved profile metadata")
 check(not profiles:rename(created.id, "\n"), "invalid names rejected")
 local duplicate = profiles:duplicate(created.id)
 check(duplicate and duplicate.id ~= created.id and Util.equal(duplicate.layout, profiles:active().layout), "duplicate copies layout without aliasing identity")
@@ -200,8 +224,8 @@ context.orientation = "landscape"
 local global = profiles:create("Builtins only", "global")
 profiles:beginPreview(global.id); profiles:applyPreview()
 check(profiles:active().id == global.id and #profiles.data.profiles == 2,
-    "selecting global explicitly deactivates higher current-context slots without deleting definitions")
-local okGlobal, _, acceptedGlobal = profiles:save({[key] = target}, {}, {})
+    "selecting global sets a save target without deleting higher definitions")
+local okGlobal, _, acceptedGlobal = profiles:save({[key] = target, [missingKey] = missingTarget}, {}, {})
 check(not okGlobal and not acceptedGlobal and next(profiles:active().layout) == nil, "global saves cannot leak game-specific elements")
 local layers = Profiles.new(Config.empty(), memoryStorage, context)
 local globalLayer = layers:create("Shared defaults", "global")
@@ -215,13 +239,13 @@ end
 local layeredBefore = Util.copy(layers.data)
 check(layers:active().id == orientationLayer.id, "most-specific active layer initially wins")
 check(layers:beginPreview(globalLayer.id) ~= nil and layers:active().id == orientationLayer.id
-    and layers.preview.data.active[Config.scopeKey(orientationLayer)] == nil,
-    "global preview removes higher references only in candidate")
+    and layers.preview.overlaid and layers.preview.data.active[Config.scopeKey(orientationLayer)] == orientationLayer.id,
+    "global preview keeps higher overrides active in both the current and candidate configurations")
 check(layers:cancelPreview() and Util.equal(layeredBefore, layers.data), "cancel global preview preserves exact higher-scope activation")
 check(layers:beginPreview(globalLayer.id) and layers:applyPreview() and layers:active().id == globalLayer.id,
     "Apply makes global editable even with saved place/device/orientation definitions")
-check(#layers.data.profiles == 5 and layers.data.active[Config.scopeKey(placeLayer)] == nil,
-    "layer selection never deletes profile definitions")
+check(#layers.data.profiles == 5 and layers.data.active[Config.scopeKey(placeLayer)] == placeLayer.id,
+    "layer selection retains unrelated active slots and definitions")
 local jumpDescriptor = { class = "ImageButton", builtin = "JumpButton", path = {
     { name = "TouchGui", class = "ScreenGui", ordinal = 1 },
     { name = "TouchControlFrame", class = "Frame", ordinal = 1 },
@@ -232,8 +256,93 @@ local _, _, globalAccepted = layers:save({ [jumpKey] = jumpEntry }, {}, { grid =
 check(globalAccepted and layers:active().id == globalLayer.id and layers:active().layout[jumpKey],
     "saving selected global defaults writes recognized builtins into global layer")
 check(layers:beginPreview(placeLayer.id) and layers:applyPreview() and layers:active().id == placeLayer.id,
-    "higher definitions can be explicitly reactivated after editing defaults")
+    "higher active layers can become the explicit save target")
 local empty = Profiles.new(Config.empty(), memoryStorage, context)
 empty:save({[key] = target}, {}, {})
 check(empty:active() and empty:active().scope == "place", "Save creates a place profile only when none is active")
+
+local function activeData(...)
+    local value = Config.empty()
+    value.profiles = {...}
+    for _, profile in ipairs(value.profiles) do value.active[Config.scopeKey(profile)] = profile.id end
+    return value
+end
+local experienceProfile = {id = "experience", name = "Experience", scope = "experience", scopeId = context.experience,
+    layout = {[key] = Util.copy(target), [missingKey] = Util.copy(missingTarget)}, groups = {HUD = {target.descriptor}}, preferences = {grid = true}}
+experienceProfile.layout[key].rotation = 13
+local placeProfile = {id = "place", name = "Place", scope = "place", scopeId = context.place, layout = {}, groups = {}, preferences = {}}
+local inherited = Profiles.new(activeData(experienceProfile, placeProfile), memoryStorage, context)
+local resolvedLayout, resolvedPreferences, resolvedGroups = inherited:resolve()
+resolvedLayout[key].position.xo = 28
+local _, _, deltaAccepted = inherited:save(resolvedLayout, resolvedGroups, resolvedPreferences)
+local positionPatch = inherited:active().layout[key]
+check(deltaAccepted and positionPatch.inherit and positionPatch.position.xo == 28 and positionPatch.size == nil and positionPatch.rotation == nil,
+    "editing position persists only position while inherited size and rotation remain live")
+check(inherited:active().layout[missingKey] == nil and not next(inherited:active().groups) and not next(inherited:active().preferences),
+    "untouched inherited elements, groups, and preferences remain in their source scope")
+local decodedPatches = memoryStorage:import(inherited:export())
+check(decodedPatches and Util.equal(decodedPatches, inherited.data), "new inherited overrides survive validated JSON export/import")
+
+check(inherited:beginPreview(experienceProfile.id) and inherited:applyPreview()
+    and inherited:resolve()[key].position.xo == 28 and inherited:active().id == experienceProfile.id,
+    "selecting a broader save target keeps place geometry in effect")
+local oldDraftReference = inherited:draftReference()
+local mergedLayout, mergedPreferences, mergedGroups = inherited:resolve()
+mergedLayout[key].size.xo = 125
+local _, _, parentUpdated = inherited:save(mergedLayout, mergedGroups, mergedPreferences)
+check(parentUpdated and inherited:resolve()[key].size.xo == 125 and inherited:resolve()[key].position.xo == 28,
+    "a broader size edit remains inherited through a narrower position patch")
+check(not inherited:matchesDraftReference(oldDraftReference), "changed profile contents invalidate a previously recorded draft reference")
+local currentReference = inherited:draftReference()
+local restart = Profiles.new(inherited.data, memoryStorage, context)
+check(restart:active().id == placeProfile.id and restart:matchesDraftReference(currentReference)
+    and restart:setEditTarget(currentReference.profileId), "broader draft targets can be validated and restored after restarting")
+check(restart:active().id == experienceProfile.id, "recoverable draft keeps its explicit scope")
+local withReference = Util.copy(state)
+withReference.reference = currentReference
+check(fresh:draft(withReference) and Util.equal(fresh:loadDraft(), withReference), "draft references are validated and round trip separately from profiles")
+check(fresh:clearDraft(), "draft reference can be cleared independently")
+
+local beforeConflict = Util.copy(inherited.data)
+local conflictingLayout, conflictingPreferences, conflictingGroups = inherited:resolve()
+conflictingLayout[key].position.xo = 100
+local conflictSaved, conflictMessage, conflictAccepted = inherited:save(conflictingLayout, conflictingGroups, conflictingPreferences)
+check(not conflictSaved and not conflictAccepted and conflictMessage:find("more specific") and Util.equal(beforeConflict, inherited.data),
+    "a broader scope cannot silently save an edit masked by a more specific profile")
+
+check(inherited:setEditTarget(placeProfile.id), "switch write target to the applicable place profile")
+local clippedLayout, clippedPreferences, clippedGroups = inherited:resolve()
+clippedLayout[key].position.xo = target.position.xo
+clippedLayout[missingKey], clippedGroups.HUD = nil, nil
+local _, _, removalsAccepted = inherited:save(clippedLayout, clippedGroups, clippedPreferences)
+check(removalsAccepted and inherited:active().layout[key] == nil and inherited:active().layout[missingKey].removed
+    and inherited:active().groups.HUD == false, "matching inherited values clear overrides and intentional removals mask them")
+local clippedResolved, _, clippedResolvedGroups = inherited:resolve()
+check(clippedResolved[missingKey] == nil and clippedResolvedGroups.HUD == nil, "masked entries remain absent after resolving active layers")
+local otherContext = Util.copy(context); otherContext.place = "201"
+local otherLayout, _, otherGroups = inherited:resolve(otherContext)
+check(otherLayout[missingKey] and otherGroups.HUD, "place-specific removal does not erase another place's inherited defaults")
+
+local oldPlace = Util.copy(placeProfile)
+oldPlace.layout[key] = Util.copy(target)
+local oldV3 = activeData(experienceProfile, oldPlace)
+local oldStorage = Storage.new(cap, http)
+check(oldStorage:save(oldV3), "legacy V3 full-override configuration accepted on disk")
+local oldRaw = files[Storage.FILES.saved]
+local oldLoaded = oldStorage:load()
+local migrating = Profiles.new(oldLoaded, oldStorage, context)
+check(Util.equal(oldLoaded, oldV3) and migrating:resolve()[key].rotation == nil,
+    "loading an existing V3 checkpoint preserves legacy full-entry replacement semantics")
+local changedLayout, changedPreferences, changedGroups = migrating:resolve()
+changedLayout[missingKey].position.xo = 95
+faults.write = Storage.FILES.pending
+local failed, _, acceptedFailure = migrating:save(changedLayout, changedGroups, changedPreferences)
+check(not failed and not acceptedFailure and Util.equal(migrating.data, oldV3)
+    and Util.equal(oldStorage:import(migrating:export()), oldV3), "failed Save retains both the previous configuration and its export")
+faults.write = nil
+check(migrating:save(changedLayout, changedGroups, changedPreferences) and files[Storage.FILES.backup] == oldRaw,
+    "first incremental update preserves the previous raw V3 file as backup")
+local migrated = oldStorage:load()
+check(migrated.profiles[2].layout[missingKey].inherit and Util.equal(migrated.profiles[2].layout[key], oldPlace.layout[key]),
+    "incremental save adds only the edited override and preserves untouched legacy entries")
 return checks

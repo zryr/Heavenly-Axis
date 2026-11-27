@@ -3,19 +3,34 @@ local Identity = {}
 local BUILTINS = { JumpButton = true, ThumbstickFrame = true, DynamicThumbstickFrame = true }
 local function escaped(value) return tostring(value):gsub("%%", "%%25"):gsub("/", "%%2F"):gsub(":", "%%3A") end
 
-function Identity.descriptor(instance, root)
+local function siblingOrder(parent, childCache, siblingCache)
+    if siblingCache and siblingCache[parent] then return siblingCache[parent] end
+    local children = childCache and childCache[parent] or parent:GetChildren()
+    if childCache then childCache[parent] = children end
+    local orders, countsByName = {}, {}
+    for index, sibling in ipairs(children) do
+        local name, class = sibling.Name, sibling.ClassName
+        local counts = countsByName[name]
+        if not counts then counts = {}; countsByName[name] = counts end
+        counts[class] = (counts[class] or 0) + 1
+        orders[sibling] = {ordinal = counts[class], index = index}
+    end
+    for _, sibling in ipairs(children) do
+        orders[sibling].ambiguous = countsByName[sibling.Name][sibling.ClassName] > 1
+    end
+    if siblingCache then siblingCache[parent] = orders end
+    return orders
+end
+
+function Identity.descriptor(instance, root, childCache, siblingCache)
     local path, ambiguous, current = {}, false, instance
     while current and current ~= root do
-        local parent, ordinal, count = current.Parent, 0, 0
+        local parent = current.Parent
         if not parent then return nil, "Object is outside the discovery root" end
-        for _, sibling in ipairs(parent:GetChildren()) do
-            if sibling.Name == current.Name and sibling.ClassName == current.ClassName then
-                count = count + 1
-                if sibling == current then ordinal = count end
-            end
-        end
-        if count > 1 then ambiguous = true end
-        table.insert(path, 1, { name = current.Name, class = current.ClassName, ordinal = ordinal })
+        local order = siblingOrder(parent, childCache, siblingCache)[current]
+        if not order then return nil, "Object is outside the discovery root" end
+        ambiguous = ambiguous or order.ambiguous
+        table.insert(path, 1, { name = current.Name, class = current.ClassName, ordinal = order.ordinal })
         current = parent
     end
     if current ~= root or #path == 0 then return nil, "Object is outside the discovery root" end
@@ -43,10 +58,15 @@ local function samePath(a, b)
     if type(b) ~= "table" or type(b.path) ~= "table" or a.class ~= b.class or #a.path ~= #b.path then return false end
     for i, segment in ipairs(a.path) do
         local candidate = b.path[i]
-        if segment.name ~= candidate.name or segment.class ~= candidate.class
+        if type(segment) ~= "table" or type(candidate) ~= "table" or segment.name ~= candidate.name or segment.class ~= candidate.class
             or (segment.ordinal or 1) ~= (candidate.ordinal or 1) then return false end
     end
     return true
+end
+
+function Identity.same(descriptor, candidate)
+    return type(descriptor) == "table" and type(candidate) == "table" and not descriptor.ambiguous
+        and not candidate.ambiguous and type(descriptor.path) == "table" and samePath(descriptor, candidate)
 end
 
 function Identity.match(descriptor, candidates)

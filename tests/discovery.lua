@@ -1,0 +1,215 @@
+-- Simulates the documented Roblox coordinate spaces and accessible PlayerGui API.
+local Coordinates = require("Coordinates")
+local Discovery = require("Discovery")
+local checks = 0
+
+local function check(value, message)
+    checks = checks + 1
+    assert(value, message)
+end
+
+local pending = {}
+task = {delay = function(_, callback) pending[#pending + 1] = callback end}
+local function flush()
+    local queue = pending
+    pending = {}
+    for _, callback in ipairs(queue) do callback() end
+end
+
+local function signal()
+    local listeners = {}
+    return {
+        Connect = function(_, callback)
+            local subscription = {live = true, Disconnect = function(self) self.live = false end}
+            listeners[#listeners + 1] = {callback, subscription}
+            return subscription
+        end,
+        Fire = function(_, value)
+            for _, item in ipairs(listeners) do if item[2].live then item[1](value) end end
+        end,
+    }
+end
+
+local enumerations, descendantScans = 0, 0
+local classes = {Frame = true, ImageButton = true, TextButton = true, TextLabel = true, ScrollingFrame = true}
+local dim = {X = {Scale = 0, Offset = 0}, Y = {Scale = 0, Offset = 0}}
+local function create(class, name, parent, x, y, w, h)
+    local object = {
+        ClassName = class, Name = name, Parent = parent, Visible = true, Enabled = true, Rotation = 0,
+        BackgroundTransparency = 0, AutomaticSize = "None", Position = dim, Size = dim, ZIndex = 1, DisplayOrder = 0,
+        ClipsDescendants = false, ClipToDeviceSafeArea = true, DescendantAdded = signal(), DescendantRemoving = signal(),
+        AbsolutePosition = {X = x or 0, Y = y or 0}, AbsoluteSize = {X = w or 1000, Y = h or 570}, props = {}, children = {},
+    }
+    function object:IsA(kind)
+        return kind == self.ClassName or kind == "GuiObject" and classes[self.ClassName]
+            or kind == "GuiButton" and (self.ClassName == "ImageButton" or self.ClassName == "TextButton")
+            or kind == "LayerCollector" and (self.ClassName == "ScreenGui" or self.ClassName == "SurfaceGui")
+    end
+    function object:GetChildren()
+        enumerations = enumerations + 1
+        return self.children
+    end
+    function object:GetDescendants()
+        descendantScans = descendantScans + 1
+        local result = {}
+        local function visit(node)
+            for _, child in ipairs(node.children) do
+                result[#result + 1] = child
+                visit(child)
+            end
+        end
+        visit(self)
+        return result
+    end
+    function object:GetPropertyChangedSignal(property)
+        self.props[property] = self.props[property] or signal()
+        return self.props[property]
+    end
+    if parent then parent.children[#parent.children + 1] = object end
+    return object
+end
+
+Enum = {ScreenInsets = {CoreUISafeInsets = "CoreUISafeInsets", DeviceSafeInsets = "DeviceSafeInsets", None = "None"}}
+local area = {
+    CoreUISafeInsets = {Min = {X = 0, Y = 0}, Max = {X = 1000, Y = 570}},
+    DeviceSafeInsets = {Min = {X = 0, Y = -44}, Max = {X = 1000, Y = 570}},
+    None = {Min = {X = -16, Y = -44}, Max = {X = 1016, Y = 570}},
+}
+local services = {
+    GetInsetArea = function(_, inset) return area[inset] end,
+    GetGuiInset = function() return {X = 16, Y = 44}, {X = 16, Y = 0} end,
+}
+local rawPointer = {Position = {X = 24, Y = -10}}
+local pointer = Coordinates.point(rawPointer)
+check(pointer.x == 24 and pointer.y == -10, "Input positions are already inset-relative, including negative coordinates")
+local fullRect = Coordinates.insetRect(services, Enum.ScreenInsets.None)
+check(fullRect.x == -16 and fullRect.y == -44 and fullRect.w == 1032, "Full screen origin and width can differ from ViewportSize")
+local safe = Coordinates.safeRect(services, 300, 350)
+local core = Coordinates.coreRect(services, 300, 350)
+check(safe.y == -44 and core.y == 0 and core.h == 570, "Editor safe area and device-safe viewport stay distinct")
+local fallback = Coordinates.safeRect({GetGuiInset = services.GetGuiInset}, 1000, 614)
+check(fallback.y == -44 and fallback.w == 1000 and fallback.h == 614, "Viewport fallback does not subtract cutouts a second time")
+
+local root = create("PlayerGui", "PlayerGui")
+local touch = create("ScreenGui", "TouchGui", root)
+local touchFrame = create("Frame", "TouchControlFrame", touch)
+touchFrame.BackgroundTransparency = 1
+local jump = create("ImageButton", "JumpButton", touchFrame, 875, 450, 82, 82)
+local decoration = create("TextLabel", "Decorative overlay", touchFrame, 875, 450, 82, 82)
+local classic = create("Frame", "ThumbstickFrame", touchFrame, 79, 434, 100, 100)
+local dynamic = create("Frame", "DynamicThumbstickFrame", touchFrame, 0, 330, 400, 220)
+dynamic.BackgroundTransparency = 1
+create("ImageButton", "Knob", dynamic, 20, 365, 20, 20).Visible = false
+local gameGui = create("ScreenGui", "GameHud", root)
+local actual = create("ImageButton", "Game button", gameGui, 180, 420, 60, 50)
+local ground = create("Frame", "Bottom layer", gameGui, 450, 280, 190, 150)
+local front = create("Frame", "Higher sibling layer", gameGui, 450, 280, 190, 150)
+front.ZIndex = 2
+local bottomButton = create("ImageButton", "Deep high Z", ground, 500, 345, 40, 30)
+bottomButton.ZIndex = 100
+local topButton = create("ImageButton", "Lower Z in front branch", front, 500, 345, 40, 30)
+local rotatedButton = create("ImageButton", "Rotated", gameGui, 500, 245, 100, 20)
+rotatedButton.AbsoluteRotation = 90
+local hiddenParent = create("Frame", "Hidden", gameGui, 175, 410, 75, 60)
+hiddenParent.Visible = false
+local hiddenButton = create("ImageButton", "Hidden child", hiddenParent, 180, 420, 60, 50)
+local clip = create("ScrollingFrame", "Clip", gameGui, 300, 200, 100, 60)
+clip.ClipsDescendants = true
+clip.AbsoluteWindowSize = {X = 90, Y = 60}
+clip.VerticalScrollBarPosition = "Enum.VerticalScrollBarPosition.Left"
+local clippedChild = create("ImageButton", "Partly clipped", clip, 280, 205, 65, 90)
+local hud = create("ScreenGui", "DeviceSafeHud", root, 0, -44, 1000, 614)
+hud.ScreenInsets = Enum.ScreenInsets.DeviceSafeInsets
+hud.DisplayOrder = 4
+local upper = create("TextButton", "Above top bar area", hud, 18, -25, 38, 40)
+local full = create("ScreenGui", "FullScreenHud", root, -16, -44, 1032, 614)
+full.ScreenInsets = Enum.ScreenInsets.None
+local nearCutout = create("TextButton", "Cutout content", full, -14, 280, 10, 10)
+local wrongClip = create("TextButton", "Device-clipped", hud, -14, 280, 10, 10)
+local editor = create("ScreenGui", "HeavenlyAxis_V3", root)
+local own = create("TextButton", "Editor", editor, 875, 450, 82, 82)
+local unsupportedWorld = create("SurfaceGui", "World", root)
+create("ImageButton", "World button", unsupportedWorld, 875, 450, 82, 82)
+local nestedWorld = create("SurfaceGui", "Nested world", gameGui)
+local worldButton = create("ImageButton", "3D coordinates", nestedWorld, 875, 450, 82, 82)
+local controls = create("Frame", "Large collection", gameGui, 300, 0, 450, 200)
+for index = 1, 500 do
+    create("Frame", "Control " .. index, controls, 400 + index % 220, 10 + index % 100, 1, 1)
+end
+
+local discovery = Discovery.new(root, nil, nil, services)
+local revisions = {}
+discovery:start(function(reason) revisions[#revisions + 1] = reason end)
+local function record(object) return discovery.byObject[object] end
+local function found(records, object)
+    for _, item in ipairs(records) do if item.object == object then return true end end
+    return false
+end
+
+check(descendantScans == 1 and discovery.stats.indexed >= 500 and enumerations < 550, "Discovery scans once and enumerates broad siblings once per parent")
+check(discovery:match(record(jump).descriptor) == record(jump), "Exact identity matches by key")
+check(record(jump).baselineRect.w == 82 and record(hiddenButton).baselineRect == nil, "Baseline records initial usable geometry")
+check(record(own) == nil, "Editor ScreenGui and its descendants stay outside discovery")
+check(record(worldButton) == nil, "World-space layers within a ScreenGui still use a different coordinate space")
+local x, y = Coordinates.screenToLocal(pointer.x, pointer.y, hud)
+check(x == 24 and y == 34, "Canonical coordinates map to the destination ScreenGui origin")
+check(Coordinates.rect(upper).y == -25 and discovery:hit(pointer.x, pointer.y)[1] == record(upper), "Fallback finds a device-inset button in negative canonical Y")
+local hits = discovery:hit(-10, 285)
+check(hits[1] == record(nearCutout) and not found(hits, wrongClip), "Explicit None ignores device clipping while device-safe content respects it")
+hits = discovery:hit(900, 470)
+check(hits[1] == record(jump) and found(hits, decoration) and found(hits, touchFrame), "Fallback prioritizes Jump while retaining explicit overlaps")
+hits = discovery:hit(205, 450)
+check(hits[1] == record(actual) and found(hits, dynamic) and not found(hits, hiddenButton), "Interactive leaf beats broad dynamic zone and hidden descendants stay excluded")
+check(discovery:hit(100, 470)[1] == record(classic), "Classic joystick wins against the surrounding dynamic zone")
+check(discovery:hit(515, 355)[1] == record(topButton), "Fallback sibling mode respects the top-level branch before child ZIndex")
+gameGui.ZIndexBehavior = "Global"
+check(discovery:hit(515, 355)[1] == record(bottomButton), "Fallback global mode respects the individual object's ZIndex")
+check(found(discovery:hit(550, 223), rotatedButton) and not found(discovery:hit(518, 253), rotatedButton), "Fallback respects a rotated object's screen footprint")
+check(found(discovery:hit(315, 225), clippedChild), "Fallback finds a partially visible scroll child")
+check(not found(discovery:hit(304, 225), clippedChild) and not found(discovery:hit(315, 270), clippedChild), "Scroll gutter and clipped portion are excluded")
+local visible = discovery:visibleRect(record(clippedChild))
+check(visible.x == 310 and visible.w == 35 and visible.h == 55, "Visible bounds crop at scroll content rather than raw geometry")
+
+local nativeX, nativeY
+function root:GetGuiObjectsAtPosition(queryX, queryY)
+    nativeX, nativeY = queryX, queryY
+    if queryY < 0 then return {upper} end
+    return {own, touchFrame, decoration, jump, jump}
+end
+hits = discovery:hit(900.2, 470.8)
+check(nativeX == 900 and nativeY == 470 and #hits == 3 and hits[1] == record(jump), "Native query keeps canonical position and resolves duplicates and layers")
+check(discovery:hit(pointer.x, pointer.y)[1] == record(upper) and nativeY == -10, "Native query uses the same negative canonical Y without a second inset")
+check(#discovery:alignmentRects({record(touchFrame).key}, Coordinates.rect(jump), 8) == 8, "Gesture guides use bounded nearby candidates")
+local nearby = discovery:alignmentRects({}, Coordinates.rect(upper), 1)
+check(#nearby == 1 and nearby[1].x == upper.AbsolutePosition.X and nearby[1].y == upper.AbsolutePosition.Y, "Guides prefer nearby targets")
+local afterRefresh = enumerations
+for _ = 1, 120 do discovery:_classify(record(jump)) end
+check(enumerations == afterRefresh and descendantScans == 1, "Repeated target classification uses cached topology without traversals")
+
+hud.Enabled = false
+hud.props.Enabled:Fire()
+hud.props.Enabled:Fire()
+flush()
+check(#revisions == 2 and revisions[2] == "presentation" and descendantScans == 1, "Visibility notifications coalesce without a structural scan")
+check(#discovery:hit(pointer.x, pointer.y) == 0 and not found(discovery:list(), upper), "Disabled ScreenGui hides native hits and element list entries")
+touchFrame.Rotation = 12
+touchFrame.props.Rotation:Fire()
+flush()
+check(not discovery:get(record(jump).key).editable, "Ancestor rotation marks descendants incompatible without a structural scan")
+touchFrame.Rotation = 0
+touchFrame.props.Rotation:Fire()
+flush()
+check(discovery:get(record(jump).key).editable, "Clearing ancestor rotation restores compatibility")
+local oldKey = record(actual).key
+for index, child in ipairs(gameGui.children) do
+    if child == actual then table.remove(gameGui.children, index); break end
+end
+front.children[#front.children + 1] = actual
+actual.Parent = front
+check(discovery:get(oldKey) == nil, "Reparenting inside PlayerGui cannot resolve the stale saved hierarchy")
+flush()
+check(record(actual).key ~= oldKey and discovery:match(record(actual).descriptor) == record(actual), "Reparented objects acquire their new exact identity")
+local firstSubscription = discovery.objectConnections[upper][1]
+discovery:destroy()
+check(not firstSubscription.live, "Discovery destroy disconnects retained GUI subscriptions")
+return checks

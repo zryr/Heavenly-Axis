@@ -1,8 +1,9 @@
 -- Pixel-space math, independent of Roblox services or instances.
 local Util = require("Util")
-local Geometry = { MIN_SIZE = 16 }
+local Geometry = { MIN_SIZE = 16, MAX_SIZE = 1000000 }
 local function copy(rect) return { x = rect.x, y = rect.y, w = rect.w, h = rect.h } end
 local function clampSize(value) return math.max(Geometry.MIN_SIZE, value) end
+local function same(a, b) return math.abs(a - b) < 0.000001 end
 
 function Geometry.valid(rect)
     return type(rect) == "table" and Util.finite(rect.x) and Util.finite(rect.y)
@@ -50,22 +51,65 @@ function Geometry.resize(rect, handle, dx, dy, lockAspect, center)
     return { x = x, y = y, w = width, h = height }
 end
 
+local function inferredAnchor(deltaStart, deltaSize)
+    if same(deltaStart, 0) then return 0 end
+    if same(deltaStart, -deltaSize) then return 1 end
+    if same(deltaStart, -deltaSize / 2) then return 0.5 end
+    return 0
+end
+
+local function leadingEdge(oldStart, oldSize, newStart, newSize, appliedSize, center)
+    if center then return oldStart + (oldSize - appliedSize) / 2 end
+    local anchor = inferredAnchor(newStart - oldStart, newSize - oldSize)
+    return newStart + (newSize - appliedSize) * anchor
+end
+
 function Geometry.scale(rects, newBounds, center)
     local old = Geometry.bounds(rects)
     if not old or old.w <= 0 or old.h <= 0 then return {} end
     local sx, sy = newBounds.w / old.w, newBounds.h / old.h
-    local uniform = math.abs(sx - sy) < 0.000001
+    local uniform = same(sx, sy)
     -- Raise the factors, rather than clamping individual rectangles: relative layout stays intact.
     for _, rect in ipairs(rects) do
         sx, sy = math.max(sx, Geometry.MIN_SIZE / rect.w), math.max(sy, Geometry.MIN_SIZE / rect.h)
     end
     if uniform then sx, sy = math.max(sx, sy), math.max(sx, sy) end
-    local x = center and old.x + (old.w - old.w * sx) / 2 or newBounds.x
-    local y = center and old.y + (old.h - old.h * sy) / 2 or newBounds.y
+    local x = leadingEdge(old.x, old.w, newBounds.x, newBounds.w, old.w * sx, center)
+    local y = leadingEdge(old.y, old.h, newBounds.y, newBounds.h, old.h * sy, center)
     local result = {}
     for i, rect in ipairs(rects) do
         result[i] = { x = x + (rect.x - old.x) * sx, y = y + (rect.y - old.y) * sy,
             w = rect.w * sx, h = rect.h * sy }
+    end
+    return result
+end
+
+function Geometry.adjustMembers(rects, oldBounds, newBounds, center, lockAspect)
+    local dw, dh = newBounds.w - oldBounds.w, newBounds.h - oldBounds.h
+    local lockX = lockAspect and math.abs(dw / oldBounds.w) >= math.abs(dh / oldBounds.h)
+    local lockY = lockAspect and not lockX
+    local dx, dy = newBounds.x - oldBounds.x, newBounds.y - oldBounds.y
+    local anchorX = center and 0.5 or inferredAnchor(dx, dw)
+    local anchorY = center and 0.5 or inferredAnchor(dy, dh)
+    if center then dx, dy = 0, 0 else dx, dy = dx + dw * anchorX, dy + dh * anchorY end
+    for _, rect in ipairs(rects) do
+        if lockX then
+            local minimum = Geometry.MIN_SIZE * math.max(1, rect.w / rect.h)
+            dw = math.max(dw, minimum - rect.w)
+        elseif lockY then
+            local minimum = Geometry.MIN_SIZE * math.max(1, rect.h / rect.w)
+            dh = math.max(dh, minimum - rect.h)
+        else
+            if not same(dw, 0) then dw = math.max(dw, Geometry.MIN_SIZE - rect.w) end
+            if not same(dh, 0) then dh = math.max(dh, Geometry.MIN_SIZE - rect.h) end
+        end
+    end
+    local result = {}
+    for i, rect in ipairs(rects) do
+        local memberWidth = lockY and dh * rect.w / rect.h or dw
+        local memberHeight = lockX and dw * rect.h / rect.w or dh
+        result[i] = {x = rect.x + dx - memberWidth * anchorX, y = rect.y + dy - memberHeight * anchorY,
+            w = rect.w + memberWidth, h = rect.h + memberHeight}
     end
     return result
 end

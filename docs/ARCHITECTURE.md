@@ -11,17 +11,19 @@ The sources use the Lua/Luau common subset. Lua 5.4 test execution is practical 
 | Module | Responsibility |
 | --- | --- |
 | `Util` | Copy/equality and finite-number helpers for portable state |
-| `Geometry` | Screen rectangles, minimum dimensions, resize/scale, nested roots, alignment/distribution, snapping/guides |
+| `Geometry` | Screen rectangles, minimum dimensions, relative sizing, nested roots, alignment/distribution, snapping/guides |
+| `Coordinates` | Core UI coordinate space, mouse conversion, overlay-local placement and safe-area rectangles |
 | `Identity` | Escaped hierarchy descriptors and conservative exact matching; recognized built-in identities |
 | `History` | Bounded completed transactions, undo/redo, saved checkpoint, dirty comparison, Cancel |
 | `Config` | Version 3 schema, field/count/range limits, scope keys, applicability and merge order |
 | `Capabilities` | Independent file, clipboard, input, and optional network capability discovery without brand assumptions |
 | `Storage` | Bounded JSON, validated reads, staged/backup saves with readback, export/import, separate draft data |
 | `Profiles` | Named scoped configurations, management, preview candidates, confirmed import overwrites/deletion |
-| `Discovery` | Accessible PlayerGui indexing, visibility/compatibility, per-instance baselines, event subscription cleanup |
-| `Transform` | Idempotent property application, root-pruned world-space editing, supported UDim/UIScale conversion, rollback and bounded experimental stabilization |
-| `UI` | Responsive dark/cyan panel, four tabs, lists, inspector, launcher, grid, highlights, handles and dialogs |
-| `Input` | Touch identity, mouse gestures, pinch ownership, box/multi selection, slider sessions and shortcuts |
+| `Discovery` | Accessible PlayerGui index, smart hit ranking, clipping and compatibility, per-instance baselines, event cleanup |
+| `Transform` | Idempotent property application, root-pruned screen geometry, UDim and UIScale conversion, stabilization and rollback |
+| `UILayout` | Pure responsive placement for the toolbar, Quick Edit and management workspace |
+| `UI` | Native toolbar, contextual inspector and workspace, launcher, selection overlays and dialogs |
+| `Input` | Interaction ownership, touch and mouse lifecycle, pinch, box/multi selection, sliders and floating surfaces |
 | `App` | Live authoritative layout, groups/preferences, checkpoints, previews, recovery, lifecycle and UI coordination |
 | `Bootstrap` | Service/client startup, bounded waits, public session reservation and duplicate prevention |
 
@@ -33,31 +35,39 @@ Matching requires a unique exact compatible hierarchy. Changes in name, parent, 
 
 Discovery records accessible objects, while the UI/hit list filters visibility. A baseline is captured once per actual object before editor transforms. New instances get new baselines. Saved layouts specify absolute Position/Size UDim components so reapplication does not add offsets repeatedly. Baselines and live objects stay in runtime adapters; portable states survive destruction.
 
+## Coordinates and layout
+
+Editing calculations use the Core UI safe-area coordinate system. Roblox documents GUI `AbsolutePosition`, pointer `InputObject.Position`, and `GetGuiObjectsAtPosition()` in that shared space. `GetMouseLocation()` provides an uninset point, so its adapter applies the top-left inset. UI placement subtracts the overlay parent's actual absolute origin before constructing an offset. `GuiService:GetInsetArea()` provides rectangles in the canonical space. The camera viewport describes device-safe dimensions and can differ from the full drawable area. [GuiBase2d API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/GuiBase2d.yaml), [BasePlayerGui API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/BasePlayerGui.yaml), [GuiService insets](https://create.roblox.com/docs/reference/engine/classes/GuiService#GetInsetArea), [Camera viewport source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/Camera.yaml)
+
+The layout planner uses the available safe area. A landscape toolbar leaves room for a floating, contextual inspector that can move away from the selection. Portrait places the inspector low and accounts for the software keyboard. The secondary workspace has its own scrollable body. [UI architecture decision](MOBILE_RESCUE.md#ui-architecture-decision)
+
 ## Transforms and groups
 
-Screen rectangles are `{x, y, w, h}` in the same coordinate space as InputObject positions and overlay absolute bounds. Target properties remain UDim scale-plus-offset values. Pixel edits adjust offsets using the object's anchor and accumulated supported UIScale factors; they do not discard scale components. Group transforms prune descendants when a selected ancestor already moves them.
+Screen rectangles are `{x, y, w, h}`. Target properties remain UDim scale-plus-offset values. Pixel edits use a stable transaction reference to adjust offsets with the object's anchor and supported UIScale factors, preserving scale components. Group transforms prune descendants when a selected ancestor already moves them.
 
-The transform adapter validates intended roots before writing an interactive operation. If a write fails, the selection rolls back. Applying a saved layout may skip individual incompatible/missing elements and report counts. It applies ancestors before descendants so explicit saved nested properties remain meaningful.
+The transform adapter validates intended roots before writing. A completed edit waits for bounded geometry verification. Failure restores the transaction's original properties and leaves history at its prior state. Saved restoration can skip individual unavailable elements, reports counts, and applies ancestors before descendants.
 
-The minimum interactive screen dimension is 16 pixels. Invalid/non-finite values are rejected. Position is not clamped silently; offscreen placement remains deliberate and recovery is separate. Default proportional group scaling uses the opposite corner. Equal-size and center-based modes are explicit preferences.
+The minimum interactive dimension is 16 Roblox UI units. Invalid values are rejected. Explicit position entry permits offscreen placement, and Recovery can bring a selection back. Group tools can scale the whole selection proportionally or adjust the dimensions of each supported member by the same amount. The anchor preference controls center-based adjustments.
 
 Properties controlled by layouts/constraints are experimental where reversible property edits are possible. They need explicit approval. Some structures remain unsupported. A bounded stabilization observation checks whether changes held; repeated failure suspends overrides. No continuous property-enforcement loop disables Roblox movement or fights the game indefinitely.
 
 ## History, checkpoints, and previews
 
-`beginGesture` captures the pre-action portable state. Pointer updates modify the live layout without appending history frames. `endGesture` commits one before/after entry. Keyboard/numeric/group actions use the same completed-transaction principle. History holds at most 80 actions.
+`beginGesture` captures the pre-action portable state after the pointer crosses its motion threshold. Pointer updates modify the live layout. Gesture completion verifies final geometry before committing one before/after entry. Keyboard, numeric and group actions use the same completed-transaction principle. History holds at most 80 actions.
 
-Save waits for the bounded transform stabilization observation and refuses to persist if the layout changes or rolls back; review the result before retrying. Successful persistence establishes the checkpoint. With unsupported file APIs, a valid Save establishes an explicitly memory-only checkpoint. A failed file write preserves the previous checkpoint and dirty state; the valid candidate remains available for manual export. Save leaves undo entries intact. Undoing a saved action changes the live state and dirty comparison; it does not save automatically. Cancel restores the checkpoint and clears transient undo/redo branches.
+Save waits for bounded stabilization. A successful write and readback establishes the durable checkpoint. Where file APIs are absent, Save establishes an explicitly memory-only checkpoint. A failed write preserves the previous checkpoint and dirty state. JSON export represents the latest accepted checkpoint. Save retains undo entries in the current edit context. Undo, redo and discard verify restoration before changing history. Dirty status compares the resulting layout with the checkpoint.
 
-Profile/import preview stores a separate pre-preview state and candidate configuration. Previewing a lower-scope profile disables applicable higher-scope active slots in the candidate only, ensuring the chosen layer is visible and the Save destination is unambiguous. The definitions remain intact. Cancel restores that state, activation metadata, and prior suspension. Apply activates the candidate in memory and starts the new profile session's history; Save is explicit. Unsaved draft recovery also uses preview so it cannot silently alter gameplay at startup.
+Profile and import previews carry separate candidate data. Preview chooses the edited scope and retains normal resolution, including more-specific active layers. Cancel restores the prior state and suspension. Apply selects the edit destination in memory. Save persists activation and changes, and detects when a more-specific profile prevents a broader-layer edit from matching the live result. Draft recovery uses preview and requires explicit Apply.
 
 ## Configuration precedence
 
 The root schema has `version = 3`, a profile array, an `active` map, and validated editor preferences. Each profile has an ID/name, scope qualifiers, a layout map, named groups, and preferences. An active-map key is derived from `(scope, scopeId, device, orientation)`, permitting one active profile per scope key.
 
-Resolution merges global → experience → place → device → orientation. Device/orientation scopes are place-bound. General orientation entries merge before device-specific orientation entries. Only applicable active profiles contribute. Global entries/groups may reference recognized built-in controls only; this prevents a game's custom HUD from leaking into another game through defaults.
+Resolution merges global → experience → place → device → orientation. Device and orientation scopes are place-bound. General orientation entries merge before device-specific orientation entries. Applicable active profiles contribute. Global layout and group entries may reference recognized built-in controls only.
 
-Native UDim scale values continue to adapt when parents/viewports change; offsets remain fixed. Orientation changes can resolve matching overrides when there is no active unsaved draft/preview. If unsaved work exists, it is retained and the user is told to apply a profile deliberately. No heuristic rewrites offsets based on screen ratios.
+Existing V3 full entries load and resolve with their original precedence. A save can add sparse overrides for inherited properties, explicit removal markers or group removals to preserve layer boundaries. New values use the same staged write and backup process. Earlier V3 readers may reject configurations containing those extensions. Retain the prior validated backup if you need to reopen the configuration with an earlier build.
+
+UDim scale values adapt when parent bounds change, and offsets remain fixed in Roblox units. Rotation during an unsaved editing session retains the original orientation as its save and draft context. Save or discard concludes that session and loads the current orientation's matching overrides.
 
 ## Storage and recovery
 
@@ -72,7 +82,7 @@ Before overwriting the primary, Storage validates it, stages the new JSON, prese
 
 Imports are JSON only, size-limited to 2 MiB, schema/range/count checked, then merged into a preview. Conflicting existing profile content requires explicit confirmation. No input is evaluated as Lua. Clipboard success means the API accepted the data; the user still verifies pasting.
 
-Draft writes are debounced. Recovery is offered only for the matching context and requires a user action. Invalid draft content is preserved until explicitly discarded. Safe Mode restores available baselines, suspends profile/experimental application, and leaves saved data untouched.
+Draft writes are debounced. Recovery checks the editing context and, for new drafts, its saved profile and baseline reference. A changed reference preserves the stored draft and prevents automatic application. Safe Mode restores available baselines, suspends profile and experimental application, and preserves saved data.
 
 ## Startup and cleanup
 
@@ -80,7 +90,7 @@ Bootstrap waits at most 15 seconds each for LocalPlayer and PlayerGui, then repo
 
 `HeavenlyAxisOptions.LoaderOnly` creates the restoration/runtime path without constructing the complete editor. The shared `LoaderOnly` option remains true until explicitly changed; rerunning alone does not open the editor while it is true. Call `:Open()` or set `LoaderOnly = false` before rerunning. `:Open()` lazily adds UI/input; `:Close()` releases editing interactions and keeps restoration available. `:SafeMode()` restores originals and opens recovery controls. `:Destroy()` disconnects subscriptions and restores available originals by default.
 
-Discovery is event-driven with debounced structural refreshes. It does not scan the entire PlayerGui tree every render frame. Gesture alignment candidates are cached at gesture start. Experimental observations and startup waits are bounded. Owners disconnect subscriptions, destroy their GUI, and invalidate deferred callbacks through lifecycle guards.
+Discovery uses debounced structural refreshes and caches tree ordering and classifications. Elements pages render bounded row batches from their current search and discovery revision. Gesture alignment candidates are computed once at drag start. Input and overlay updates during a gesture avoid management list rebuilds. Experimental observations and startup waits are bounded. Owners disconnect subscriptions, destroy their GUI, and invalidate deferred callbacks through lifecycle guards.
 
 ## Change discipline
 

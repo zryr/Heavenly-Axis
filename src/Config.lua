@@ -4,6 +4,9 @@ local Identity = require("Identity")
 local Config = { VERSION = 3 }
 local MAX_PROFILES, MAX_LAYOUT, MAX_GROUPS, MAX_MEMBERS = 64, 512, 64, 128
 local scopes = { global = true, experience = true, place = true, device = true, orientation = true }
+local priorities = { global = 1, experience = 2, place = 3, device = 4, orientation = 5 }
+local optionalProperties = { rotation = true, transparency = true, experimental = true, viewport = true }
+Config.LAYOUT_PROPERTIES = { "position", "size", "rotation", "transparency", "experimental", "viewport" }
 local builtins = { JumpButton = true, ThumbstickFrame = true, DynamicThumbstickFrame = true }
 local booleanPrefs = { grid = true, snapping = true, multiSelect = true, boxSelect = true,
     aspectLock = true, centerScale = true, equalSize = true, launcherHidden = true,
@@ -87,16 +90,30 @@ local function udim(value, size)
     return true
 end
 
-function Config.validateLayout(layout, global)
+function Config.validateLayout(layout, global, overrides)
     if not mapCount(layout, MAX_LAYOUT) then return false, "Layout exceeds limits or is not a map" end
     for key, entry in pairs(layout) do
         if not fields(entry, { descriptor = true, position = true, size = true, rotation = true,
-            transparency = true, experimental = true, viewport = true }) then return false, "Invalid layout entry" end
+            transparency = true, experimental = true, viewport = true,
+            inherit = overrides, removed = overrides, clear = overrides }) then return false, "Invalid layout entry" end
         local valid, reason = Config.validateDescriptor(entry.descriptor)
         if not valid then return false, reason end
         if key ~= Identity.key(entry.descriptor) then return false, "Layout key differs from its identity" end
         if global and not validBuiltin(entry.descriptor) then return false, "Global profiles may contain only recognized built-in controls" end
-        if not udim(entry.position, false) or not udim(entry.size, true) then return false, "Invalid position or size" end
+        if entry.removed ~= nil then
+            if entry.removed ~= true or not fields(entry, { descriptor = true, removed = true }) then return false, "Invalid override removal" end
+        elseif entry.inherit ~= nil then
+            if entry.inherit ~= true or (entry.position ~= nil and not udim(entry.position, false))
+                or (entry.size ~= nil and not udim(entry.size, true)) then return false, "Invalid inherited geometry" end
+            if entry.clear ~= nil then
+                if not fields(entry.clear, optionalProperties) then return false, "Invalid inherited property removal" end
+                for property, remove in pairs(entry.clear) do
+                    if remove ~= true or entry[property] ~= nil then return false, "Conflicting inherited property removal" end
+                end
+            end
+        elseif entry.clear ~= nil or not udim(entry.position, false) or not udim(entry.size, true) then
+            return false, "Invalid position or size"
+        end
         if entry.rotation ~= nil and not number(entry.rotation, -360, 360) then return false, "Invalid rotation" end
         if entry.transparency ~= nil and not number(entry.transparency, 0, 1) then return false, "Invalid transparency" end
         if entry.experimental ~= nil and type(entry.experimental) ~= "boolean" then return false, "Invalid experimental approval" end
@@ -106,18 +123,21 @@ function Config.validateLayout(layout, global)
     return true
 end
 
-function Config.validateGroups(groups, global)
+function Config.validateGroups(groups, global, overrides)
     if not mapCount(groups, MAX_GROUPS) then return false, "Invalid group map" end
     for name, members in pairs(groups) do
-        if not text(name, 64) or not name:match("%S") or not array(members, MAX_MEMBERS) then return false, "Invalid group name or member count" end
-        local seen = {}
-        for _, descriptor in ipairs(members) do
-            local valid, reason = Config.validateDescriptor(descriptor)
-            if not valid then return false, reason end
-            if global and not validBuiltin(descriptor) then return false, "Global groups may contain only built-in controls" end
-            local key = Identity.key(descriptor)
-            if seen[key] then return false, "Duplicate group member" end
-            seen[key] = true
+        if not text(name, 64) or not name:match("%S") then return false, "Invalid group name" end
+        if members ~= false or not overrides then
+            if not array(members, MAX_MEMBERS) then return false, "Invalid group member count" end
+            local seen = {}
+            for _, descriptor in ipairs(members) do
+                local valid, reason = Config.validateDescriptor(descriptor)
+                if not valid then return false, reason end
+                if global and not validBuiltin(descriptor) then return false, "Global groups may contain only built-in controls" end
+                local key = Identity.key(descriptor)
+                if seen[key] then return false, "Duplicate group member" end
+                seen[key] = true
+            end
         end
     end
     return true
@@ -140,9 +160,9 @@ function Config.validateProfile(profile)
     if (profile.scope == "experience" or profile.scope == "place") and (profile.device ~= nil or profile.orientation ~= nil) then return false, "Use device/orientation scope for device overrides" end
     if profile.scope == "device" and (profile.device == nil or profile.orientation ~= nil) then return false, "Device profile requires a device only" end
     if profile.scope == "orientation" and profile.orientation == nil then return false, "Orientation profile requires orientation" end
-    local valid, reason = Config.validateLayout(profile.layout, profile.scope == "global")
+    local valid, reason = Config.validateLayout(profile.layout, profile.scope == "global", true)
     if not valid then return false, reason end
-    valid, reason = Config.validateGroups(profile.groups or {}, profile.scope == "global")
+    valid, reason = Config.validateGroups(profile.groups or {}, profile.scope == "global", true)
     if not valid then return false, reason end
     return preferences(profile.preferences or {})
 end
@@ -189,20 +209,38 @@ function Config.applies(profile, context)
     return profile.scope == "orientation" and profile.orientation == context.orientation
 end
 
-function Config.resolve(data, context)
+function Config.activeProfiles(data, context)
+    local active = {}
+    for _, profile in ipairs(data.profiles) do
+        if Config.applies(profile, context) and data.active[Config.scopeKey(profile)] == profile.id then
+            active[#active + 1] = profile
+        end
+    end
+    table.sort(active, function(a, b)
+        if a.scope ~= b.scope then return priorities[a.scope] < priorities[b.scope] end
+        -- General orientation profiles merge before device-specific ones.
+        return a.device == nil and b.device ~= nil
+    end)
+    return active
+end
+
+function Config.resolve(data, context, beforeProfile)
     local layout, prefs, groups = {}, Util.copy(data.preferences or {}), Util.copy(data.groups or {})
-    for _, scope in ipairs({ "global", "experience", "place", "device", "orientation" }) do
-        -- General orientation profiles merge before device-specific orientation profiles.
-        for _, deviceSpecific in ipairs({ false, true }) do
-            for _, profile in ipairs(data.profiles) do
-                if profile.scope == scope and Config.applies(profile, context)
-                    and data.active[Config.scopeKey(profile)] == profile.id
-                    and (profile.device ~= nil) == deviceSpecific then
-                    for key, entry in pairs(profile.layout) do layout[key] = Util.copy(entry) end
-                    for key, value in pairs(profile.preferences or {}) do prefs[key] = Util.copy(value) end
-                    for key, members in pairs(profile.groups or {}) do groups[key] = Util.copy(members) end
+    for _, profile in ipairs(Config.activeProfiles(data, context)) do
+        if profile.id == beforeProfile then break end
+        for key, entry in pairs(profile.layout) do
+            if entry.removed then layout[key] = nil
+            elseif not entry.inherit then layout[key] = Util.copy(entry)
+            elseif layout[key] then
+                for _, property in ipairs(Config.LAYOUT_PROPERTIES) do
+                    if entry[property] ~= nil then layout[key][property] = Util.copy(entry[property]) end
+                    if entry.clear and entry.clear[property] then layout[key][property] = nil end
                 end
             end
+        end
+        for key, value in pairs(profile.preferences or {}) do prefs[key] = Util.copy(value) end
+        for key, members in pairs(profile.groups or {}) do
+            if members == false then groups[key] = nil else groups[key] = Util.copy(members) end
         end
     end
     return layout, prefs, groups

@@ -14,14 +14,27 @@ local function signal()
         Fire = function(_, ...)
             for _, entry in ipairs(callbacks) do if entry.active then entry.callback(...) end end
         end,
+        Count = function()
+            local count = 0
+            for _, entry in ipairs(callbacks) do if entry.active then count = count + 1 end end
+            return count
+        end,
     }
 end
-Enum = {UserInputType = {Touch = "touch", MouseButton1 = "mouse1", MouseMovement = "mouseMove", Keyboard = "keyboard"}, KeyCode = {}}
+Enum = {UserInputType = {Touch = "touch", MouseButton1 = "mouse1", MouseMovement = "mouseMove", Keyboard = "keyboard"},
+    UserInputState = {Cancel = "cancel"}, KeyCode = {}}
 for _, name in ipairs({"F8", "F9", "Z", "Y", "S", "B", "Escape", "Left", "Right", "Up", "Down",
     "LeftShift", "RightShift", "LeftControl", "RightControl", "LeftAlt", "RightAlt", "Unknown"}) do Enum.KeyCode[name] = name end
 UDim2 = {fromOffset = function(x, y) return {x = x, y = y} end}
 local Input = require("Input")
-local function pointer(kind, x, y) return {UserInputType = kind, Position = {X = x, Y = y}} end
+local function pointer(kind, x, y)
+    local input = {UserInputType = kind, Position = {X = x, Y = y}, StateChanged = signal()}
+    function input:GetPropertyChangedSignal(property)
+        assert(property == "UserInputState")
+        return self.StateChanged
+    end
+    return input
+end
 local function setup()
     local ui = {visible = true, handles = {}, gui = {AbsoluteSize = {X = 800, Y = 600}}}
     local function button(x, y, w, h)
@@ -30,9 +43,18 @@ local function setup()
     ui.canvas = button(0, 0, 800, 600)
     ui.slider = button(300, 500, 200, 30)
     ui.launcher = button(0, 300, 44, 44)
-    function ui:pointInPanel(x, y) return y >= 480 end
+    ui.inspectorGrip = button(310, 480, 180, 20)
+    ui.handles[1] = {gui = button(107, 107, 44, 44), handle = "se"}
+    function ui:pointInPanel(x, y) return self.modalOpen or y >= 480 or (x <= 44 and y >= 300 and y <= 344) end
+    function ui:inspectorPosition() return 300, 480 end
+    function ui:moveInspector(x, y) self.inspectPos = {x = x, y = y} end
+    function ui:finishInspectorMove(abort) self.inspectorFinished = {cancelled = abort} end
+    function ui:moveLauncher(x, y) self.launcherPos = {x = x, y = y} end
+    function ui:finishLauncherMove(abort) self.launcherFinished = {cancelled = abort} end
+    function ui:setSliderDragging(dragging) self.sliderDragging = dragging end
     function ui:setBox(value) self.lastBox = value end
     function ui:setGuides(value) self.lastGuides = value end
+    function ui:setOverlaps(value) self.overlaps = value end
     local uis = {InputChanged = signal(), InputEnded = signal(), InputBegan = signal(),
         WindowFocusReleased = signal(), modifiers = {}}
     function uis:IsKeyDown(key) return self.modifiers[key] == true end
@@ -47,6 +69,14 @@ local function setup()
         return rects, keys
     end
     function app:currentBounds() return Geometry.bounds(self:getRects()) end
+    function app:sizeInfo()
+        local bounds = self:currentBounds()
+        if bounds then return {minimum = 50, maximum = 200, scale = bounds.w, bounds = bounds} end
+    end
+    function app:sizeRects(rects, w, h, center)
+        local bounds = Geometry.bounds(rects)
+        return Geometry.scale(rects, {x = bounds.x, y = bounds.y, w = w, h = h}, center)
+    end
     function app:beginGesture() self.starts = self.starts + 1; self.before = {x = self.rects.a.x, y = self.rects.a.y, w = self.rects.a.w, h = self.rects.a.h} end
     function app:updateGesture(rects, keys) for i, key in ipairs(keys) do self.rects[key] = rects[i] end end
     function app:endGesture() self.ends = self.ends + 1 end
@@ -63,10 +93,14 @@ local function setup()
     function app:save() self.saves = (self.saves or 0) + 1 end
     function app:move(x, y) self.moves = {x, y} end
     local record = {key = "a", editable = true, object = {Parent = nil, AbsolutePosition = {X = 0, Y = 0}, AbsoluteSize = {X = 100, Y = 100}}}
-    app.discovery = {}
+    app.discovery = {alignmentCalls = 0}
     function app.discovery:hit(x, y) if x <= 100 and y <= 100 then return {record} else return {} end end
     function app.discovery:list() return {record} end
     function app.discovery:get(key) return key == "a" and record or nil end
+    function app.discovery:alignmentRects()
+        self.alignmentCalls = self.alignmentCalls + 1
+        return {}
+    end
     local input = Input.new(app, ui, {UserInputService = uis})
     return app, ui, uis, input
 end
@@ -74,7 +108,10 @@ end
 local app, ui, uis, controller = setup()
 local finger = pointer("touch", 20, 20)
 ui.canvas.InputBegan:Fire(finger)
-check(app.starts == 1, "drag begins exactly one transaction")
+check(app.starts == 0 and controller:isBusy(), "press owns the canvas without starting a transaction")
+finger.Position = {X = 23, Y = 23}
+uis.InputChanged:Fire(finger)
+check(app.starts == 0 and app.rects.a.x == 0, "tap jitter stays below the touch movement threshold")
 local other = pointer("touch", 25, 25)
 uis.InputChanged:Fire(other)
 uis.InputEnded:Fire(other)
@@ -82,9 +119,21 @@ check(app.rects.a.x == 0 and app.ends == 0, "unrelated touch cannot move or end 
 finger.Position = {X = 50, Y = 70}
 uis.InputChanged:Fire(finger)
 check(app.rects.a.x == 30 and app.rects.a.y == 50, "touch position drives drag directly")
+uis.InputChanged:Fire(finger)
+check(app.starts == 1 and app.discovery.alignmentCalls == 1, "one drag snapshots alignment targets once")
 uis.InputEnded:Fire(finger)
 uis.InputEnded:Fire(finger)
 check(app.ends == 1, "one completed drag is one history action")
+check(finger.StateChanged:Count() == 0, "end disconnects the pointer state watcher")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 35, Y = 38}
+uis.InputEnded:Fire(finger)
+check(app.starts == 1 and app.ends == 1 and app.rects.a.x == 15 and app.rects.a.y == 18,
+    "a final touch position omitted from InputChanged finalizes a fast drag")
 controller:destroy()
 
 app, ui, uis, controller = setup()
@@ -132,10 +181,11 @@ controller:destroy()
 app, ui, uis, controller = setup()
 local mouse = pointer("mouse1", 350, 510)
 ui.slider.InputBegan:Fire(mouse)
+check(app.rects.a.w == 100 and app.starts == 0, "slider press does not jump before a tap or drag is recognized")
 uis.InputChanged:Fire(pointer("mouseMove", 400, 510))
 uis.InputChanged:Fire(pointer("mouseMove", 450, 510))
 uis.InputEnded:Fire(pointer("mouse1", 450, 510))
-check(close(app.rects.a.w, 388) and app.starts == 1 and app.ends == 1, "continuous slider session creates one action")
+check(close(app.rects.a.w, 162.5) and app.starts == 1 and app.ends == 1, "relative slider drag creates one action")
 controller:destroy()
 
 app, ui, uis, controller = setup()
@@ -197,6 +247,131 @@ uis.modifiers.LeftControl = true
 uis.InputBegan:Fire({UserInputType = "keyboard", KeyCode = "S"}, false)
 ui.slider.InputBegan:Fire(pointer("touch", 350, 510))
 check(not app.saves and app.starts == 0, "modal shields keyboard and behind-modal slider gestures")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.selection = {}
+finger = pointer("touch", 10, 10)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 14, Y = 14}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.starts == 0 and #ui.overlaps == 1, "tap latches selection and overlap choices without history")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 375, 510)
+ui.slider.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.starts == 0 and app.rects.a.w == 100, "offset thumb tap is a no-op")
+finger = pointer("touch", 375, 510)
+ui.slider.InputBegan:Fire(finger)
+finger.Position = {X = 415, Y = 510}
+uis.InputChanged:Fire(finger)
+local lower, upper = controller:sliderRange()
+check(lower == 50 and upper == 200 and ui.sliderDragging, "horizontal ownership anchors range and pauses competing scrolling")
+uis.InputEnded:Fire(finger)
+check(app.ends == 1 and close(app.rects.a.w, 130) and app.rects.a.x == 0 and app.rects.a.y == 0,
+    "thumb drag preserves grab offset and resize stays anchored at its top-left")
+check(controller:sliderRange() == nil and ui.sliderDragging == false, "released slider restores native scrolling and the selection range")
+finger = pointer("touch", 490, 510)
+ui.slider.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.ends == 2 and close(app.rects.a.w, 192.5), "track tap maps to the same relative range")
+finger = pointer("touch", 340, 510)
+ui.slider.InputBegan:Fire(finger)
+finger.Position = {X = 350, Y = 550}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.ends == 2 and close(app.rects.a.w, 192.5) and ui.sliderDragging == false,
+    "vertical scrolling from the slider neither resizes nor pauses native scrolling")
+finger = pointer("touch", 445, 510)
+ui.slider.InputBegan:Fire(finger)
+finger.Position = {X = 405, Y = 511}
+uis.InputChanged:Fire(finger)
+check(ui.sliderDragging and app.rects.a.w < 192.5, "accepted slider drag locks scrolling while updating the selection")
+uis.WindowFocusReleased:Fire()
+check(ui.sliderDragging == false and app.cancels == 1 and close(app.rects.a.w, 192.5),
+    "cancel restores scrollbar and the selection's pre-drag size")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 15, 15)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 45, Y = 45}
+uis.InputChanged:Fire(finger)
+second = pointer("touch", 90, 90)
+ui.canvas.InputBegan:Fire(second)
+uis.InputChanged:Fire(second)
+check(app.starts == 1 and close(app.rects.a.w, 100) and close(app.rects.a.x, 30), "pinch promotion starts from last tracked drag geometry")
+second.Position = {X = 135, Y = 135}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 200) and close(app.rects.a.x, 15), "promoted pinch scales around the current two-finger midpoint")
+second.UserInputState = Enum.UserInputState.Cancel
+second.StateChanged:Fire()
+check(app.cancels == 1 and app.ends == 0 and app.rects.a.x == 0 and app.rects.a.w == 100,
+    "cancel signal rolls back an interrupted drag-to-pinch even without InputEnded")
+check(second.StateChanged:Count() == 0 and finger.StateChanged:Count() == 0, "cancel disconnects both pinch watchers")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 120, 120)
+ui.canvas.InputBegan:Fire(finger)
+ui.handles[1].gui.InputBegan:Fire(finger)
+finger.Position = {X = 140, Y = 150}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.starts == 1 and app.ends == 1 and app.rects.a.w == 120 and app.rects.a.h == 130 and app.rects.a.x == 0,
+    "external handle has one resize owner regardless of canvas and handle signal order")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 340, 490)
+ui.canvas.InputBegan:Fire(finger)
+ui.inspectorGrip.InputBegan:Fire(finger)
+other = pointer("touch", 10, 10)
+ui.canvas.InputBegan:Fire(other)
+other.Position = {X = 30, Y = 40}
+uis.InputChanged:Fire(other)
+uis.InputEnded:Fire(other)
+finger.Position = {X = 300, Y = 470}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(ui.inspectPos.x == 260 and ui.inspectPos.y == 460 and ui.inspectorFinished.cancelled == false
+    and app.starts == 0 and app.rects.a.x == 0, "inspector drag owns its finger independently of the canvas")
+finger = pointer("touch", 10, 310)
+ui.launcher.InputBegan:Fire(finger)
+finger.Position = {X = 40, Y = 350}
+uis.InputChanged:Fire(finger)
+controller:cancel()
+check(ui.launcherPos.x == 30 and ui.launcherPos.y == 340 and ui.launcherFinished.cancelled == true and app.editing,
+    "launcher cancellation hands placement rollback to UI without toggling editing")
+finger = pointer("touch", 10, 310)
+ui.launcher.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(not app.editing, "launcher tap closes the editor")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+function app:updateGesture() return false end
+finger = pointer("touch", 10, 10)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 40, Y = 40}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.starts == 1 and app.cancels == 1 and app.ends == 0 and not controller:isBusy(),
+    "rejected pointer update closes only its own transaction without committing history")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.preferences.boxSelect = true
+finger = pointer("touch", -5, -5)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 104, Y = 104}
+uis.InputChanged:Fire(finger)
+check(ui.lastBox.x == -5 and ui.lastBox.w == 109, "touch box selection preserves canonical negative origin")
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.starts == 0 and ui.lastBox == nil, "touch box selects a contained element without transform history")
 controller:destroy()
 
 return checks

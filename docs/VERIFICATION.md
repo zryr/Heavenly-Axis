@@ -1,81 +1,73 @@
-# V3 implementation and verification report
+# V3 mobile rescue verification
 
-Report date: **2026-11-04 (America/Chicago)**. Device/Studio execution was not available in this implementation environment. The statuses below distinguish implementation and automated evidence from actual Roblox runtime verification.
+Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
-## Available checks
+## Executed checks
 
-The following commands were executed against the assembled implementation:
-
-| Command | Actual result |
+| Command | Result |
 | --- | --- |
-| `python3 -m pip install -r requirements-dev.txt` | Passed — Lupa 2.6 development runtime installed |
-| `python3 tools/build.py` | Passed — generated 202,498-byte `dist/HeavenlyAxis.lua` and byte-identical `Source` |
-| `python3 tools/build.py --check` | Passed — committed-output comparison against deterministic generation |
-| `python3 tools/test.py` | Passed — 7 suites, 450 reported checks, 17 Lua syntax checks, 0 failures |
-| `python3 tools/luau_check.py` | Passed — Luau 0.728 compiled 24 files |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 301,812 bytes. |
+| `work/test-venv/bin/python tools/test.py` | Passed. Eight suites, 693 checks, 19 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 27 files. |
+| `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-Final suite counts: app 53, core 54, input 21, persistence 90, release 4, runtime 176, UI 52. `git diff --check` also Passed. Tests are pure/mocked. They do not constitute a Roblox client, Studio rendering run, executor test, or physical-device test.
+The test suites cover App orchestration (79), core geometry and history (57), discovery (33), input (46), persistence (116), bundle startup (4), transform and runtime adapters (253), and UI layout and interactions (105). The UI suite instantiates the production UI and input controller in a Lua fixture and exercises the touch editing loop. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
 
-Automated coverage includes schema/import limits and malformed values, scope precedence, screen geometry, group scaling/alignment/distribution, nested root selection, identity ambiguity, bounded history/checkpoints, preview/cancel data integrity, local storage success/failure/backup/corruption behavior, draft separation, touch/mouse gesture ownership, idempotent transforms, unsupported targets, rollback, and runtime cleanup using mocks.
+## Acceptance gates
 
-## Acceptance mapping
+| Gate | Status | Evidence and remaining validation |
+| --- | --- | --- |
+| A · Immediate usability | Not Tested | Headless layout calculations and baseline comparison below. Verify the complete jump workflow and visible gameplay in landscape. |
+| B · Touch interaction | Not Tested | Mock gesture ownership, tap threshold, pinch, slider and cancellation. Verify real simultaneous touches, scroll inertia and editor dismissal. |
+| C · Geometry and selection | Not Tested | Mock inset boundaries, ranking and guarded transforms. Compare actual touch point, outline and HUD geometry across all inset probes and orientations. |
+| D · Responsive layout | Not Tested | Simulated viewport, safe-area and keyboard geometry. Render short landscape, portrait and tablet, and test moving and hiding the inspector. |
+| E · Visual quality | Not Tested | Studio rendering and screenshots were unavailable. Inspect actual spacing, legibility, modal sizing, control glyphs and clipped states. |
+| F · Persistence and recovery | Not Tested | Mock checkpoint, storage failure, profile layers, saved restoration and draft recovery. Verify Android persistence, startup restoration and Safe Mode independently. |
+| G · Performance | Not Tested | Source audit and mocked scan, list rebuild and cleanup checks. Measure client responsiveness on the 240-element fixture and a physical Android device. |
+| H · Evidence | Passed | All gates have an explicit status. The reproducible protocol below records Studio and device evidence independently. |
 
-“Implemented” describes code present in this PR. The status column describes available verification of the full user-facing criterion. Use the detailed protocol in [TESTING.md](TESTING.md) to promote runtime rows only after collecting evidence.
+## Headless layout comparison
 
-| # | Acceptance criterion | Implementation and evidence | Full runtime status |
+The baseline ran through the original mobile UI's layout mock. The rescue runs the pure responsive planner. Both use representative Roblox UI dimensions and a 24-unit top inset. The area figures compare the original panel with the rescue toolbar and selected Quick Edit inspector. The toolbar alone takes less space before selection.
+
+| Landscape viewport | Baseline panel and scroll body | Baseline area | Rescue Quick Edit | Rescue area |
+| --- | --- | ---: | --- | ---: |
+| 1536 × 695 | 1520 × 364.7, body 132.7 high | 51.9% | 262 × 202 | 6.9% |
+| 960 × 440 | 944 × 302, body 70 high | 67.5% | 262 × 202 | 17.5% |
+| 640 × 360 | 624 × 234, body 70 high | 63.4% | 262 × 202 | 32.1% |
+| 932 × 430 | 916 × 302, body 70 high | 69.0% | 262 × 202 | 18.5% |
+
+The fixture loaded, toggled all four inset configurations, added and removed its 240-object collection, recreated its mock HUD, and released its owned screens and connections in Lua mocks. The Roblox geometry probe is available for Studio execution. [Controlled fixture protocol](TESTING.md#controlled-studio-fixture)
+
+## Headless indexing comparison
+
+The same headless Roblox mock indexed 240 sibling controls inside a shared parent. The measurements count hierarchy work and installed property watchers. Client frame time and device memory remain unmeasured.
+
+| Startup measurement | Baseline | Rescue |
+| --- | ---: | ---: |
+| Descendant scans | 1 | 1 |
+| `GetChildren()` calls | 1,685 | 243 |
+| Entries returned by all `GetChildren()` calls | 173,763 | 242 |
+| Mock `IsA()` checks | 348,974 | 5,783 |
+| Owned property watchers | 964 | 726 |
+
+A second mock applied 120 updates to one selected control during one gesture. Classification calls dropped from 2,160 to 1 and `GetChildren()` enumerations from 6,840 to 1. Both versions made zero full-tree scans and queued zero stabilization timers during those updates. The rescue keeps the gesture reference for successive writes and verifies geometry on completion.
+
+## Compatibility
+
+| Target | Visual editing | Built-in effective touch behavior | Local files and startup |
 | --- | --- | --- | --- |
-| 1 | Direct/list compatible GUI selection | PlayerGui discovery, searchable hierarchy, hit selection, editor exclusion; matching/discovery mocks | Not Tested |
-| 2 | Intended touch/mouse movement | InputObject ownership, screen-space property adapter; pure/mocked movement cases | Not Tested |
-| 3 | Synchronized handles/pinch/slider/steps/numerics | Shared rectangle transforms and inspector refresh; gesture session tests | Not Tested |
-| 4 | Grid/guides with snapping off by default | Grid/guides overlays; pure snap calculations/default preference | Not Tested |
-| 5 | Temporary/named groups and alignment/distribution | Group membership and UI; geometry/group tests | Not Tested |
-| 6 | Avoid nested double transforms | Ancestor-root pruning; nested-selection and transform mocks | Not Tested in Roblox; automated cases Passed |
-| 7 | Honest jump/joystick editing | Priority built-in identities, visual adapter, explicit functional-region caveats | Not Tested; universal functional adaptation Unsupported |
-| 8 | Completed-action undo/redo across saves | Bounded before/after transactions and persistent checkpoint comparison; history/gesture tests | Not Tested in Roblox; automated cases Passed |
-| 9 | Save/Cancel/preview/profile consistency | Separate candidate previews and checkpoint state; profile/storage/history tests | Not Tested in Roblox; automated cases Passed |
-| 10 | Saved restoration after GUI recreation | Event discovery plus exact identity and absolute UDim application; mocked recreation/idempotence | Not Tested in Roblox; automated cases Passed |
-| 11 | Repeated execution does not duplicate/compound | Singleton reservation/reuse, lifecycle teardown, absolute restore; source/mocked checks | Not Tested in Roblox |
-| 12 | Missing/unsupported targets do not crash editor | Per-target compatibility/skips; runtime invalid/missing object tests | Not Tested in Roblox; automated cases Passed |
-| 13 | Honest storage/export/import results | Capability states, write/readback, validation and export fallback; storage failure tests | Not Tested on physical executor; automated cases Passed |
-| 14 | Small Android usability | Responsive bottom sheet, scrolling/collapse, touch-sized controls | Not Tested |
-| 15 | PC keyboard/mouse support | Shortcuts, focus guards, box/multi selection and mouse handles; input mocks | Not Tested |
-| 16 | Orientation/device/adaptive behavior | Scoped overrides, viewport events and preserved native UDim scale/offset semantics | Not Tested; no automatic proportional offset conversion |
-| 17 | Recoverable Safe Mode preserves saves | Suspension, original-baseline restore, public recovery API and separate delete | Not Tested in Roblox |
-| 18 | Opt-in reversible experimental adjustments | Explicit per-element approval, bounded stabilization/suspension, Safe Mode block | Not Tested in Roblox; mocks cover bounded/error paths |
-| 19 | Honest diagnostics/capabilities | Bounded log, unsupported reasons, failed/unverified state messages | Not Tested visually; storage/capability mocks Passed |
-| 20 | Reproducible build and automated checks | Deterministic bundler, checked-in releases, CI and Lua/Luau checks | Passed for executed commands above |
+| Delta on Android | Not Tested | Not Tested | Not Tested |
+| Arceus X on Android | Not Tested | Not Tested | Not Tested |
+| Codex Roblox executor on Android | Not Tested | Not Tested | Not Tested |
+| Authorized PC Roblox environment | Not Tested | Not Tested | Not Tested |
+| Roblox Studio mock HUD | Not Tested | Unsupported by fixture design | Executor file APIs unsupported in an ordinary LocalScript. Manual JSON export is available. |
+| Protected or inaccessible GUI | Unsupported | Unsupported | Profiles can retain the unresolved identity. |
 
-No physical Android/PC acceptance criterion is marked Passed solely because code compiled. No real built-in jump/classic/dynamic joystick touch region has been verified.
+The editor changes accessible GUI properties. Roblox movement implementations and game scripts with global input listeners can behave independently of those properties. File reads and writes, optional clipboard use, and startup depend on the actual environment. The runtime reports detected capabilities and observed failures.
 
-## Compatibility matrix
+## Android checks to run first
 
-| Target | Visual editing | Functional jump/joystick region | Persistent profiles | Automatic startup |
-| --- | --- | --- | --- | --- |
-| Delta, Android | Not Tested | Not Tested | Not Tested | Not Tested |
-| Arceus X, Android | Not Tested | Not Tested | Not Tested | Not Tested |
-| Codex (Roblox), Android | Not Tested | Not Tested | Not Tested | Not Tested |
-| Other Android environment | Not Tested | Not Tested | Not Tested | Not Tested |
-| PC executor | Not Tested | Not Tested | Not Tested | Not Tested |
-| Studio mock HUD | Not Tested visually | Unsupported — mocks do not implement Roblox movement | Unsupported for executor file APIs; in-memory/export path provided | Not Tested as LocalScript startup |
-| Protected/inaccessible GUI | Unsupported | Unsupported | Configuration may remain unmatched | Unsupported |
-
-## Known limitations and manual work
-
-- Actual Android touch precision, multi-touch ownership, inset/safe-area behavior, small-screen usability, launcher docking, and orientation transitions require device testing.
-- Built-in jump and both joystick variants require independent visual and effective-region tests. Dynamic Roblox controls may reposition or be recreated by Roblox. The editor does not patch their internal movement implementation.
-- Game scripts using global input listeners may still observe editing touches. The UI warns that complete gameplay isolation is unverified.
-- Matching is intentionally strict. Renamed/reparented/ambiguous targets remain unmatched until explicit remapping. Invisible elements are not exposed as direct editable hits.
-- Layout-managed, constrained, automatic-size, rotated-ancestor, or unusual scaled structures may be experimental or unsupported. Approved changes can still be rejected; repeated unstable targets are suspended rather than continuously enforced.
-- Pixel offsets remain pixels on different screens; native UDim scale components adapt. Use scoped profiles for different orientation/device layouts. No inferred fixed-resolution proportional remapping is claimed.
-- File storage and autoexecution are environment capabilities. Missing file APIs use memory/export; autoexecute setup is manual and must be verified after restart.
-- Portable executor file APIs do not guarantee atomic replacement. Staging, backups, readback, preserved corrupt files, and export mitigate failures without claiming crash-proof disk writes.
-- There was no Nexus screenshot in the supplied assets, so visual fidelity to that reference was not assessed.
-- The original repository had no license. Attribution/history were retained; no licensing grant was fabricated.
-
-## Remaining device checks
-
-Run every common protocol row in [TESTING.md](TESTING.md), then complete each environment's matrix independently. Prioritize one-finger drag, two/three-finger identity, pinch and slider history, actual jump/joystick response after resizing, profile preview Cancel fidelity, respawn/GUI recreation, duplicate execution, corrupt storage handling, Safe Mode, and portrait/landscape transitions. Record environment/version, device/OS, game/place, viewport, capability results, expected/actual behavior, and visual evidence.
-
-## Rebranding and delivery
-
-The connected GitHub repository already reports **`zryr/Heavenly-Axis`** with the original commit history. Looking up the old repository URL returned the same repository ID (`919802588`) and canonical name, verifying the redirect. No repository replacement, deletion, or history rewrite was made. The maintained source/UI/docs/releases use Heavenly Axis and preserve the Syshi/Danechka attribution. One comprehensive implementation branch/PR contains the rewrite; no merge is authorized by this task.
+1. In landscape on a compact or notched phone, open from the docked launcher. Tap JumpButton, then drag it, resize with the slider, pinch and handle, enter a size, and tap Save and Done. Reopen and verify the saved geometry and its actual jump response at the old and new positions.
+2. Scroll Elements, choose an overlapping control or explicit parent, then multi-select and move a group. Move or hide Quick Edit to reach controls below it. Test a third finger during pinch, interruption mid-drag, and rotation during a pending edit. Compare the selection outline and undo count after each operation.
+3. Test save failure and unsupported file access, a saved restore after respawn or restart, draft recovery, and Safe Mode. Verify the jump and both joystick visual and effective regions independently. [Full device protocol](TESTING.md)

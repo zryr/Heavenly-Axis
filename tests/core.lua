@@ -92,6 +92,29 @@ test("Proportional shrinking respects narrow members without distorting aspect",
     near(scaled[1].w, 80)
     near(scaled[1].h, 16)
 end)
+test("Clamped group scaling preserves the opposite handle corner", function()
+    local source = { { x = 0, y = 0, w = 20, h = 20 }, { x = 40, y = 40, w = 40, h = 40 } }
+    local scaled = Geometry.scale(source, { x = 60, y = 60, w = 20, h = 20 })
+    local bounds = Geometry.bounds(scaled)
+    near(bounds.x + bounds.w, 80)
+    near(bounds.y + bounds.h, 80)
+    near(scaled[1].w, 16)
+end)
+test("Individual group adjustments add equal pixel deltas at each opposite corner", function()
+    local source = { { x = 0, y = 0, w = 20, h = 24 }, { x = 40, y = 40, w = 40, h = 30 } }
+    local changed = Geometry.adjustMembers(source, Geometry.bounds(source), {x = -12, y = -8, w = 92, h = 78})
+    equal(changed, {{x = -12, y = -8, w = 32, h = 32}, {x = 28, y = 32, w = 52, h = 38}})
+end)
+test("Locked individual width adjustments preserve each ratio and center", function()
+    local source = { { x = 0, y = 0, w = 30, h = 20 }, { x = 40, y = 40, w = 60, h = 36 } }
+    local changed = Geometry.adjustMembers(source, Geometry.bounds(source), {x = 5, y = 1, w = 90, h = 74}, true, true)
+    for i, rect in ipairs(changed) do
+        near(rect.w, source[i].w - 6)
+        near(rect.w / rect.h, source[i].w / source[i].h)
+        near(rect.x + rect.w / 2, source[i].x + source[i].w / 2)
+        near(rect.y + rect.h / 2, source[i].y + source[i].h / 2)
+    end
+end)
 test("Empty bounds do not fabricate a selection", function() assert(Geometry.bounds({}) == nil) end)
 test("Alignment uses selection extent", function()
     local result = Geometry.align({ { x = 10, y = 20, w = 20, h = 20 }, { x = 40, y = 50, w = 30, h = 40 } }, "right")

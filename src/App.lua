@@ -1,6 +1,7 @@
 -- Heavenly Axis V3. Original project by Syshi; V2 inspired by Danechka.
 local Util = require("Util")
 local Geometry = require("Geometry")
+local Coordinates = require("Coordinates")
 local Config = require("Config")
 local Identity = require("Identity")
 local History = require("History")
@@ -12,7 +13,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.0.0"
+App.VERSION = "3.1.0"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -28,6 +29,17 @@ end
 local function exists(object)
     local ok, parent = pcall(function() return object.Parent end)
     return ok and parent ~= nil
+end
+
+local function resolvedState(layout, preferences, groups)
+    local state = {layout = Util.copy(layout or {}), groups = Util.copy(groups or {}), preferences = Util.copy(defaults)}
+    for key, value in pairs(preferences or {}) do state.preferences[key] = value end
+    return state
+end
+
+local function sameContext(a, b)
+    return a and b and a.experience == b.experience and a.place == b.place
+        and a.device == b.device and a.orientation == b.orientation
 end
 
 function App.new(env, services, playerGui, options)
@@ -55,10 +67,9 @@ function App.new(env, services, playerGui, options)
     local data, loadError = self.storage:load()
     if loadError then self:log(loadError) end
     self.profiles = Profiles.new(data or Config.empty(), self.storage, self.context, log)
-    local layout, prefs, groups = self.profiles:resolve()
-    self.layout, self.groups = Util.copy(layout or {}), Util.copy(groups or {})
-    for key, value in pairs(prefs or {}) do self.preferences[key] = value end
-    self.discovery = Discovery.new(playerGui, nil, log)
+    local initial = resolvedState(self.profiles:resolve())
+    self.layout, self.groups, self.preferences = initial.layout, initial.groups, initial.preferences
+    self.discovery = Discovery.new(playerGui, nil, log, services.GuiService)
     self.transform = Transform.new(self.discovery, log)
     if self.options.SafeMode then
         self.suspendedState = {layout = Util.copy(self.layout), groups = Util.copy(self.groups), preferences = Util.copy(self.preferences)}
@@ -67,24 +78,18 @@ function App.new(env, services, playerGui, options)
     end
     self.transform.onChanged = function()
         if not self.alive then return end
-        for key, entry in pairs(self.transform:capture()) do self.layout[key] = entry end
-        self:status("An unstable experimental transaction was rolled back. Repeated failures suspend that element.")
+        self.runtimeRevision = (self.runtimeRevision or 0) + 1
+        self:log("A runtime layout application was rolled back. Saved settings are preserved.")
+        if self.ui then self:status("A layout adjustment could not be applied. See Diagnostics.") end
         self:changed()
     end
-    self.discovery:start(function() self:_discoveryChanged() end)
+    self.discovery:start(function(reason) self:_discoveryChanged(reason) end)
     self:_applyLayout(self.layout, true)
-    self.history:checkpoint(self:getState())
     self.savedProfilesData = Util.copy(self.profiles.data)
     self.savedState = self:getState()
-    local draft, draftError = self.storage:loadDraft()
-    if draftError then self:log(draftError) end
-    if draft and draft.context and draft.context.place == self.context.place
-        and draft.context.experience == self.context.experience
-        and draft.context.device == self.context.device
-        and draft.context.orientation == self.context.orientation then
-        self.draft = draft
-        self:log("A recoverable unsaved draft is available in Profiles; it has not been applied.")
-    end
+    self.editBaseline = Util.copy(self.savedState)
+    self.history:checkpoint(self.savedState)
+    self:_loadDraft(self.context)
     self:_watchViewport()
     self:log("Initialized Heavenly Axis " .. self.version .. "; accessible PlayerGui objects only.")
     self:log("Control visuals are editable where accessible; functional jump/joystick touch regions are unverified.")
@@ -117,46 +122,87 @@ function App:_applyLayout(layout, replace, onlyNew)
     self.application = { applied = count or 0, skipped = skipped or 0 }
     return count, skipped
 end
-function App:_discoveryChanged()
-    if not self.alive or self.discoveryPending then return end
+function App:_discoveryChanged(reason)
+    if not self.alive then return end
+    if reason ~= "presentation" then self.discoveryRestorationRequested = true end
+    if self.discoveryPending then return end
     self.discoveryPending = true
     task.delay(0.12, function()
         self.discoveryPending = false
         if not self.alive then return end
-        if not self.gesture then self:_applyLayout(self.layout, false, true) end
+        if self.discoveryRestorationRequested then
+            self.discoveryRestorationRequested = nil
+            if not self.gesture and not self.finishingGesture then self:_applyLayout(self.layout, false, true)
+            else self.restoreAfterGesture = true end
+        end
         local selected = {}
         for _, key in ipairs(self.selection) do
             local record = self.discovery:get(key)
             if record and exists(record.object) then selected[#selected + 1] = key end
         end
-        self.selection = selected
+        if #selected ~= #self.selection then
+            if self.input then self.input:cancel() else self:cancelGesture() end
+            self.selection = selected
+            self.sizeReference = nil
+        end
         self.unmatched = self.transform:matches(self.layout)
         if self.ui then self.ui:refresh() end
     end)
 end
+function App:_currentEditContext()
+    return self.editContext or self.context
+end
+function App:_loadDraft(context)
+    local draft, reason, blocked = self.storage:loadDraft(context)
+    self.draft, self.recoveredDraft, self.draftBlocked = nil, nil, nil
+    if reason then self:log(reason) end
+    if blocked then self.draftBlocked = reason; return end
+    if not draft or not sameContext(draft.context, context) then return end
+    if draft.reference and not self.profiles:matchesDraftReference(draft.reference, context) then
+        self.draftBlocked = "Recovery draft preserved because its saved profile or baseline changed."
+        self:log(self.draftBlocked)
+        return
+    end
+    self.draft = draft
+    self:log("An unsaved draft is ready to preview in Recovery.")
+end
+function App:_adoptContext()
+    self.editContext = nil
+    self.profiles:setEditTarget(nil, self.context)
+    self.savedEditTarget = nil
+    self.launcherOverrides = nil
+    local state = resolvedState(self.profiles:resolve(self.context))
+    self:loadState(state)
+    self.savedState = self:getState()
+    self.editBaseline = Util.copy(self.savedState)
+    self.history = History.new(80)
+    self.history:checkpoint(self.savedState)
+    self:_loadDraft(self.context)
+end
 function App:_watchViewport()
     local function resize()
         if not self.alive then return end
-        if self.gesture then self:cancelGesture() end
+        if self.input then self.input:cancel() else self:cancelGesture() end
         local w, h = viewport(self.services)
         local orientation = w >= h and "landscape" or "portrait"
         if orientation ~= self.context.orientation then
-            local wasDirty = self.profileChanged or self.history:dirty(self:getState())
+            if self.previewState then self:profile("cancel") end
+            local previous = Util.copy(self:_currentEditContext())
+            local wasDirty = self.profileChanged or self.dirty or self.finishingGesture or self.saving
             self.context.orientation = orientation
-            self.draft = self.storage:loadDraft()
-            if not wasDirty and not self.previewState and not self.profiles.suspended then
-                local layout, prefs, groups = self.profiles:resolve()
-                local state = { layout = layout, preferences = Util.copy(defaults), groups = groups }
-                for k, v in pairs(prefs or {}) do state.preferences[k] = v end
-                self:loadState(state)
-                self.history:checkpoint(self:getState())
-                self.savedState = self:getState()
+            if not wasDirty and not self.profiles.suspended then
+                self:_adoptContext()
                 self:log("Applied " .. orientation .. " profile precedence.")
             else
-                self:log("Orientation changed; current draft retained. Apply a profile to load orientation overrides.")
+                self.editContext = not sameContext(previous, self.context) and previous or nil
+                if self.editContext and not self.profiles.suspended then
+                    self:status("Editing the " .. previous.orientation .. " layout. Save or discard to switch layouts.")
+                end
             end
         end
-        if self.ui then self.ui:refresh() end
+        if self.ui then
+            if self.ui.viewportChanged then self.ui:viewportChanged() else self.ui:refresh() end
+        end
     end
     local cameraConnection
     local function bindCamera()
@@ -173,25 +219,42 @@ function App:getState()
     if self.profiles.suspended and self.suspendedState then return Util.copy(self.suspendedState) end
     local layout = Util.copy(self.layout)
     for key, entry in pairs(self.transform:capture()) do layout[key] = entry end
-    return { layout = layout, groups = Util.copy(self.groups), preferences = Util.copy(self.preferences) }
+    local preferences = Util.copy(self.preferences)
+    for key, value in pairs(self.toolDefaults or {}) do preferences[key] = value end
+    return {layout = layout, groups = Util.copy(self.groups), preferences = preferences}
 end
-function App:loadState(state)
-    self.layout = Util.copy(state.layout or {})
-    self.groups = Util.copy(state.groups or {})
-    self.preferences = Util.copy(defaults)
-    for key, value in pairs(state.preferences or {}) do self.preferences[key] = value end
+function App:_setState(state, keepLauncher)
+    state = resolvedState(state.layout, state.preferences, state.groups)
+    self.layout, self.groups, self.preferences = state.layout, state.groups, state.preferences
+    if keepLauncher then
+        for key, value in pairs(self.launcherOverrides or {}) do self.preferences[key] = value end
+        for key in pairs(self.toolModes or {}) do self.toolDefaults[key] = self.preferences[key] end
+        for key, value in pairs(self.toolModes or {}) do self.preferences[key] = value end
+    else
+        self.launcherOverrides, self.toolModes, self.toolDefaults = nil, nil, nil
+        self.sizeReference = nil
+    end
+end
+function App:loadState(state, keepLauncher)
+    self:_setState(state, keepLauncher)
     self:_applyLayout(self.layout, true)
     self.unmatched = self.transform:matches(self.layout)
 end
+function App:_writeDraft()
+    local state = self:getState()
+    local context = Util.copy(self:_currentEditContext())
+    state.context = context
+    state.reference = self.profiles:draftReference(context)
+    return self.storage:draft(state, context)
+end
 function App:_draftLater()
-    if self.previewState or self.profiles.suspended or (self.draft and not self.recoveredDraft) then return end
+    if self.previewState or self.profiles.suspended or self.draftBlocked or (self.draft and not self.recoveredDraft) then return end
     self.draftGeneration = (self.draftGeneration or 0) + 1
     local generation = self.draftGeneration
     task.delay(1, function()
-        if not self.alive or generation ~= self.draftGeneration or self.gesture or not self.dirty then return end
-        local state = self:getState()
-        state.context = Util.copy(self.context)
-        local ok, message = self.storage:draft(state)
+        if not self.alive or generation ~= self.draftGeneration or self.gesture or self.finishingGesture or not self.dirty then return end
+        if self.previewState or self.profiles.suspended or self.draftBlocked or (self.draft and not self.recoveredDraft) then return end
+        local ok, message = self:_writeDraft()
         if not ok and self.capabilities.storage.status ~= "Unsupported" then self:log(message) end
     end)
 end
@@ -202,6 +265,12 @@ function App:changed()
     if self.ui then self.ui:refresh() end
     if self.dirty then self:_draftLater() end
 end
+function App:_selectionChanged()
+    self.sizeReference = nil
+    if self.ui then
+        if self.ui.selectionChanged then self.ui:selectionChanged() else self.ui:refresh() end
+    end
+end
 function App:select(key, toggle)
     if not key then return self:clearSelection() end
     local record = self.discovery:get(key)
@@ -209,13 +278,13 @@ function App:select(key, toggle)
     if toggle or self.preferences.multiSelect then
         local selected = Util.copy(self.selection)
         for index, old in ipairs(selected) do
-            if old == key then table.remove(selected, index); self.selection = selected; self:changed(); return end
+            if old == key then table.remove(selected, index); self.selection = selected; self:_selectionChanged(); return end
         end
         selected[#selected + 1] = key
         self.selection = selected
     else self.selection = {key} end
     if not record.editable then self:status(record.reason or "Unsupported element.") end
-    self:changed()
+    self:_selectionChanged()
 end
 function App:selectMany(keys)
     self.selection = {}
@@ -223,20 +292,23 @@ function App:selectMany(keys)
     for _, key in ipairs(keys) do
         if not seen[key] and self.discovery:get(key) then self.selection[#self.selection + 1] = key; seen[key] = true end
     end
-    self:changed()
+    self:_selectionChanged()
 end
-function App:clearSelection() self.selection = {}; self:changed() end
-function App:getRects() return self.transform:selectionRects(self.selection) end
-function App:currentBounds()
-    local rects = self:getRects()
+function App:clearSelection() self.selection = {}; self:_selectionChanged() end
+function App:getRects(editableOnly) return self.transform:selectionRects(self.selection, editableOnly) end
+function App:currentBounds(editableOnly)
+    local rects = self:getRects(editableOnly)
     return Geometry.bounds(rects)
 end
-function App:beginGesture(label)
+function App:beginGesture(label, skipped)
     if self.previewState then self:status("Apply or cancel the profile preview before editing."); return false end
     if self.profiles.suspended then self:status("Profiles are suspended. Resume application before editing."); return false end
     if self.gesture then return false end
-    self.gesture = { before = self:getState(), label = label or "Transform" }
-    if self.transform.beginTransaction then self.transform:beginTransaction() end
+    if self.finishingGesture or self.saving or (self.transform.beginTransaction and self.transform:beginTransaction() == false) then
+        self:status("Finishing the previous adjustment. Try again in a moment.")
+        return false
+    end
+    self.gesture = {before = self:getState(), label = label or "Transform", skipped = skipped}
     return true
 end
 function App:updateGesture(rects, keys)
@@ -246,39 +318,70 @@ function App:updateGesture(rects, keys)
     if self.ui then self.ui:updateSelection() end
     return true
 end
+function App:_afterInteraction(ok, reason)
+    if self.restoreAfterGesture then
+        self.restoreAfterGesture = nil
+        self:_applyLayout(self.layout, false, true)
+    end
+    self:changed()
+    if self.editContext and not self.dirty and not self.profiles.suspended then self:_adoptContext(); self:changed() end
+    local pendingSave, pendingDone = self.gestureSave, self.doneWaiting
+    self.gestureSave, self.doneWaiting = nil, nil
+    if pendingSave then
+        if ok then self:save(pendingSave) else pendingSave(false, reason) end
+    end
+    if pendingDone and self.editing then self:Done() end
+end
 function App:endGesture()
-    if not self.gesture then return end
+    if not self.gesture then return false end
     local gesture = self.gesture
     self.gesture = nil
-    if self.transform.endTransaction then self.transform:endTransaction() end
-    local after = self:getState()
-    self.layout = Util.copy(after.layout)
-    self.history:push(gesture.before, after, gesture.label)
-    self:changed()
-    local bounds = self:currentBounds()
-    if bounds then
-        local w, h = viewport(self.services)
-        if bounds.x < 0 or bounds.y < 0 or bounds.x + bounds.w > w or bounds.y + bounds.h > h then
-            self:status("Selection extends offscreen. Recover brings it back into view.")
+    self.finishingGesture = gesture
+    local function complete(ok, reason)
+        if self.finishingGesture ~= gesture then return end
+        self.finishingGesture = nil
+        if not self.alive then return end
+        if ok then
+            local after = self:getState()
+            self.layout = after.layout
+            local recorded = self.history:push(gesture.before, after, gesture.label)
+            if (gesture.skipped or 0) > 0 then
+                self:status(tostring(gesture.skipped) .. " unavailable or incompatible elements skipped.")
+            elseif recorded then
+                local bounds = self:currentBounds(true)
+                local w, h = viewport(self.services)
+                local safe = Coordinates.safeRect(self.services.GuiService, w, h)
+                if bounds and not Coordinates.intersection(bounds, safe) then
+                    self:status("Selection is offscreen. Use Recover in Tools to bring it back.")
+                end
+            end
+        else
+            self:status(reason or "The adjustment could not be verified and was rolled back.")
         end
+        self:_afterInteraction(ok, reason)
     end
+    if not self.transform.endTransaction or self.transform:endTransaction(complete) ~= true then complete(true) end
+    return true
 end
 function App:cancelGesture()
     if not self.gesture then return end
     local state = self.gesture.before
     self.gesture = nil
-    if self.transform.cancelTransaction then self.transform:cancelTransaction() end
-    self:loadState(state)
+    if not self.transform.cancelTransaction or self.transform:cancelTransaction() ~= true then self:loadState(state, true) end
+    if self.restoreAfterGesture then
+        self.restoreAfterGesture = nil
+        self:_applyLayout(self.layout, false, true)
+    end
     self:changed()
 end
 function App:_rectAction(label, callback)
-    local rects, keys = self:getRects()
+    local rects, keys, skipped = self:getRects(true)
     if #keys == 0 then return self:status("Select an editable element first.") end
-    if not self:beginGesture(label) then return end
+    if not self:beginGesture(label, skipped) then return end
     local ok, result = pcall(callback, rects)
-    if ok and result then self:updateGesture(result, keys)
-    else self:status("Invalid transformation; layout retained.") end
-    self:endGesture()
+    if ok and result and self:updateGesture(result, keys) then return self:endGesture() end
+    self:cancelGesture()
+    if not ok or not result then self:status("Invalid transformation; layout retained.") end
 end
 function App:move(dx, dy)
     if not Util.finite(dx) or not Util.finite(dy) then return end
@@ -288,29 +391,91 @@ function App:move(dx, dy)
         return moved
     end)
 end
-function App:resize(width, height)
-    if not Util.finite(width) or not Util.finite(height) or width < 16 or height < 16 or width > 100000 or height > 100000 then
-        return self:status("Width and height must be finite values between 16 and 100000 pixels.")
+local function resizeBasis(rects, bounds, individual)
+    if not individual then return bounds end
+    local width, height = 0, 0
+    for _, rect in ipairs(rects) do
+        width, height = math.max(width, rect.w), math.max(height, rect.h)
     end
-    self:_rectAction("Resize", function(rects)
-        local bounds = Geometry.bounds(rects)
-        if self.preferences.equalSize then
-            local changed = {}
-            for i, rect in ipairs(rects) do changed[i] = {x = rect.x, y = rect.y, w = width, h = height} end
-            return changed
+    return {w = width, h = height}
+end
+
+function App:sizeRects(rects, width, height, center, basis)
+    local bounds = Geometry.bounds(rects)
+    if not bounds then return {} end
+    local individual = self.preferences.equalSize and #rects > 1
+    basis = basis or resizeBasis(rects, bounds, individual)
+    if self.preferences.aspectLock then
+        local fx, fy = width / basis.w, height / basis.h
+        local factor = math.abs(fx - 1) >= math.abs(fy - 1) and fx or fy
+        width, height = basis.w * factor, basis.h * factor
+    end
+    local target = {x = bounds.x, y = bounds.y, w = bounds.w + (width - basis.w), h = bounds.h + (height - basis.h)}
+    if individual then return Geometry.adjustMembers(rects, bounds, target, center, self.preferences.aspectLock) end
+    return Geometry.scale(rects, target, center)
+end
+
+function App:sizeInfo(bounds, rects, keys)
+    if not rects or not keys then rects, keys = self:getRects(true); bounds = nil end
+    bounds = bounds or Geometry.bounds(rects)
+    if not bounds or bounds.w <= 0 or bounds.h <= 0 then return nil end
+    local individual = self.preferences.equalSize and #rects > 1
+    local size = resizeBasis(rects, bounds, individual)
+    local signature = table.concat(keys, "\n") .. (individual and "\nindividual" or "\nproportional")
+    local reference = self.sizeReference
+    if not reference or reference.signature ~= signature then
+        local record = #keys == 1 and self.discovery:get(keys[1])
+        local original = record and record.baselineRect
+        local baseline = Geometry.valid(original) and original or size
+        reference = {signature = signature, w = baseline.w, h = baseline.h, original = baseline == original}
+        self.sizeReference = reference
+    end
+    local scale = 100 * size.w / reference.w
+    local minimumFactor = 0
+    for _, rect in ipairs(rects) do
+        local fx, fy = Geometry.MIN_SIZE / rect.w, Geometry.MIN_SIZE / rect.h
+        if individual then
+            fx, fy = 1 + (Geometry.MIN_SIZE - rect.w) / size.w, 1 + (Geometry.MIN_SIZE - rect.h) / size.h
         end
-        return Geometry.scale(rects, {x = bounds.x, y = bounds.y, w = width, h = height}, self.preferences.centerScale)
+        minimumFactor = math.max(minimumFactor, fx, fy)
+    end
+    local viewW, viewH = viewport(self.services)
+    local maximum = math.max(scale, 150, math.min(400, 100 * math.min(viewW / reference.w, viewH / reference.h)))
+    return {scale = scale, minimum = math.min(scale, scale * minimumFactor), maximum = maximum,
+        baseline = reference, original = reference.original, size = size, bounds = bounds}
+end
+
+function App:setSizePercent(percent)
+    local info = self:sizeInfo()
+    if not info then return self:status("Select an editable element first.") end
+    if not Util.finite(percent) or percent < 1 or percent > 10000 then return self:status("Enter a size from 1% to 10000%.") end
+    local factor = math.max(percent, info.minimum) / info.scale
+    return self:resize(info.size.w * factor, info.size.h * factor, false)
+end
+
+function App:stepSize(delta)
+    local info = self:sizeInfo()
+    if info and Util.finite(delta) then return self:setSizePercent(math.max(1, info.minimum, info.scale + delta)) end
+end
+
+function App:resize(width, height, center)
+    if not Util.finite(width) or not Util.finite(height) or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE
+        or width > 100000 or height > 100000 then
+        return self:status("Enter width and height between 16 and 100000 pixels.")
+    end
+    if center == nil then center = self.preferences.centerScale end
+    self:_rectAction("Resize", function(rects)
+        return self:sizeRects(rects, width, height, center)
     end)
 end
 function App:scale(factor)
     if not Util.finite(factor) or factor <= 0 or factor > 100 then return self:status("Invalid scale.") end
-    local bounds = self:currentBounds()
-    if not bounds then return end
-    self:resize(math.max(16, bounds.w * factor), math.max(16, bounds.h * factor))
+    local info = self:sizeInfo()
+    if info then self:setSizePercent(info.scale * factor) end
 end
 function App:geometry(mode, value)
     if mode == "position" then
-        local bounds = self:currentBounds()
+        local bounds = self:currentBounds(true)
         if bounds and type(value) == "table" and Util.finite(value.x) and Util.finite(value.y) then
             self:move(value.x - bounds.x, value.y - bounds.y)
         end
@@ -319,18 +484,8 @@ function App:geometry(mode, value)
         if mode == "rotation" and (value < -360 or value > 360) then return self:status("Rotation range: -360 to 360.") end
         if mode == "transparency" and (value < 0 or value > 1) then return self:status("Transparency range: 0 to 1.") end
         if not self:beginGesture(mode) then return end
-        local layout = self:getState().layout
-        for _, key in ipairs(self.selection) do
-            local record = self.discovery:get(key)
-            if record and record.editable then
-                local entry = layout[key] or Util.copy(record.baseline)
-                entry.descriptor = Util.copy(record.descriptor)
-                entry[mode] = value
-                layout[key] = entry
-            end
-        end
-        self.layout = layout
-        self:_applyLayout(layout, false)
+        local _, skipped = self.transform:setProperty(self.selection, mode, value)
+        self.gesture.skipped = skipped
         self:endGesture()
     end
 end
@@ -343,24 +498,17 @@ end
 function App:reset()
     if #self.selection == 0 then return self:status("Select elements to reset to their original properties.") end
     if not self:beginGesture("Reset to original") then return end
-    self.transform:restore(self.selection)
-    for _, key in ipairs(self.selection) do
-        local record = self.discovery:get(key)
-        if record then
-            local entry = Util.copy(record.baseline)
-            entry.descriptor = Util.copy(record.descriptor)
-            self.layout[key] = entry
-        end
-    end
+    local _, skipped = self.transform:restore(self.selection)
+    self.gesture.skipped = skipped
     self:endGesture()
 end
 function App:recover()
     self:_rectAction("Recover offscreen selection", function(rects)
         local bounds = Geometry.bounds(rects)
         local w, h = viewport(self.services)
-        local insetA, insetB = self.services.GuiService:GetGuiInset()
-        local left, top = insetA.X, insetA.Y
-        local right, bottom = w - insetB.X, h - insetB.Y
+        local safe = Coordinates.coreRect(self.services.GuiService, w, h)
+        local left, top = safe.x, safe.y
+        local right, bottom = safe.x + safe.w, safe.y + safe.h
         local dx = math.max(left, math.min(bounds.x, right - bounds.w)) - bounds.x
         local dy = math.max(top, math.min(bounds.y, bottom - bounds.h)) - bounds.y
         local changed = {}
@@ -368,78 +516,151 @@ function App:recover()
         return changed
     end)
 end
-function App:undo()
+function App:_replay(direction)
     if self.previewState then return self:status("Apply or cancel the preview first.") end
-    if self.profiles.suspended then return self:status("Resume the profile before undoing edits.") end
+    if self.profiles.suspended then return self:status("Resume the profile before replaying edits.") end
+    if self.finishingGesture or self.saving then return self:status("Wait for the current adjustment to finish.") end
     if self.input then self.input:cancel() else self:cancelGesture() end
-    local state, label = self.history:undo()
-    if state then self:loadState(state); self:status("Undid " .. tostring(label)); self:changed() end
+    local undoing = direction == "undo"
+    local stack = undoing and self.history.past or self.history.future
+    local entry = stack[#stack]
+    if not entry then return end
+    local target = undoing and entry.before or entry.after
+    local job = {}
+    self.finishingGesture = job
+    local function complete(ok, reason, skipped)
+        if self.finishingGesture ~= job then return end
+        self.finishingGesture = nil
+        if not self.alive then return end
+        if ok then
+            local state, label = self.history[direction](self.history)
+            self:_setState(state, true)
+            local note = (undoing and "Undid " or "Redid ") .. tostring(label)
+            if (skipped or 0) > 0 then note = note .. ". " .. skipped .. " missing elements skipped." end
+            self:status(note)
+        else self:status(reason or "The original state could not be verified. History was preserved.") end
+        self:_afterInteraction(ok, reason)
+    end
+    if not self.transform:applyHistory(self.layout, target.layout, complete) then
+        complete(false, "Wait for the current adjustment to finish.")
+    end
 end
-function App:redo()
-    if self.previewState then return self:status("Apply or cancel the preview first.") end
-    if self.profiles.suspended then return self:status("Resume the profile before redoing edits.") end
-    if self.input then self.input:cancel() else self:cancelGesture() end
-    local state, label = self.history:redo()
-    if state then self:loadState(state); self:status("Redid " .. tostring(label)); self:changed() end
+function App:undo() self:_replay("undo") end
+function App:redo() self:_replay("redo") end
+function App:_clearCurrentDraft(context)
+    if not self.draftBlocked and (not self.draft or self.recoveredDraft) then
+        local cleared, reason = self.storage:clearDraft(context)
+        if cleared or self.capabilities.storage.status == "Unsupported" then self.draft, self.recoveredDraft = nil, nil
+        elseif reason then self:log(reason) end
+    end
 end
-function App:save()
+function App:save(onComplete)
     if self.previewState then return self:status("Apply or cancel the preview before saving.") end
     if self.profiles.suspended then return self:status("Resume the profile before saving. Safe Mode preserves saved configurations.") end
+    if self.saving or self.saveWaiting then return false, "A save is already in progress." end
     self:endGesture()
     if self.input then self.input:cancel() end
-    -- Do not persist a property write before its bounded stabilization observation.
-    -- A later rollback must remain unsaved rather than being presented as a durable success.
+    if self.finishingGesture then
+        if onComplete or not self.gestureSave then self.gestureSave = onComplete or function() end end
+        return false, "Waiting for the current adjustment."
+    end
     if self.transform.pendingStabilization then
-        if self.saveWaiting then return false, "Save is waiting for layout stabilization." end
         local requested = self:getState()
+        local revision = self.runtimeRevision
         self.saveWaiting = true
         self:status("Waiting for the layout stability check before saving…")
         task.delay(0.35, function()
             self.saveWaiting = nil
             if not self.alive then return end
-            if self.transform.pendingStabilization or not Util.equal(requested, self:getState()) then
-                self:status("Layout changed during the stability check. Review it, then Save again; stored data was preserved.")
-            elseif not self.previewState and not self.profiles.suspended then self:save() end
+            if self.transform.pendingStabilization or self.gesture or self.finishingGesture
+                or self.previewState or self.profiles.suspended or revision ~= self.runtimeRevision
+                or not Util.equal(requested, self:getState()) then
+                local reason = "Layout changed during the stability check. Review it and save again."
+                self:status(reason)
+                if onComplete then onComplete(false, reason) end
+            else self:save(onComplete) end
         end)
         return false, "Save is waiting for layout stabilization."
     end
     local state = self:getState()
-    local ok, message, accepted = self.profiles:save(state.layout, state.groups, state.preferences)
-    if ok or (accepted and self.capabilities.storage.status == "Unsupported") then
+    local context = Util.copy(self:_currentEditContext())
+    self.saving = true
+    local ok, message, accepted = self.profiles:save(state.layout, state.groups, state.preferences, self.editBaseline, context)
+    self.saving = nil
+    if not self.alive then return ok, message, accepted end
+    if ok or accepted then
         self.history:checkpoint(state)
         self.profileChanged = false
         self.savedProfilesData = Util.copy(self.profiles.data)
         self.savedState = Util.copy(state)
+        self.savedEditTarget = self.profiles:editTargetId(context)
+        self.editBaseline = Util.copy(state)
         self.draftGeneration = (self.draftGeneration or 0) + 1
-        if not self.draft or self.recoveredDraft then
-            self.storage:clearDraft()
-            self.draft, self.recoveredDraft = nil, nil
-        end
+        self:_clearCurrentDraft(context)
+        if self.editContext then self:_adoptContext() end
     end
     self:status(message or (ok and "Profile persisted." or "Save failed; draft retained."))
     self:changed()
-    return ok, message
+    if onComplete then onComplete(ok, message, accepted) end
+    return ok, message, accepted
 end
-function App:cancel()
+function App:cancel(onComplete)
     if self.previewState then return self:profile("cancel") end
+    if self.finishingGesture or self.saving then return self:status("Wait for the current adjustment to finish.") end
     if self.input then self.input:cancel() else self:cancelGesture() end
     if self.profiles.suspended then return self:status("Profile is suspended. Resume it before returning to the Save checkpoint.") end
-    local state = self.history:cancel()
-    self.profiles.data = Util.copy(self.savedProfilesData)
-    self.profileChanged = false
-    if state then self:loadState(state) end
-    self.draftGeneration = (self.draftGeneration or 0) + 1
-    if not self.draft or self.recoveredDraft then
-        self.storage:clearDraft()
-        self.draft, self.recoveredDraft = nil, nil
+    local context = self:_currentEditContext()
+    local job = {}
+    self.finishingGesture = job
+    local result
+    local function complete(ok, reason, skipped)
+        if self.finishingGesture ~= job then return end
+        self.finishingGesture = nil
+        if not self.alive then return end
+        result = ok
+        if ok then
+            local state = self.history:cancel()
+            self.profiles.data = Util.copy(self.savedProfilesData)
+            self.profiles:setEditTarget(self.savedEditTarget, context)
+            self.profileChanged = false
+            self:_setState(state)
+            self.editBaseline = Util.copy(self.savedState)
+            self.draftGeneration = (self.draftGeneration or 0) + 1
+            self:_clearCurrentDraft(context)
+            if self.editContext then self:_adoptContext() end
+            local note = "Returned to the latest Save checkpoint."
+            if (skipped or 0) > 0 then note = note .. " " .. skipped .. " missing elements skipped." end
+            self:status(note)
+        else self:status(reason or "The checkpoint could not be restored. Use Safe Mode to recover originals.") end
+        self:_afterInteraction(ok, reason)
+        if onComplete then onComplete(ok) end
     end
-    self:status("Returned to the latest Save checkpoint. Session history was cleared.")
-    self:changed()
+    if not self.transform:applyHistory(self.layout, self.savedState.layout, complete) then
+        complete(false, "Wait for the current adjustment to finish.")
+    end
+    return result
+end
+function App:Done()
+    if self.previewState then return self:status("Apply or cancel the preview before returning to gameplay.") end
+    if self.saving or self.saveWaiting then return self:status("The save is still in progress.") end
+    if self.input then self.input:cancel() else self:cancelGesture() end
+    if self.finishingGesture then self.doneWaiting = true; return end
+    if not self.dirty or self.profiles.suspended then return self:Close() end
+    if not self.ui or not self.ui.confirmDone then return self:status("Save or discard changes before closing.") end
+    self.ui:confirmDone(function()
+        self:save(function(ok, _, accepted)
+            if ok then self:Close()
+            elseif accepted and self.ui and self.ui.showExport then self.ui:showExport() end
+        end)
+    end, function()
+        self:cancel(function(ok) if ok then self:Close() end end)
+    end)
 end
 function App:setPreference(name, value)
     if defaults[name] == nil then return end
     if self.previewState then return self:status("Apply or cancel the preview before changing preferences.") end
     if self.profiles.suspended then return self:status("Resume the profile before changing preferences.") end
+    if self.finishingGesture or self.saving then return end
     if type(value) ~= type(defaults[name]) then return self:status("Invalid preference value.") end
     if name == "shortcut" then
         local valid, key = pcall(function() return Enum.KeyCode[value] end)
@@ -449,21 +670,45 @@ function App:setPreference(name, value)
     if name == "gridSize" and (not Util.finite(value) or value < 4 or value > 128) then return end
     if name == "snapThreshold" and (not Util.finite(value) or value < 1 or value > 32) then return end
     if (name == "launcherX" or name == "launcherY") and (not Util.finite(value) or value < 0 or value > 1) then return end
+    if self.preferences[name] == value then return end
+    if name == "multiSelect" or name == "boxSelect" then
+        self.toolModes, self.toolDefaults = self.toolModes or {}, self.toolDefaults or {}
+        if self.toolModes[name] == nil then self.toolDefaults[name] = self.preferences[name] end
+        self.toolModes[name], self.preferences[name] = value, value
+        if self.ui then self.ui:refresh() end
+        return
+    end
+    if name == "launcherX" or name == "launcherY" or name == "launcherHidden" then
+        self.launcherOverrides = self.launcherOverrides or {}
+        self.launcherOverrides[name], self.preferences[name] = value, value
+        return self:changed()
+    end
     local before = self:getState()
     self.preferences[name] = value
     self.history:push(before, self:getState(), "Editor preference")
     self:changed()
 end
+function App:setLauncherPosition(x, y)
+    if self.previewState or self.profiles.suspended or self.saving or self.finishingGesture then return end
+    if not Util.finite(x) or not Util.finite(y) or x < 0 or x > 1 or y < 0 or y > 1 then return end
+    self.launcherOverrides = self.launcherOverrides or {}
+    self.launcherOverrides.launcherX, self.launcherOverrides.launcherY = x, y
+    self.preferences.launcherX, self.preferences.launcherY = x, y
+    self:changed()
+end
 function App:group(action, name, extra)
     if self.previewState then return self:status("Apply or cancel the preview first.") end
     if action ~= "select" and self.profiles.suspended then return self:status("Resume the profile before editing groups.") end
+    if action ~= "select" and (self.finishingGesture or self.saving) then return end
     if action == "select" then
         local keys = {}
-        for _, descriptor in ipairs(self.groups[name] or {}) do
+        local members = self.groups[name] or {}
+        for _, descriptor in ipairs(members) do
             local key = Identity.key(descriptor)
             if self.discovery:get(key) then keys[#keys + 1] = key end
         end
         self:selectMany(keys)
+        if #keys < #members then self:status(tostring(#members - #keys) .. " group members are currently missing.") end
         return
     end
     if type(name) ~= "string" or not name:match("%S") or #name > 64 or name:find("[%c]") then return self:status("Group names need 1–64 readable characters.") end
@@ -498,22 +743,35 @@ function App:group(action, name, extra)
 end
 function App:profile(action, idOrName, extra)
     if self.input then self.input:cancel() elseif self.gesture then self:cancelGesture() end
+    if self.finishingGesture or self.saving then return self:status("Wait for the current adjustment to finish.") end
+    if self.editContext and action ~= "cancel" and action ~= "apply" and action ~= "suspend"
+        and action ~= "restore" and action ~= "recoverDraft" and action ~= "discardDraft" then
+        return self:status("Save or discard the previous orientation's edits before managing profiles.")
+    end
+    local context = self:_currentEditContext()
     if action == "preview" then
         if self.previewState then self:profile("cancel") end
         local before = self:getState()
-        local layout, err, prefs, groups = self.profiles:beginPreview(idOrName)
+        local layout, err, prefs, groups = self.profiles:beginPreview(idOrName, context)
         if not layout then return self:status(err or "Profile preview failed.") end
         self.previewState = before
         self.previewSuspended = self.profiles.suspended
         self.profiles:suspend(false)
-        self:loadState({ layout = layout, preferences = prefs or self.profiles.preview.preferences or {}, groups = groups or self.profiles.preview.groups or {} })
-        self:status("Preview only: more-specific profiles for this context are inactive; their definitions are preserved. Apply switches profile and replaces the draft; Cancel restores it.")
+        self:loadState({layout = layout, preferences = prefs, groups = groups}, true)
+        local note = self.profiles.preview.overlaid and " More-specific overrides still apply." or ""
+        self:status("Preview only." .. note .. " Apply selects this profile and replaces the current draft. Cancel restores it.")
     elseif action == "apply" then
         if not self.previewState then return self:status("Preview a profile or imported configuration first.") end
         if self.draftPreview then
             local state = self:getState()
             local previous = self.previewState
+            local reference = self.draft and self.draft.reference
+            if reference and not self.profiles:matchesDraftReference(reference, context) then
+                return self:status("The recovery draft's saved profile changed. Cancel the preview to keep it separate.")
+            end
+            if reference then self.profiles:setEditTarget(reference.profileId or nil, context) end
             self.previewState, self.draftPreview = nil, nil
+            self.previewSuspended = nil
             self.recoveredDraft = true
             self.suspendedState = nil
             self.profiles:suspend(false)
@@ -525,10 +783,12 @@ function App:profile(action, idOrName, extra)
         end
         local ok, err = self.profiles:applyPreview()
         if not ok then return self:status(err or "Could not apply preview.") end
-        self.previewState = nil
+        self.previewState, self.previewSuspended = nil, nil
         self.suspendedState = nil
         self.transform.safe = false
-        self:_applyLayout(self.layout, true)
+        self.launcherOverrides = nil
+        self:loadState(resolvedState(self.profiles:resolve(context)))
+        self.editBaseline = self:getState()
         self.profileChanged = true
         self.history = History.new(80)
         self.history:checkpoint(self.savedState)
@@ -540,7 +800,7 @@ function App:profile(action, idOrName, extra)
             self.previewState, self.previewSuspended = nil, nil
             self.draftPreview = nil
             self.profiles:suspend(false)
-            self:loadState(previous)
+            self:loadState(previous, true)
             self.profiles:suspend(suspended or false)
             if suspended then self.transform:restore() end
             self:status("Preview cancelled; previous layout restored.")
@@ -555,19 +815,20 @@ function App:profile(action, idOrName, extra)
         self:status("Created " .. profile.name .. ". Select Preview to activate; Save persists profile changes.")
     elseif action == "rename" or action == "delete" then
         if self.previewState then return self:status("Cancel the preview before managing profiles.") end
-        local current = self.profiles:active()
-        local deletingActive = action == "delete" and current and current.id == idOrName
+        local deletingActive = action == "delete" and self.profiles:isActive(idOrName, context)
+        if deletingActive and not Util.equal(self.editBaseline, self:getState()) then
+            return self:status("Save or discard your pending layout edits before deleting an active profile.")
+        end
         local ok, err
         if action == "rename" then ok, err = self.profiles:rename(idOrName, extra)
         else ok, err = self.profiles:delete(idOrName, extra == true) end
         if not ok then return self:status(err or "Profile change failed.") end
         if deletingActive then
             -- Do not save the deleted layer's live properties into its less-specific fallback.
-            local layout, prefs, groups = Config.resolve(self.profiles.data, self.context)
-            local state = {layout = layout, preferences = Util.copy(defaults), groups = groups}
-            for key, value in pairs(prefs or {}) do state.preferences[key] = value end
+            local state = resolvedState(Config.resolve(self.profiles.data, context))
             self:loadState(state)
             if self.profiles.suspended then self.suspendedState = Util.copy(state) end
+            self.editBaseline = self:getState()
             self.history = History.new(80)
             self.history:checkpoint(self.savedState)
         end
@@ -584,22 +845,24 @@ function App:profile(action, idOrName, extra)
         elseif not suspend and self.profiles.suspended then
             self.profiles:suspend(false)
             self.transform.safe = false
-            self:loadState(self.suspendedState or self:getState())
+            self:loadState(self.suspendedState or self:getState(), true)
             self.suspendedState = nil
+            if self.editContext and not self.dirty and not self.profileChanged then self:_adoptContext() end
             self:status("Profile application resumed.")
         end
     elseif action == "recoverDraft" then
+        if self.draftBlocked then return self:status(self.draftBlocked) end
         if not self.draft then return self:status("No draft is available for this place, device and orientation.") end
         if self.previewState then return self:status("Cancel the current preview first.") end
         self.previewState = self:getState()
         self.previewSuspended = self.profiles.suspended
         self.profiles:suspend(false)
         self.draftPreview = true
-        self:loadState(self.draft)
+        self:loadState(self.draft, true)
         self:status("Unsaved draft preview. Apply restores the draft for editing; Cancel returns to the previous layout.")
     elseif action == "discardDraft" then
-        local ok, message = self.storage:clearDraft()
-        if ok then self.draft = nil end
+        local ok, message = self.storage:clearDraft(context)
+        if ok then self.draft, self.draftBlocked, self.recoveredDraft = nil, nil, nil end
         self:status(message or (ok and "Recovery draft discarded." or "Could not discard draft."))
     end
     self:changed()
@@ -613,65 +876,79 @@ function App:export()
 end
 function App:import(text, overwriteConfirmed)
     if self.gesture then self:cancelGesture() end
+    if self.finishingGesture or self.saving then return nil, "Wait for the current adjustment to finish." end
+    if self.editContext then return nil, "Save or discard the previous orientation's edits before importing." end
     if self.previewState then return nil, "Apply or cancel the current preview first." end
     local before = self:getState()
-    local layout, err = self.profiles:beginImport(text, overwriteConfirmed == true)
+    local layout, err = self.profiles:beginImport(text, overwriteConfirmed == true, self.context)
     if not layout then self:status(err or "Import validation failed."); return nil, err end
     self.previewState = before
     self.previewSuspended = self.profiles.suspended
     self.profiles:suspend(false)
     local preview = self.profiles.preview
-    self:loadState({layout = layout, preferences = preview.preferences or {}, groups = preview.groups or {}})
+    self:loadState({layout = layout, preferences = preview.preferences or {}, groups = preview.groups or {}}, true)
     self:status("Imported configuration preview. Apply activates it; Cancel preserves the previous configuration.")
     self:changed()
     return true
 end
+function App:_commitLayoutEdit(state, before, label, message)
+    local job = {}
+    self.finishingGesture = job
+    local function complete(ok, reason)
+        if self.finishingGesture ~= job then return end
+        self.finishingGesture = nil
+        if not self.alive then return end
+        if ok then
+            self:_setState(state, true)
+            self.history:push(before, self:getState(), label)
+            self:status(message)
+        else self:status(reason or "The requested change could not be verified.") end
+        self:_afterInteraction(ok, reason)
+    end
+    if not self.transform:applyHistory(before.layout, state.layout, complete) then
+        complete(false, "Wait for the current adjustment to finish.")
+    end
+end
 function App:approve(key, enabled)
     if self.previewState then return self:status("Apply or cancel the preview first.") end
+    if self.profiles.suspended then return self:status("Resume the profile before changing permissions.") end
+    if self.gesture or self.finishingGesture or self.saving then return end
     local record = self.discovery:get(key)
     if not record then return end
-    if not self.discovery.approve then return self:status("Experimental edits are unsupported for this target.") end
+    if not record.experimental then return self:status("This target has no experimental editing option.") end
     if self.transform.safe then return self:status("Safe Mode disables experimental editing. Resume the profile to leave Safe Mode.") end
     local before = self:getState()
-    local ok, reason = self.discovery:approve(key, enabled)
-    if ok == false then return self:status(reason or "This target cannot be safely overridden.") end
-    local entry = Util.copy(before.layout[key] or record.baseline)
+    local state = Util.copy(before)
+    local entry = Util.copy((enabled and before.layout[key]) or record.baseline)
     entry.descriptor = Util.copy(record.descriptor)
     entry.experimental = enabled == true
-    self.layout[key] = entry
-    self:_applyLayout(self.layout, false)
-    self.history:push(before, self:getState(), "Experimental permission")
-    self:status(enabled and "Experimental editing approved for this element. Attempts are bounded; unstable changes are suspended." or "Experimental permission removed; original properties restored for this element.")
-    if not enabled then self.transform:restore({key}) end
-    self:changed()
+    state.layout[key] = entry
+    self:_commitLayoutEdit(state, before, "Experimental permission", enabled and "Experimental editing approved." or "Experimental permission removed. Original properties restored.")
 end
 function App:remap(oldKey, newKey)
     if self.previewState then return self:status("Apply or cancel the preview first.") end
     if self.profiles.suspended then return self:status("Resume the profile before remapping elements.") end
+    if self.gesture or self.finishingGesture or self.saving then return end
     local old, target = self.layout[oldKey], self.discovery:get(newKey)
     if not old or not target then return self:status("Select an unmatched entry and an accessible replacement first.") end
+    if not target.editable then return self:status(target.reason or "The selected replacement is unavailable for editing.") end
     if self.layout[newKey] and oldKey ~= newKey then return self:status("Replacement already has saved settings. Reset or choose another element.") end
     local before = self:getState()
+    local state = Util.copy(before)
     local entry = Util.copy(old)
     entry.descriptor, entry.experimental = Util.copy(target.descriptor), false
-    self.layout[oldKey], self.layout[newKey] = nil, entry
-    for _, members in pairs(self.groups) do
+    state.layout[oldKey], state.layout[newKey] = nil, entry
+    for _, members in pairs(state.groups) do
         for index, descriptor in ipairs(members) do
             if Identity.key(descriptor) == oldKey then members[index] = Util.copy(target.descriptor) end
         end
     end
-    self:_applyLayout(self.layout, true)
-    self.history:push(before, self:getState(), "Remap missing element")
-    self:status("Saved identity explicitly remapped. Save to persist.")
-    self:changed()
+    self:_commitLayoutEdit(state, before, "Remap missing element", "Remapped to the selected element. Save to persist.")
 end
 function App:setEditing(enabled)
     if self.input then self.input:cancel() elseif self.gesture then self:cancelGesture() end
     self.editing = enabled == true
     if self.ui then self.ui:setVisible(self.editing); self.ui:refresh() end
-    if self.editing then
-        self:status("Editing intercepts canvas gestures. Game scripts may still observe input; test controls after closing.")
-    end
 end
 function App:Open()
     if not self.alive then return end
@@ -694,13 +971,16 @@ function App:Open()
             return false
         end
     end
-    self.preferences.launcherHidden = false
     self:setEditing(true)
     return true
 end
 function App:Close() self:setEditing(false) end
 function App:safeMode()
     if self.input then self.input:cancel() else self:cancelGesture() end
+    if self.finishingGesture then
+        self.finishingGesture, self.gestureSave, self.doneWaiting = nil, nil, nil
+        self.transform:cancelTransaction()
+    end
     if self.previewState then self:profile("cancel") end
     if not self.profiles.suspended then self.suspendedState = self:getState() end
     self.profiles:suspend(true)
@@ -712,7 +992,7 @@ function App:safeMode()
 end
 function App:SafeMode() return self:safeMode() end
 function App:VerifyStartup()
-    local profile = self.profiles:active()
+    local profile = self.profiles:active(self:_currentEditContext())
     return {
         version = self.version, startedAt = self.startedAt, alive = self.alive,
         mode = self.profiles.suspended and "suspended" or (self.ui and "editor" or "loader"),
@@ -749,10 +1029,12 @@ end
 function App:Destroy(restore)
     if not self.alive then return end
     self:cancelGesture()
-    if self.dirty and not self.previewState and (not self.draft or self.recoveredDraft) then
-        local state = self:getState()
-        state.context = Util.copy(self.context)
-        self.storage:draft(state)
+    if self.finishingGesture then
+        self.finishingGesture, self.gestureSave, self.doneWaiting = nil, nil, nil
+        self.transform:cancelTransaction()
+    end
+    if self.dirty and not self.previewState and not self.draftBlocked and (not self.draft or self.recoveredDraft) then
+        self:_writeDraft()
     end
     self.alive = false
     self.editing = false

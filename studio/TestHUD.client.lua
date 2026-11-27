@@ -2,11 +2,13 @@
 -- These GUI controls are mocks. They do not verify Roblox internal touch regions or movement.
 local Players = game:GetService("Players")
 local Input = game:GetService("UserInputService")
+local GuiService = game:GetService("GuiService")
+local Workspace = game:GetService("Workspace")
 local playerGui = Players.LocalPlayer:WaitForChild("PlayerGui")
 local previous = _G.__HEAVENLY_AXIS_TEST_HUD
 if previous then previous:Destroy() end
 
-local fixture = {connections = {}, hudConnections = {}, destroyed = false}
+local fixture = {connections = {}, hudConnections = {}, screens = {}, destroyed = false}
 local function connect(signal, callback)
     local connection = signal:Connect(callback)
     fixture.connections[#fixture.connections + 1] = connection
@@ -18,10 +20,16 @@ local function make(class, props, parent)
     object.Parent = parent
     return object
 end
-local gui = make("ScreenGui", {
-    Name = "AxisFixtureHUD", ResetOnSpawn = false, DisplayOrder = 4,
-    ZIndexBehavior = Enum.ZIndexBehavior.Sibling, IgnoreGuiInset = false,
-}, playerGui)
+local function screen(name, inset, order)
+    local gui = make("ScreenGui", {
+        Name = name, ResetOnSpawn = false, DisplayOrder = order,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        ScreenInsets = inset, SafeAreaCompatibility = Enum.SafeAreaCompatibility.None,
+    }, playerGui)
+    fixture.screens[#fixture.screens + 1] = gui
+    return gui
+end
+local gui = screen("AxisFixtureHUD", Enum.ScreenInsets.CoreUISafeInsets, 4)
 fixture.gui = gui
 function fixture:Destroy()
     if self.destroyed then return end
@@ -30,7 +38,8 @@ function fixture:Destroy()
     self.connections = {}
     for _, connection in ipairs(self.hudConnections) do connection:Disconnect() end
     self.hudConnections = {}
-    gui:Destroy()
+    for _, screenGui in ipairs(self.screens) do screenGui:Destroy() end
+    self.screens = {}
     if _G.__HEAVENLY_AXIS_TEST_HUD == self then _G.__HEAVENLY_AXIS_TEST_HUD = nil end
 end
 _G.__HEAVENLY_AXIS_TEST_HUD = fixture
@@ -50,6 +59,9 @@ local function label(parent, name, text, position, size)
     }, parent)
 end
 local hud
+local function pointer(input)
+    return input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1
+end
 local function button(parent, name, text, position, size, callback)
     local object = rounded(make("TextButton", {
         Name = name, Text = text, Position = position, Size = size,
@@ -65,11 +77,15 @@ local function button(parent, name, text, position, size, callback)
 end
 
 local admin = rounded(make("Frame", {
-    Name = "FixtureControls", Position = UDim2.fromOffset(12, 12),
-    Size = UDim2.new(1, -24, 0, 124), BackgroundColor3 = dark,
+    Name = "FixtureControls", Position = UDim2.new(0.5, 0, 0, 4), AnchorPoint = Vector2.new(0.5, 0),
+    Size = UDim2.new(1, -16, 0, 88), BackgroundColor3 = dark,
 }, gui))
-label(admin, "Notice", "STUDIO FIXTURE · Mock controls only · No actual jump or movement", UDim2.fromOffset(8, 4), UDim2.new(1, -16, 0, 28))
-local status = label(admin, "FixtureStatus", "Gameplay activations: 0", UDim2.fromOffset(8, 88), UDim2.new(1, -16, 0, 28))
+make("UISizeConstraint", {MaxSize = Vector2.new(560, 88)}, admin)
+label(admin, "Notice", "STUDIO FIXTURE · Mock HUD controls", UDim2.fromOffset(8, 0), UDim2.new(1, -16, 0, 20))
+local status = label(admin, "FixtureStatus", "Gameplay activations: 0", UDim2.fromOffset(8, 66), UDim2.new(1, -16, 0, 20))
+local function adminButton(column, name, text, callback)
+    return button(admin, name, text, UDim2.new((column - 1) * 0.2, 4, 0, 20), UDim2.new(0.2, -8, 0, 44), callback)
+end
 local count = 0
 local function activate(name)
     count = count + 1
@@ -86,27 +102,30 @@ local function makeHud()
     if hud then hud:Destroy() end
     hud = make("Frame", {
         Name = "RecreatedHUD", BackgroundTransparency = 1,
-        Position = UDim2.fromOffset(0, 144), Size = UDim2.new(1, 0, 1, -144),
+        Position = UDim2.fromOffset(0, 96), Size = UDim2.new(1, 0, 1, -96),
     }, gui)
-    local jump = button(hud, "JumpStyle", "JUMP\n(mock)", UDim2.new(1, -118, 1, -118), UDim2.fromOffset(96, 96), function() activate("JumpStyle") end)
+    local controls = make("Frame", {
+        Name = "TouchControlFrameMock", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1),
+    }, hud)
+    local jump = button(controls, "JumpStyle", "JUMP\n(mock)", UDim2.fromScale(0.88, 0.82), UDim2.fromOffset(96, 96), function() activate("JumpStyle") end)
     jump:FindFirstChildOfClass("UICorner").CornerRadius = UDim.new(1, 0)
     jump.BackgroundColor3 = Color3.fromRGB(25, 100, 115)
     jump.AnchorPoint = Vector2.new(0.5, 0.5)
-    jump.Position = UDim2.new(0.88, 0, 0.82, 0)
 
     local classic = rounded(make("Frame", {
-        Name = "ClassicJoystickStyle", Position = UDim2.new(0, 30, 1, -174),
-        Size = UDim2.fromOffset(132, 132), BackgroundColor3 = dark, Active = true,
-    }, hud), 66)
+        Name = "ClassicJoystickStyle", Position = UDim2.new(0, 18, 1, -28), AnchorPoint = Vector2.new(0, 1),
+        Size = UDim2.fromOffset(108, 108), BackgroundColor3 = dark, Active = true,
+    }, controls), 54)
     local classicThumb = rounded(make("Frame", {
         Name = "Thumb", Position = UDim2.new(0.5, -23, 0.5, -23),
         Size = UDim2.fromOffset(46, 46), BackgroundColor3 = cyan,
     }, classic), 23)
     label(classic, "Caption", "CLASSIC\n(mock)", UDim2.new(0, 0, 1, 4), UDim2.new(1, 0, 0, 34))
-    local activeClassic
+    local activeClassic, classicStart
     connectHud(classic.InputBegan, function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
+        if pointer(input) and not activeClassic then
             activeClassic = input
+            classicStart = Vector2.new(input.Position.X, input.Position.Y)
             activate("Classic mock begin")
         end
     end)
@@ -114,7 +133,7 @@ local function makeHud()
         if not activeClassic then return end
         local touch = activeClassic.UserInputType == Enum.UserInputType.Touch
         if (touch and input ~= activeClassic) or (not touch and input.UserInputType ~= Enum.UserInputType.MouseMovement) then return end
-        local delta = Vector2.new(input.Position.X, input.Position.Y) - classic.AbsolutePosition - classic.AbsoluteSize / 2
+        local delta = Vector2.new(input.Position.X, input.Position.Y) - classicStart
         local length = math.min(delta.Magnitude, classic.AbsoluteSize.X * 0.3)
         if delta.Magnitude > 0 then delta = delta.Unit * length end
         classicThumb.Position = UDim2.new(0.5, delta.X - 23, 0.5, delta.Y - 23)
@@ -128,18 +147,18 @@ local function makeHud()
     end)
 
     local dynamic = rounded(make("Frame", {
-        Name = "DynamicJoystickStyle", Position = UDim2.new(0.25, 0, 1, -130),
-        Size = UDim2.fromOffset(170, 88), BackgroundColor3 = dark, Active = true,
-    }, hud))
+        Name = "DynamicJoystickStyle", Position = UDim2.new(0.36, 0, 1, -88),
+        Size = UDim2.fromOffset(142, 74), BackgroundColor3 = dark, Active = true,
+    }, controls))
     label(dynamic, "Caption", "DYNAMIC REGION (mock)", UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, 30))
     local dot = rounded(make("Frame", {
         Name = "DynamicDot", Position = UDim2.new(0.5, -12, 0.5, 0),
         Size = UDim2.fromOffset(24, 24), BackgroundColor3 = cyan,
     }, dynamic), 12)
     connectHud(dynamic.InputBegan, function(input)
-        if input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1 then
-            dot.Position = UDim2.fromOffset(input.Position.X - dynamic.AbsolutePosition.X - 12, input.Position.Y - dynamic.AbsolutePosition.Y - 12)
-            activate("Dynamic mock anchored")
+        if pointer(input) then
+            dot.BackgroundColor3 = dot.BackgroundColor3 == cyan and white or cyan
+            activate("Dynamic mock activated")
         end
     end)
 
@@ -154,7 +173,9 @@ local function makeHud()
         Size = UDim2.fromOffset(160, 100), BackgroundColor3 = Color3.fromRGB(46, 65, 45),
     }, hud))
     make("UIScale", {Scale = 0.85}, scaled)
-    button(scaled, "ScaledChild", "UIScale child", UDim2.fromOffset(10, 30), UDim2.fromOffset(138, 54), function() activate("Scaled child") end)
+    local scaledChild = button(scaled, "ScaledChild", "Nested UIScale", UDim2.new(1, -10, 1, -12), UDim2.fromOffset(138, 54), function() activate("Scaled child") end)
+    scaledChild.AnchorPoint = Vector2.new(1, 1)
+    make("UIScale", {Scale = 1.2}, scaledChild)
 
     button(hud, "OverlapBack", "Back", UDim2.new(0.36, 0, 0.37, 0), UDim2.fromOffset(120, 64), function() activate("Overlap back") end).ZIndex = 1
     button(hud, "OverlapFront", "Front", UDim2.new(0.36, 28, 0.37, 24), UDim2.fromOffset(120, 64), function() activate("Overlap front") end).ZIndex = 2
@@ -164,8 +185,24 @@ local function makeHud()
     }, hud))
     make("UIListLayout", {Padding = UDim.new(0, 6), SortOrder = Enum.SortOrder.LayoutOrder}, layout)
     for index = 1, 3 do
-        button(layout, "Managed" .. index, "Managed " .. index, UDim2.new(), UDim2.fromOffset(120, 44), function() activate("Managed") end)
+        local managed = button(layout, "Managed" .. index, "Managed " .. index, UDim2.new(), UDim2.fromOffset(120, 44), function() activate("Managed") end)
+        managed.LayoutOrder = index
     end
+    local clip = rounded(make("Frame", {
+        Name = "ClippingParent", Position = UDim2.new(0.02, 0, 0.2, 0),
+        Size = UDim2.fromOffset(104, 48), BackgroundColor3 = Color3.fromRGB(70, 43, 58),
+        ClipsDescendants = true,
+    }, hud))
+    local clipped = button(clip, "PartlyClippedChild", "Clipped", UDim2.fromOffset(28, 12), UDim2.fromOffset(110, 56), function() activate("Clipped") end)
+    clipped.ZIndex = 2
+    local tiny = button(hud, "TinyControl", "", UDim2.new(0.65, 0, 0.43, 0), UDim2.fromOffset(22, 22), function() activate("Tiny control") end)
+    tiny.BackgroundColor3 = cyan
+    local relative = button(hud, "RelativeXXControl", "RelativeXX", UDim2.new(0.61, 0, 0.28, 0), UDim2.new(0.05, 32, 0.03, 24), function() activate("RelativeXX") end)
+    relative.SizeConstraint = Enum.SizeConstraint.RelativeXX
+    local relativeYY = button(hud, "RelativeYYControl", "RelativeYY", UDim2.new(0.04, 0, 0.32, 0), UDim2.new(0.04, 38, 0.025, 26), function() activate("RelativeYY") end)
+    relativeYY.SizeConstraint = Enum.SizeConstraint.RelativeYY
+    label(hud, "LongElementName_For_Search_And_Hierarchy_With_A_Label_That_Must_Truncate_Cleanly",
+        "Long name and decorative label", UDim2.new(0.35, 0, 0.68, 0), UDim2.fromOffset(160, 28))
     local constrained = button(hud, "Constrained", "Aspect constraint", UDim2.new(0.63, 0, 0.57, 0), UDim2.fromOffset(100, 60), function() activate("Constrained") end)
     make("UIAspectRatioConstraint", {AspectRatio = 1.8}, constrained)
     local rotated = button(hud, "Rotated", "Rotated 12°", UDim2.new(0.55, 0, 0.77, 0), UDim2.fromOffset(100, 50), function() activate("Rotated") end)
@@ -180,7 +217,7 @@ end
 makeHud()
 
 local menu
-button(admin, "Recreate", "Recreate HUD", UDim2.new(0, 8, 0, 38), UDim2.new(0.31, -8, 0, 44), function()
+adminButton(1, "Recreate", "Recreate", function()
     fixture.rebuildGeneration = (fixture.rebuildGeneration or 0) + 1
     local generation = fixture.rebuildGeneration
     for _, connection in ipairs(fixture.hudConnections) do connection:Disconnect() end
@@ -193,7 +230,7 @@ button(admin, "Recreate", "Recreate HUD", UDim2.new(0, 8, 0, 38), UDim2.new(0.31
         status.Text = "HUD recreated with identical names/classes. Check saved restoration."
     end)
 end)
-button(admin, "TemporaryMenu", "Temporary menu", UDim2.new(0.33, 0, 0, 38), UDim2.new(0.34, -8, 0, 44), function()
+adminButton(2, "TemporaryMenu", "Menu", function()
     if menu and menu.Parent then menu:Destroy(); menu = nil; return end
     menu = rounded(make("Frame", {
         Name = "TemporaryMenu", Position = UDim2.new(0.5, -120, 0.5, -70),
@@ -201,6 +238,82 @@ button(admin, "TemporaryMenu", "Temporary menu", UDim2.new(0.33, 0, 0, 38), UDim
     }, gui))
     label(menu, "Notice", "Temporary menu\nDestroy and recreate using fixture button", UDim2.fromOffset(12, 12), UDim2.new(1, -24, 1, -24))
 end)
-button(admin, "ToggleHUD", "Hide / show HUD", UDim2.new(0.68, 0, 0, 38), UDim2.new(0.32, -8, 0, 44), function()
+adminButton(3, "ToggleHUD", "Show / hide", function()
     if hud then hud.Visible = not hud.Visible end
+end)
+
+local probes = {}
+local probeSettings = {
+    {inset = Enum.ScreenInsets.CoreUISafeInsets, label = "Core UI", x = 0.16, y = 0.32, height = 44, clipped = true},
+    {inset = Enum.ScreenInsets.DeviceSafeInsets, label = "Device", x = 0.42, y = 0.32, height = 44, clipped = true},
+    {inset = Enum.ScreenInsets.None, label = "None", x = 0.70, y = 0.32, height = 44, clipped = false},
+    {inset = Enum.ScreenInsets.TopbarSafeInsets, label = "Top bar", x = 0.50, y = 0.50, height = 30, clipped = true},
+}
+for index, settings in ipairs(probeSettings) do
+    local probeGui = screen("AxisFixtureInset_" .. settings.inset.Name, settings.inset, 8 + index)
+    probeGui.ClipToDeviceSafeArea = settings.clipped
+    probeGui.Enabled = false
+    local probe = button(probeGui, "Probe_" .. settings.inset.Name, settings.label,
+        UDim2.fromScale(settings.x, settings.y), UDim2.fromOffset(72, settings.height))
+    probe.AnchorPoint = Vector2.new(0.5, 0.5)
+    probe.BackgroundColor3 = Color3.fromRGB(91, 48, 104)
+    probes[index] = probe
+end
+
+local probeEnabled = false
+adminButton(4, "InsetProbes", "Insets", function()
+    probeEnabled = not probeEnabled
+    for _, probe in ipairs(probes) do probe.Parent.Enabled = probeEnabled end
+    status.Text = probeEnabled and "Tap the purple probes and compare Studio Output." or "Inset probes hidden."
+end)
+
+local function xy(value)
+    return string.format("(%.1f, %.1f)", value.X, value.Y)
+end
+local function describeHits(x, y)
+    local hits, found = playerGui:GetGuiObjectsAtPosition(math.floor(x), math.floor(y)), {}
+    for rank, object in ipairs(hits) do
+        if rank <= 3 or table.find(probes, object) then found[#found + 1] = rank .. ":" .. object.Name end
+    end
+    return #hits .. " [" .. table.concat(found, ", ") .. "]"
+end
+connect(Input.InputBegan, function(input)
+    if not probeEnabled or not pointer(input) then return end
+    local camera = Workspace.CurrentCamera
+    local insetTop, insetBottom = GuiService:GetGuiInset()
+    local x, y = input.Position.X, input.Position.Y
+    print(string.format("[Axis fixture] %s at %s, camera viewport %s, inset %s / %s", input.UserInputType.Name,
+        xy(input.Position), camera and xy(camera.ViewportSize) or "unavailable", xy(insetTop), xy(insetBottom)))
+    print("[Axis fixture] hit(raw)=" .. describeHits(x, y) .. " hit(raw − inset)=" .. describeHits(x - insetTop.X, y - insetTop.Y))
+    for _, probe in ipairs(probes) do
+        local inset = probe.Parent.ScreenInsets
+        local area = GuiService:GetInsetArea(inset)
+        print(string.format("[Axis fixture] %s position %s, size %s; inset area %s to %s", inset.Name,
+            xy(probe.AbsolutePosition), xy(probe.AbsoluteSize), xy(area.Min), xy(area.Max)))
+    end
+end)
+
+local stressGui = screen("AxisFixtureStress", Enum.ScreenInsets.CoreUISafeInsets, 5)
+local stress
+adminButton(5, "ToggleCollection", "240 items", function()
+    if stress then
+        stress:Destroy()
+        stress = nil
+        status.Text = "Removed 240 fixture elements."
+        return
+    end
+    stress = make("Frame", {
+        Name = "StressCollection", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.54),
+        Size = UDim2.fromOffset(240, 120), BackgroundColor3 = dark,
+    }, stressGui)
+    for index = 1, 240 do
+        local column, row = (index - 1) % 20, math.floor((index - 1) / 20)
+        make("Frame", {
+            Name = string.format("StressTile%03d", index),
+            Position = UDim2.fromOffset(column * 12 + 1, row * 10 + 1), Size = UDim2.fromOffset(10, 8),
+            BackgroundColor3 = index % 3 == 0 and cyan or white, BackgroundTransparency = 0.25,
+            BorderSizePixel = 0,
+        }, stress)
+    end
+    status.Text = "Added 240 fixture elements. Search StressTile197."
 end)

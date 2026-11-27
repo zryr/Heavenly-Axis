@@ -47,13 +47,13 @@ package.loaded.Storage = { new = function(capabilities)
     function storage:loadDraft() return Util.copy(state.draft) end
     function storage:save(value)
         self.saves = self.saves + 1
-        if capabilities.storage.status == "Unsupported" then return false, "In-memory only; export required." end
+        if capabilities.storage.status == "Unsupported" then return false, "In-memory only; export required.", true end
         if state.saveFails then capabilities.storage.status = "Failed"; return false, "Write failed; draft retained." end
         state.persisted = Util.copy(value)
         return true, "Persisted and verified."
     end
     function storage:draft(value) self.drafts = self.drafts + 1; self.lastDraft = Util.copy(value); return true, "Draft stored." end
-    function storage:clearDraft() self.cleared = self.cleared + 1; return true end
+    function storage:clearDraft(context) self.cleared = self.cleared + 1; self.clearedContext = Util.copy(context); return true end
     function storage:import() return Util.copy(state.incoming) end
     function storage:export() return "{}" end
     function storage:copy() return false, "Manual copy required." end
@@ -61,7 +61,8 @@ package.loaded.Storage = { new = function(capabilities)
 end }
 package.loaded.Discovery = { new = function()
     local original = entry(0)
-    local record = { key = key, descriptor = Util.copy(descriptor), baseline = Util.copy(original), editable = true, object = { Parent = {} } }
+    local record = {key = key, descriptor = Util.copy(descriptor), baseline = Util.copy(original),
+        baselineRect = {x = 0, y = 20, w = 100, h = 50}, editable = true, object = {Parent = {}}}
     local discovery = { records = { [key] = record } }
     function discovery:start(callback) self.callback = callback end
     function discovery:get(id) return self.records[id] end
@@ -86,6 +87,31 @@ package.loaded.Transform = { new = function(discovery)
             if discovery:get(id) then self.live[id] = Util.copy(value); self.tracked[id] = true; count = count + 1 else skipped = skipped + 1 end
         end
         return count, skipped
+    end
+    function transform:beginTransaction()
+        self.before = {live = Util.copy(self.live), tracked = Util.copy(self.tracked)}
+        return true
+    end
+    function transform:endTransaction(callback)
+        if scenario.deferGesture then
+            self.complete = function(ok)
+                if not ok then self:cancelTransaction() end
+                self.before, self.complete = nil, nil
+                callback(ok, ok and nil or "Mock geometry mismatch.")
+            end
+        else self.before = nil; callback(true) end
+        return true
+    end
+    function transform:applyHistory(_, target, callback)
+        self:beginTransaction()
+        self:apply(target, {replace = true})
+        return self:endTransaction(callback)
+    end
+    function transform:cancelTransaction()
+        if not self.before then return false end
+        self.live, self.tracked = self.before.live, self.before.tracked
+        self.before = nil
+        return true
     end
     function transform:selectionRects(keys)
         local rects, roots = {}, {}
@@ -122,6 +148,8 @@ package.loaded.UI = { new = function()
     function ui:refresh() self.refreshed = true end
     function ui:updateSelection() end
     function ui:setVisible(value) self.visible = value end
+    function ui:confirmDone(save, discard) self.done = {save = save, discard = discard} end
+    function ui:showExport() self.exportShown = true end
     function ui:destroy() self.destroyed = true end
     return ui
 end }
@@ -276,6 +304,13 @@ app, services, cameraSignal = setup()
 app:move(13, 0)
 services.Workspace.CurrentCamera.ViewportSize = { X = 720, Y = 1280 }; cameraSignal:Fire()
 check(app.context.orientation == "portrait" and x(app) == 23 and app.dirty, "orientation changes retain unsaved geometry")
+check(app.editContext.orientation == "landscape" and app.profiles:active(app:_currentEditContext()).id == "first",
+    "unsaved edits retain their original orientation and write target")
+check(app:save() and x(app) == 200 and not app.dirty and not app.editContext,
+    "saving the pinned orientation then adopts the current orientation")
+check(scenario.persisted.profiles[1].layout[key].position.xo == 23
+    and scenario.persisted.profiles[3].layout[key].position.xo == 200 and app.storage.clearedContext.orientation == "landscape",
+    "save after rotation updates only the originating profile and draft file")
 app, services, cameraSignal = setup()
 services.Workspace.CurrentCamera.ViewportSize = { X = 720, Y = 1280 }; cameraSignal:Fire()
 check(x(app) == 200 and not app.dirty, "clean orientation change resolves compatible orientation override")
@@ -283,6 +318,74 @@ app, services, cameraSignal = setup()
 app:profile("create", "Draft profile", "place")
 services.Workspace.CurrentCamera.ViewportSize = { X = 720, Y = 1280 }; cameraSignal:Fire()
 check(x(app) == 10 and app.dirty, "unsaved profile metadata prevents orientation from replacing current draft")
+
+app, services, cameraSignal, pending = setup()
+app:move(13, 0)
+services.Workspace.CurrentCamera.ViewportSize = {X = 720, Y = 1280}; cameraSignal:Fire()
+pending[#pending]()
+check(app.storage.lastDraft.context.orientation == "landscape" and app.storage.lastDraft.reference.profileId == "first",
+    "a debounced recovery write follows the pinned editing context")
+app:cancel()
+check(x(app) == 200 and not app.dirty, "discarding a rotated draft restores the current orientation after the checkpoint")
+
+app = setup()
+app:setPreference("multiSelect", true)
+check(app.preferences.multiSelect and not app.dirty and #app.history.past == 0, "touch-only multi-select mode is not a layout edit")
+check(app:sizeInfo().scale == 100 and app:sizeInfo().original, "relative size is based on captured original dimensions")
+app:setSizePercent(150)
+check(app.transform.live[key].size.xo == 150 and app.transform.live[key].size.yo == 75 and app:sizeInfo().scale == 150,
+    "percent entry updates reported dimensions and preserves aspect ratio")
+app:resize(180, 75)
+check(app.transform.live[key].size.xo == 180 and app.transform.live[key].size.yo == 90, "precise size input respects aspect lock")
+app:setLauncherPosition(1, 0.25)
+check(#app.history.past == 2 and app.preferences.launcherX == 1, "docking the launcher is independent of HUD undo history")
+app:undo()
+check(app.transform.live[key].size.xo == 150 and app.preferences.launcherX == 1, "undo retains the launcher dock")
+
+app = setup({deferGesture = true})
+app:move(10, 0)
+check(x(app) == 20 and app.finishingGesture and #app.history.past == 0 and not app.dirty,
+    "a released adjustment waits for geometry verification before history")
+app:move(20, 0)
+check(x(app) == 20, "a newer adjustment cannot replace a pending transaction")
+app:save()
+check(app.storage.saves == 0, "Save waits for the released adjustment to verify")
+app.transform.complete(false)
+check(x(app) == 10 and #app.history.past == 0 and not app.dirty and app.storage.saves == 0,
+    "a failed transaction rolls back without history or an implicit Save")
+app:move(10, 0); app:save(); app.transform.complete(true)
+check(x(app) == 20 and #app.history.past == 1 and not app.dirty and app.storage.saves == 1,
+    "a verified transaction creates one action and satisfies a requested Save")
+app:undo()
+check(#app.history.past == 1 and app.finishingGesture, "Undo keeps its history cursor until geometry verifies")
+app.transform.complete(false)
+check(x(app) == 20 and #app.history.past == 1 and #app.history.future == 0 and not app.dirty,
+    "failed Undo preserves geometry, history cursor and checkpoint")
+app:undo(); app.transform.complete(true)
+check(x(app) == 10 and app.dirty and #app.history.future == 1, "verified Undo advances its history cursor")
+app:cancel(); app.transform.complete(true)
+check(x(app) == 20 and not app.dirty and #app.history.future == 0, "verified Discard restores the last checkpoint")
+
+app, _, _, pending = setup()
+app:move(7, 0)
+local draftWrite = pending[#pending]
+app:profile("preview", "second")
+draftWrite()
+check(app.previewState and x(app) == 100 and app.storage.drafts == 0, "a previously scheduled draft cannot capture a profile preview")
+app:profile("cancel")
+pending[#pending]()
+check(app.storage.lastDraft.layout[key].position.xo == 17, "the draft resumes from the prior edits when preview closes")
+
+app = setup({appOptions = {}})
+app:move(7, 0); app:Done()
+check(app.ui.done and app.editing and app.dirty, "Done prompts instead of losing unsaved edits")
+app.ui.done.discard()
+check(not app.editing and x(app) == 10 and not app.dirty, "Done discard restores checkpoint before closing")
+app:Open(); app:move(7, 0); app:Done(); app.ui.done.save()
+check(not app.editing and x(app) == 17 and not app.dirty, "Done Save closes after a durable checkpoint")
+app = setup({appOptions = {}, storageStatus = "Unsupported"})
+app:move(7, 0); app:Done(); app.ui.done.save()
+check(app.editing and app.ui.exportShown and not app.dirty, "Done offers export after a memory-only checkpoint")
 
 app = setup()
 app:move(9, 0)

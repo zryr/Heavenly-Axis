@@ -66,7 +66,10 @@ local function computedSize(object)
     local parent = object.Parent
     local parentSize = parent and parent.AbsoluteSize or {X = 1000, Y = 600}
     local s, q, scale = object.Size, parentScale(object), ownScale(object)
-    local x, y = (s.X.Scale * parentSize.X + s.X.Offset * q) * scale, (s.Y.Scale * parentSize.Y + s.Y.Offset * q) * scale
+    local basisX, basisY = parentSize.X, parentSize.Y
+    if object.SizeConstraint == "RelativeXX" then basisY = basisX end
+    if object.SizeConstraint == "RelativeYY" then basisX = basisY end
+    local x, y = (s.X.Scale * basisX + s.X.Offset * q) * scale, (s.Y.Scale * basisY + s.Y.Offset * q) * scale
     for _, child in ipairs(object._children) do if child.ClassName == "UIAspectRatioConstraint" then y = x / child.AspectRatio end end
     return {X = x, Y = y}
 end
@@ -82,8 +85,8 @@ end
 local Meta = {
     __index = function(object, key)
         if Object[key] then return Object[key] end
-        if key == "AbsoluteSize" then return computedSize(object) end
-        if key == "AbsolutePosition" then return computedPosition(object) end
+        if key == "AbsoluteSize" then return object._props.frozenSize or computedSize(object) end
+        if key == "AbsolutePosition" then return object._props.frozenPosition or computedPosition(object) end
         return object._props[key]
     end,
     __newindex = function(object, key, value)
@@ -249,8 +252,7 @@ check(#pending == 1, "One stabilization check per completed drag")
 flush()
 check(Util.equal(Discovery.serialize(normal), normalBaseline), "Unstable drag rolls back the entire action")
 check(discovery.byObject[normal].experimental and not discovery.byObject[normal].editable, "Detected script-managed target requires explicit approval")
-local rollback = transform:capture()[normalKey]
-check(rollback and Util.equal(rollback.position, normalBaseline.position), "Rollback snapshot remains available to App capture")
+check(transform:capture()[normalKey] == nil, "Rollback restores absence of a previous override")
 check(discovery:approve(normalKey, true), "Detected script-managed target can be explicitly approved")
 transform:apply({}, {replace = true})
 check(not discovery.approved[normalKey], "Replacing layout revokes absent experimental permission")
@@ -322,6 +324,168 @@ transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
 check(writesAfterRevoke == 0 and revoked.Position.X.Offset == 444 and not discovery.byObject[revoked].editable,
     "revoked approval never restores the baseline repeatedly during unrelated HUD events")
 revokeConnection:Disconnect()
+
+-- Roblox layout reads can lag behind two input updates in the same frame.
+local deferred = create("Frame", "DeferredGeometry", screen)
+flush()
+local deferredKey = key(deferred)
+deferred.AnchorPoint = {X = 0.5, Y = 0.5}
+local deferredBefore = Discovery.serialize(deferred)
+local original = transform:selectionRects({deferredKey})[1]
+deferred.frozenPosition, deferred.frozenSize = deferred.AbsolutePosition, deferred.AbsoluteSize
+check(transform:beginTransaction(), "Deferred geometry transaction starts")
+check(transform:setRects({deferredKey}, {{x = original.x + 7, y = original.y + 9, w = 140, h = 130}}), "First deferred write")
+local finalRect = {x = original.x + 18, y = original.y + 24, w = 160, h = 150}
+check(transform:setRects({deferredKey}, {finalRect}), "Second write uses a stable geometry reference")
+near(deferred.Position.X.Offset, 48, "Accumulated drag never double-counts previous X offset")
+near(deferred.Size.Y.Offset, 150, "Accumulated resize never double-counts previous height")
+local outcome
+check(transform:endTransaction(function(ok) outcome = ok end), "Completion callback is registered")
+check(outcome == nil and not transform:beginTransaction(), "History can await verified geometry before another edit")
+deferred.frozenPosition, deferred.frozenSize = nil, nil
+flush()
+check(outcome == true, "Delayed real geometry is confirmed after layout catches up")
+near(deferred.AbsolutePosition.X, finalRect.x, "Deferred geometry lands at requested position")
+near(deferred.AbsoluteSize.Y, finalRect.h, "Deferred geometry lands at requested height")
+local verified = transform:capture()[deferredKey]
+check(transform:beginTransaction(), "Cancellation starts from a verified layout")
+check(transform:setRects({deferredKey}, {{x = 100, y = 100, w = 180, h = 180}}), "Cancellation has a provisional write")
+check(transform:cancelTransaction() and Util.equal(transform:capture()[deferredKey], verified),
+    "Cancellation restores prior portable request without reapplying other targets")
+near(deferred.AbsolutePosition.X, finalRect.x, "Cancellation restores live geometry")
+check(not Util.equal(Discovery.serialize(deferred), deferredBefore), "Cancellation preserves earlier completed action")
+
+local first = create("Frame", "IndependentFailure", screen)
+local second = create("Frame", "IndependentSuccess", screen)
+flush()
+check(transform:setRects({key(first)}, {{x = 12, y = 12, w = 100, h = 100}}), "First standalone request")
+first.Position = UDim2.new(0, 999, 0, 999)
+check(transform:setRects({key(second)}, {{x = 44, y = 44, w = 100, h = 100}}), "Unrelated standalone request")
+flush()
+flush()
+near(first.AbsolutePosition.X, 0, "Later unrelated request cannot replace earlier verification")
+near(second.AbsolutePosition.X, 44, "Failed request never reverts unrelated geometry")
+check(transform:capture()[key(first)] == nil and transform:capture()[key(second)] ~= nil,
+    "Only the verified request remains available to checkpoint")
+
+local selectedRects, selectedKeys, skippedTargets = transform:selectionRects({key(rotatedChild), key(second)}, true)
+check(#selectedRects == 1 and selectedKeys[1] == key(second) and skippedTargets == 1,
+    "Unsupported members remain selected for inspection and are counted when transforming supported members")
+check(#transform:selectionRects({key(rotatedChild), key(second)}) == 2, "Inspection retains incompatible member bounds")
+
+local relative = create("Frame", "RelativeSizeConstraint", screen)
+relative.Size = UDim2.new(0.10, 0, 0.03, 0)
+relative.SizeConstraint = "RelativeXX"
+flush()
+local relativeKey = key(relative)
+local originalRelative = Discovery.serialize(relative)
+check(transform:setRects({relativeKey}, {{x = 32, y = 17, w = 90, h = 25}}), "RelativeXX resize uses rendered dimensions")
+flush()
+near(relative.AbsoluteSize.Y, 25, "RelativeXX Y uses parent width")
+local relativeLayout = {[relativeKey] = transform:capture()[relativeKey]}
+check(transform:restore({relativeKey}) == 1 and Util.equal(Discovery.serialize(relative), originalRelative), "Constraint reset restores original raw properties")
+check(transform:apply(relativeLayout) == 1, "Saved RelativeXX override passes effective size validation")
+flush()
+near(relative.AbsoluteSize.Y, 25, "Restored RelativeXX geometry matches the saved edit")
+
+local growParent = create("Frame", "DeferredParent", screen)
+local growChild = create("Frame", "ChildOfDeferredParent", growParent)
+growParent.Size = UDim2.new(0, 40, 0, 40)
+growChild.Size = UDim2.new(0, 25, 0, 25)
+flush()
+local parentEntry, childEntry = Discovery.serialize(growParent), Discovery.serialize(growChild)
+parentEntry.size.xo, parentEntry.size.yo = 200, 200
+childEntry.size = {xs = 0.24, xo = 0, ys = 0.24, yo = 0}
+growParent.frozenSize = growParent.AbsoluteSize
+applied, skipped = transform:apply({[key(growParent)] = parentEntry, [key(growChild)] = childEntry})
+check(applied == 2 and skipped == 0, "Restoration projects pending ancestor dimensions before validating child layout")
+growParent.frozenSize = nil
+flush()
+flush()
+near(growChild.AbsoluteSize.X, 48, "Restored child uses the settled ancestor dimensions")
+
+local clean = create("Frame", "NoOp", screen)
+flush()
+local cleanKey = key(clean)
+check(transform:beginTransaction(), "No-op gesture can start")
+check(transform:setRects({cleanKey}, {{x = 0, y = 0, w = 100, h = 100}}), "Exact already displayed rectangle is accepted")
+local noOp
+check(transform:endTransaction(function(ok) noOp = ok end) and noOp == true, "No-op resolves immediately")
+check(transform:capture()[cleanKey] == nil and #pending == 0, "No-op creates no override or deferred work")
+
+local sparse = create("Frame", "SparseInheritedSettings", screen)
+flush()
+local sparseKey = key(sparse)
+local sparseEntry = Discovery.serialize(sparse)
+sparseEntry.rotation, sparseEntry.transparency = nil, nil
+sparseEntry.descriptor = Util.copy(discovery.byObject[sparse].descriptor)
+check(transform:apply({[sparseKey] = sparseEntry}) == 1, "Apply a resolved entry with optional settings absent")
+flush()
+check(transform:beginTransaction(), "Move after applying sparse inherited configuration")
+check(transform:setRects({sparseKey}, {{x = 22, y = 16, w = 100, h = 100}}), "Move writes only supported geometry")
+sparse.BackgroundTransparency = 0.8
+check(transform:endTransaction(function(ok) outcome = ok end), "Move proceeds while a game animates unedited properties")
+flush()
+local sparseResult = transform:capture()[sparseKey]
+check(outcome == true and sparseResult.position.xo == 22 and sparseResult.rotation == nil and sparseResult.transparency == nil,
+    "Geometry edits never materialize unrelated optional fields into profile patches")
+near(sparse.BackgroundTransparency, 0.8, "Geometry verification leaves the game's separate property unchanged")
+check(transform:beginTransaction(), "Start second sparse edit")
+check(transform:setRects({sparseKey}, {{x = 60, y = 60, w = 100, h = 100}}), "Write another provisional move")
+sparse.BackgroundTransparency = 0.5
+check(transform:cancelTransaction(), "Cancel only the owned edit")
+near(sparse.BackgroundTransparency, 0.5, "Cancellation preserves changes to unowned game properties")
+near(sparse.AbsolutePosition.X, 22, "Cancellation restores the edited position")
+
+check(transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 8, h = 8}}), "A small original control is still movable")
+flush()
+check(not transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 12, h = 12}}), "Resizing to a new subminimum size is rejected")
+near(tiny.AbsolutePosition.X, 2, "Small moved control remains at the last valid adjustment")
+
+local historyBefore = {[deferredKey] = verified, [cleanKey] = Discovery.serialize(clean)}
+historyBefore[cleanKey].position.xo = 35
+check(transform:applyHistory({[deferredKey] = verified}, historyBefore, function(ok) outcome = ok end), "Replay adds a previous override")
+check(transform:capture()[cleanKey] == nil, "Replay does not expose unverified overrides to the App state")
+flush()
+check(outcome == true and transform:capture()[cleanKey].position.xo == 35, "Replay commits the verified request")
+outcome = nil
+check(transform:applyHistory(historyBefore, {}, function(ok, reason) outcome = ok and true or reason end), "Replay can restore omitted targets")
+clean.Position = UDim2.new(0, 123, 0, 0)
+flush()
+check(type(outcome) == "string" and transform:capture()[cleanKey].position.xo == 35,
+    "Unstable restore reports failure and preserves the previous history state")
+near(deferred.AbsolutePosition.X, finalRect.x, "One failed replay member rolls back both members")
+near(clean.AbsolutePosition.X, 35, "Failed history replay restores the exact previous properties")
+local removedKey = key(second)
+local removedEntry = transform:capture()[removedKey]
+second:Destroy()
+flush()
+local missing
+check(transform:applyHistory({[removedKey] = removedEntry}, {}, function(ok, _, skipped) missing = ok and skipped end)
+    and missing == 1, "Missing members allow portable history to proceed without a live write")
+
+-- The real UDim2 stores integral offsets. Model its constructor independently of float test values.
+local floatUdim = UDim2.new
+UDim2.new = function(xs, xo, ys, yo) return floatUdim(xs, math.floor(xo), ys, math.floor(yo)) end
+local scaled = create("Frame", "QuantizedSize", screen)
+scaled.AnchorPoint = {X = 0.5, Y = 0.5}
+local quantizingScale = create("UIScale", "Scale", scaled)
+quantizingScale.Scale = 1.5
+flush()
+local preciseTransform = dofile("src/Transform.lua").new(discovery, log)
+local preciseKey = key(scaled)
+local precise = {x = 23, y = 31, w = 100, h = 16}
+check(preciseTransform:setRects({preciseKey}, {precise}), "Quantized offset math adjusts anchor compensation after rounding")
+flush()
+check(preciseTransform:capture()[preciseKey] and scaled.AbsoluteSize.Y >= 16, "An accepted minimum size remains valid after quantization")
+check(math.abs(scaled.AbsolutePosition.X - precise.x) <= 1.5 and math.abs(scaled.AbsoluteSize.Y - precise.h) <= 1.5,
+    "Quantized rendered geometry stays within the requested screen tolerance")
+local preciseLayout = preciseTransform:capture()
+preciseTransform:restore()
+check(preciseTransform:apply(preciseLayout) == 1, "Quantized minimum edit can be saved and restored")
+flush()
+preciseTransform:destroy()
+UDim2.new = floatUdim
 
 local connections = {}
 for _, connection in ipairs(discovery.connections) do connections[#connections + 1] = connection end
