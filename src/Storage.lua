@@ -9,6 +9,11 @@ Storage.FILES = {
     pending = "HeavenlyAxis-v3.pending.json",
     draft = "HeavenlyAxis-v3.draft.json",
 }
+Storage.EDITOR_FILES = {
+    saved = "HeavenlyAxis-v3.editor.json",
+    backup = "HeavenlyAxis-v3.editor.backup.json",
+    pending = "HeavenlyAxis-v3.editor.pending.json",
+}
 Storage.MAX_BYTES = 2 * 1024 * 1024
 
 local function validateState(state)
@@ -44,7 +49,7 @@ end
 
 function Storage.new(capabilities, httpService, log, context)
     return setmetatable({capabilities = capabilities, http = httpService, log = log or function() end,
-        blocked = false, context = context, draftOperations = {}}, Storage)
+        blocked = false, context = context, draftOperations = {}, partialWrites = {}}, Storage)
 end
 
 function Storage:_draftPath(context)
@@ -126,13 +131,13 @@ function Storage:load()
     if not self:_available() then return nil, "Persistent storage unavailable; profiles stay in memory until exported." end
     local raw, err = self:_read(self.FILES.saved)
     if not raw and err == "missing" then
-        self.blocked, self.partialFirstWrite = false, nil
+        self.blocked, self.partialWrites[self.FILES.saved] = false, nil
         return nil, "No saved V3 configuration."
     end
     local data, reason
     if raw then data, reason = self:import(raw) else reason = err end
     if data then
-        self.blocked, self.partialFirstWrite = false, nil
+        self.blocked, self.partialWrites[self.FILES.saved] = false, nil
         self.capabilities.storage.status = "Available but unverified"
         self.capabilities.storage.detail = "Saved JSON read and validated; next Save verifies writes."
         return data
@@ -152,50 +157,93 @@ function Storage:_verifiedWrite(path, raw)
     return readOk and actual == raw
 end
 
+function Storage:_saveDocument(raw, files, decode, expected)
+    -- Validate every existing primary before any overwrite, including saves before load.
+    local path = files.saved
+    local previous, readError = self:_read(path)
+    if not previous and readError ~= "missing" then return false, readError end
+    local retryingFirstWrite = previous ~= nil and previous == self.partialWrites[path]
+    if not retryingFirstWrite then self.partialWrites[path] = nil end
+    if previous then
+        local previousData = decode(self, previous)
+        if not previousData then
+            if not retryingFirstWrite then return false, "Save blocked. Existing configuration is invalid and has been preserved.", true end
+            previous = nil
+        elseif expected and not Util.equal(previousData, expected) then
+            return false, "Saved editor preferences changed in another session. Rejoin to load them."
+        end
+    end
+    if not self:_verifiedWrite(files.pending, raw) then return false, "Save failed while staging configuration. Previous save preserved.", false end
+    if previous and not self:_verifiedWrite(files.backup, previous) then return false, "Save failed while preserving backup. Previous save preserved.", false end
+    if not self:_verifiedWrite(path, raw) then
+        if previous then
+            if self:_verifiedWrite(path, previous) then
+                return false, "Save failed during final write. The previous configuration was restored and verified.", false
+            end
+            return false, "Save failed during final write. Previous backup and staged data remain available.", false
+        end
+        local incomplete = self:_read(path)
+        if incomplete and #incomplete < #raw and raw:sub(1, #incomplete) == incomplete then
+            -- A verified staged copy exists. Retry can replace only this exact incomplete first write.
+            self.partialWrites[path] = incomplete
+        else
+            self.partialWrites[path] = nil
+        end
+        return false, "First save could not be verified. Staged data remains available.", false
+    end
+    self.partialWrites[path] = nil
+    local remove = self.capabilities._functions.delfile
+    if type(remove) == "function" then pcall(remove, files.pending) end
+    return true
+end
+
 function Storage:save(data)
     local raw, err = self:export(data)
     if not raw then return false, err end
     if not self:_available() then return false, "Checkpoint is in memory only. Export JSON for a durable copy.", true end
-    -- Validate every existing primary before any overwrite, including saves before load.
-    local previous, readError = self:_read(self.FILES.saved)
-    if not previous and readError ~= "missing" then return self:_fail(readError) end
-    local retryingFirstWrite = previous ~= nil and previous == self.partialFirstWrite
-    if not retryingFirstWrite then self.partialFirstWrite = nil end
-    if previous then
-        local valid = self:import(previous)
-        if not valid then
-            if not retryingFirstWrite then
-                self.blocked = true
-                return self:_fail("Save blocked. Existing configuration is invalid and has been preserved.")
-            end
-            previous = nil
-        end
-    end
-    self.blocked = false
-    if not self:_verifiedWrite(self.FILES.pending, raw) then return self:_fail("Save failed while staging configuration; previous save preserved.") end
-    if previous and not self:_verifiedWrite(self.FILES.backup, previous) then return self:_fail("Save failed while preserving backup; previous save preserved.") end
-    if not self:_verifiedWrite(self.FILES.saved, raw) then
-        if previous then
-            if self:_verifiedWrite(self.FILES.saved, previous) then
-                return self:_fail("Save failed during final write. The previous configuration was restored and verified.")
-            end
-            return self:_fail("Save failed during final write. Previous backup and staged data remain available.")
-        end
-        local incomplete = self:_read(self.FILES.saved)
-        if incomplete and #incomplete < #raw and raw:sub(1, #incomplete) == incomplete then
-            -- A verified staged copy exists. Retry can replace only this exact incomplete first write.
-            self.partialFirstWrite = incomplete
-        else
-            self.partialFirstWrite = nil
-        end
-        return self:_fail("First save could not be verified. Staged data remains available.")
-    end
-    self.partialFirstWrite = nil
-    local remove = self.capabilities._functions.delfile
-    if type(remove) == "function" then pcall(remove, self.FILES.pending) end
+    local saved, reason, blocked = self:_saveDocument(raw, self.FILES, self.import)
+    if blocked ~= nil or saved then self.blocked = blocked == true end
+    if not saved then return self:_fail(reason) end
     self.capabilities.storage.status = "Supported and verified"
     self.capabilities.storage.detail = "Last Save wrote and read back validated JSON."
     return true, "Profile persisted locally and verified by readback. Automatic execution must be configured separately."
+end
+
+function Storage:_decodeEditorPreferences(raw)
+    local data, reason = self:_decode(raw)
+    if not data then return nil, reason end
+    local valid, problem = Config.validateEditorPreferences(data)
+    if not valid then return nil, problem end
+    return data
+end
+
+function Storage:loadEditorPreferences()
+    if not self:_available() then return nil, "Editor preferences will apply for this session only." end
+    local files = self.EDITOR_FILES
+    local raw, reason = self:_read(files.saved)
+    if not raw and reason == "missing" then
+        self.partialWrites[files.saved] = nil
+        return nil
+    end
+    local data = raw and self:_decodeEditorPreferences(raw)
+    if data then
+        self.partialWrites[files.saved] = nil
+        return data
+    end
+    local backupRaw = self:_read(files.backup)
+    local backup = backupRaw and self:_decodeEditorPreferences(backupRaw)
+    if backup then return backup, "Loaded editor preference backup. The original file was preserved." end
+    return nil, "Editor preferences could not be read. The original file was preserved."
+end
+
+function Storage:saveEditorPreferences(data, expected)
+    local valid, reason = Config.validateEditorPreferences(data)
+    if not valid then return false, reason end
+    if not self:_available() then return false, "Local file storage is unavailable." end
+    local raw, err = self:_encode(data)
+    if not raw then return false, err end
+    local saved, problem = self:_saveDocument(raw, self.EDITOR_FILES, self._decodeEditorPreferences, expected)
+    return saved, problem
 end
 
 function Storage:draft(state, context)

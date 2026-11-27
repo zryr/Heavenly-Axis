@@ -1,4 +1,4 @@
-# V3.1.2 mobile rescue verification
+# V3.2.0 verification
 
 Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
@@ -6,12 +6,26 @@ Studio rendering and physical Android testing were unavailable in the Debian Lin
 
 | Command | Result |
 | --- | --- |
-| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 330,433 bytes. |
-| `work/test-venv/bin/python tools/test.py` | Passed. Nine suites, 840 checks, 20 Lua syntax checks, zero failures. |
-| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 30 files, including the shared Roblox test fixture. |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 443,430 bytes. |
+| `work/test-venv/bin/python tools/test.py` | Passed. Ten suites, 1,048 checks, 23 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 34 files, including the shared Roblox test fixture. |
 | `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-The test suites cover App orchestration (89), core geometry and history (58), discovery (43), input (56), notifications (28), persistence (132), release integration (34), transform and runtime adapters (271), and UI layout and interactions (129). The UI suite instantiates the production UI and input controller in a Lua fixture. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
+The suites cover App orchestration (101), core geometry and history (58), discovery (54), input (84), notifications (35), onboarding (26), persistence (158), bundled integration (57), transform and runtime adapters (329), and UI layout and interactions (146). The UI suite instantiates the production editor and input controller in a Lua fixture. Viewport scenarios include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and software keyboard variations.
+
+## Master workflow coverage
+
+| Workflow | Tested evidence |
+| --- | --- |
+| First open, edit, save, exit and reopen | Bundled startup, skip, Jump, drag, slider, pinch, Save readback, Done, reopen and cold restore. The onboarding suite also runs the complete isolated practice flow. |
+| Transparent and overlapping layers | Bundled Select Through inspects the overlay, chooses it explicitly, applies Ignore and then selects Jump. Discovery fixtures cover hidden, clipped and decorative candidates. |
+| Logical groups | Bundled Quick Group, movement of both members, naming, individual-member focus, ungrouping and checkpoint restoration. |
+| Layout-managed controls | Bundled representative list member offers size and a movable container. Dragging the position is refused, changing size leaves raw Position untouched, and the container can move. Runtime tests exercise reflow, flex, grid, constraints, and rollback. |
+| Touch, keyboard and orientation | Mocked ownership and cancellation, slider versus scroll, long-press versus drag, pinch handoff, keyboard fit and profile orientation pinning. |
+| Persistence and recovery | Independent editor preferences and layout saves, interrupted writes, locked parent and sibling guards, lost targets, draft recovery, cold restore and Safe Mode. |
+| PC | Mocked right-click selection, mouse input and keyboard behavior. Native dispatch in a Roblox client remains unverified. |
+
+The provided upload contained the brief only. The reported Heroes Battlegrounds behavior is consistent with layout ownership. The exact live hierarchy and game behavior remain unverified. The Studio fixture provides representative list, flex and grid bars for a supported runtime check. [Fixture protocol](TESTING.md#controlled-studio-fixture)
 
 ## Final touchscreen pass
 
@@ -20,7 +34,7 @@ The test suites cover App orchestration (89), core geometry and history (58), di
 - Fresh bundle execution covers opening the editor through the LocalScript and shared-environment paths, selecting Jump, dragging, slider resizing, pinching, Save readback, Undo, Done, reopening, and cold restore through `Source`. It also verifies the version notice, original-layout recovery, and teardown.
 - Horizontal slider ownership pauses the inspector scroller and restores it on release or cancellation. Vertical swipes remain available for scrolling. Releasing an unchanged field makes no history entry. Fine steps move a tiny selection by a visible increment. Blank taps ignore passive, transparent structural zones, which remain in the explicit element list.
 - Ordinary settled transforms can verify at the early 40 ms check. Delayed layout gets a bounded retry. An element recreated under the same identity during a drag stays out of that gesture. The selection overlay coalesces redundant redraw requests.
-- Inspected mock geometry previews at 1536 × 695, 960 × 440, 640 × 360 and 393 × 852. These show planned bounds and placement. They omit native fonts, clipping, device rendering and touch dispatch.
+- Inspected source-derived mock geometry for the welcome surface and Quick Edit at landscape and portrait sizes. The previews show bounds and placement. They omit native fonts, clipping, device rendering and touch dispatch.
 
 ## Acceptance gates
 

@@ -31,7 +31,7 @@ local function signal()
 end
 
 local enumerations, descendantScans = 0, 0
-local classes = {Frame = true, ImageButton = true, TextButton = true, TextLabel = true, ScrollingFrame = true}
+local classes = {Frame = true, ImageButton = true, ImageLabel = true, TextButton = true, TextLabel = true, ScrollingFrame = true}
 local dim = {X = {Scale = 0, Offset = 0}, Y = {Scale = 0, Offset = 0}}
 local function create(class, name, parent, x, y, w, h)
     local object = {
@@ -140,6 +140,26 @@ local newOwner = create("Frame", "New owner", gameGui, 720, 440, 50, 50)
 local oldMember = create("Frame", "Old member", oldOwner, 665, 445, 35, 35)
 local newMember = create("Frame", "New member", newOwner, 725, 445, 35, 35)
 local layout = create("UIListLayout", "Move within PlayerGui", oldOwner)
+local tableOwner = create("Frame", "Table owner", gameGui, 660, 310, 70, 90)
+local tableRow = create("Frame", "Row", tableOwner, 660, 310, 70, 90)
+local tableCell = create("TextButton", "Cell", tableRow, 665, 325, 40, 45)
+local tableLayout = create("UITableLayout", "Table", tableOwner)
+local underSmart = create("TextButton", "BehindSmart", gameGui, 735, 165, 50, 46)
+local actionable = create("ImageButton", "AbilityIcon", gameGui, 735, 165, 50, 46)
+actionable.BackgroundTransparency = 1
+local icon = create("ImageLabel", "Spell_Art", actionable, 735, 165, 50, 46)
+icon.BackgroundTransparency, icon.Image, icon.ImageTransparency = 1, "rbxassetid://1", 0
+local invisibleText = create("TextLabel", "Invisible Tooltip", gameGui, 735, 165, 50, 46)
+invisibleText.BackgroundTransparency, invisibleText.Text, invisibleText.TextTransparency = 1, "Tooltip", 1
+invisibleText.TextStrokeTransparency = 1
+local hiddenOverlay = create("TextLabel", "Hidden tooltip", gameGui, 735, 165, 50, 46)
+hiddenOverlay.Visible = false
+local tapZone = create("TextButton", "EmptyAction", gameGui, 790, 165, 45, 45)
+tapZone.BackgroundTransparency, tapZone.Active = 1, true
+local framed = create("Frame", "Border Only", gameGui, 840, 165, 48, 48)
+framed.BackgroundTransparency = 1
+local stroke = create("UIStroke", "Outline", framed)
+stroke.Thickness, stroke.Transparency, stroke.ApplyStrokeMode, stroke.Enabled = 2, 0.3, "Border", true
 local controls = create("Frame", "Large collection", gameGui, 300, 0, 450, 200)
 for index = 1, 500 do
     create("Frame", "Control " .. index, controls, 400 + index % 220, 10 + index % 100, 1, 1)
@@ -154,7 +174,8 @@ local function found(records, object)
     return false
 end
 
-check(descendantScans == 1 and discovery.stats.indexed >= 500 and enumerations < 550, "Discovery scans once and enumerates broad siblings once per parent")
+check(descendantScans == 1 and discovery.stats.indexed >= 500 and enumerations < discovery.stats.indexed + 30,
+    "Discovery scans once and enumerates broad siblings once per parent")
 check(discovery:match(record(jump).descriptor) == record(jump), "Exact identity matches by key")
 check(record(jump).baselineRect.w == 82 and record(hiddenButton).baselineRect == nil, "Baseline records initial usable geometry")
 check(record(own) == nil, "Editor ScreenGui and its descendants stay outside discovery")
@@ -213,30 +234,42 @@ check(#discovery:hit(pointer.x, pointer.y) == 0 and not found(discovery:list(), 
 touchFrame.Rotation = 12
 touchFrame.props.Rotation:Fire()
 flush()
-check(not discovery:get(record(jump).key).editable, "Ancestor rotation marks descendants incompatible without a structural scan")
+local rotationCaps = discovery:get(record(jump).key).capabilities
+check(not rotationCaps.move.supported and not rotationCaps.resize.supported and rotationCaps.visual.supported,
+    "Ancestor rotation blocks screen geometry while compatible visual editing remains available")
 touchFrame.Rotation = 0
 touchFrame.props.Rotation:Fire()
 flush()
 check(discovery:get(record(jump).key).editable, "Clearing ancestor rotation restores compatibility")
 local revisionsBefore = #revisions
-local style = create("UIStroke", "Style only", folderButton)
+local style = create("UICorner", "Style only", folderButton)
 root.DescendantAdded:Fire(style)
 flush()
 check(descendantScans == 1 and #revisions == revisionsBefore, "A visual-only descendant does not rescan the HUD")
-check(discovery:get(record(oldMember).key).experimental and not discovery:get(record(newMember).key).experimental,
-    "The existing layout owns its original direct children")
+local listCaps = discovery:get(record(oldMember).key).capabilities
+check(not listCaps.move.supported and listCaps.resize.supported and listCaps.transparency.supported
+    and not listCaps.rotation.supported and not listCaps.groupResize.supported and not record(oldMember).experimental,
+    "A plain list owns child position and rotation while keeping independent size and transparency")
+local cellCaps = discovery:get(record(tableCell).key).capabilities
+check(record(tableCell).layoutController == tableLayout and not cellCaps.move.supported and not cellCaps.resize.supported
+    and cellCaps.visual.supported, "UITableLayout also owns its grandchildren's table cells")
 table.remove(oldOwner.children, 2)
 newOwner.children[#newOwner.children + 1] = layout
 layout.Parent = newOwner
 layout.props.Parent:Fire()
 flush()
-check(not discovery:get(record(oldMember).key).experimental and discovery:get(record(newMember).key).experimental
+check(discovery:get(record(oldMember).key).capabilities.move.supported and not discovery:get(record(newMember).key).capabilities.move.supported
     and descendantScans == 1, "A layout moved within PlayerGui updates both owners without a tree scan")
+layout.HorizontalFlex = "Fill"
+layout.props.HorizontalFlex:Fire()
+flush()
+check(not discovery:get(record(newMember).key).capabilities.resize.supported and descendantScans == 1,
+    "Changing flex mode updates independent resize compatibility without a tree scan")
 table.remove(newOwner.children, 2)
 layout.Parent = nil
 root.DescendantRemoving:Fire(layout)
 flush()
-check(not discovery:get(record(newMember).key).experimental and descendantScans == 1,
+check(discovery:get(record(newMember).key).capabilities.move.supported and descendantScans == 1,
     "Deferred removal invalidates layout metadata even after Parent was cleared")
 local duplicateFolder = create("Folder", folder.Name, root)
 root.DescendantAdded:Fire(duplicateFolder)
@@ -256,6 +289,41 @@ actual.Parent = front
 check(discovery:get(oldKey) == nil, "Reparenting inside PlayerGui cannot resolve the stale saved hierarchy")
 flush()
 check(record(actual).key ~= oldKey and discovery:match(record(actual).descriptor) == record(actual), "Reparented objects acquire their new exact identity")
+root.GetGuiObjectsAtPosition = nil
+local smartHits, ordinary = discovery:hit(752, 180)
+check(ordinary == record(actionable) and found(smartHits, icon) and found(smartHits, invisibleText),
+    "Smart Selection promotes an actionable control over its icon and skips invisible decoration")
+check(record(actionable).displayName == "Ability Icon" and record(actionable).typeIcon == "BTN"
+    and record(icon).parentKey == record(actionable).key and record(actionable).childKeys[1] == record(icon).key,
+    "Layers expose friendly names, type icons, and navigable parent-child relationships")
+local _, compactPick = discovery:hit(805, 185)
+local _, strokePick = discovery:hit(841, 167)
+check(compactPick == record(tapZone) and strokePick == record(framed),
+    "A compact transparent action and a border painted by UIStroke remain selectable")
+hud.Enabled = true
+local all = discovery:list("all")
+check(found(all, hiddenOverlay) and record(hiddenOverlay).visibility == "hidden"
+    and record(invisibleText).visibility == "transparent" and record(actionable).visibility == "container"
+    and record(wrongClip).visibility == "clipped", "Layers distinguish hidden, transparent, clipped, and painted-child containers")
+function root:GetGuiObjectsAtPosition()
+    return {icon, actionable, invisibleText, underSmart}
+end
+check(found(discovery:hitThrough(752, 180), hiddenOverlay), "Explicit inspection adds hidden candidates omitted by native hit testing")
+local ignoredKey, lockedKey = record(actionable).key, record(underSmart).key
+discovery:setSelectionPolicy({ignored = {[ignoredKey] = true}, locked = {[lockedKey] = true}})
+local _, beneath = discovery:hit(752, 180)
+check(beneath == record(underSmart) and record(actionable).ignored and record(underSmart).locked,
+    "Ignore skips an actionable subtree's tap decoration while Lock leaves the underneath layer inspectable")
+check(found(discovery:list("ignored"), actionable) and found(discovery:list("locked"), underSmart)
+    and not found(discovery:list("editable"), underSmart) and actionable.Visible and icon.ImageTransparency == 0,
+    "Rules remain explicit and do not modify Roblox presentation")
+discovery:setSelectionPolicy({smartSelection = false})
+local _, nativeFront = discovery:hit(752, 180)
+check(nativeFront == record(icon), "Disabling Smart Selection restores native layer ordering")
+root.GetGuiObjectsAtPosition = nil
+discovery:setSelectionPolicy({skipTransparent = false})
+local _, unfiltered = discovery:hit(850, 260)
+check(unfiltered == record(touchFrame), "Disabling transparent filtering makes a transparent structural layer directly selectable")
 local firstSubscription = discovery.objectConnections[upper][1]
 discovery:destroy()
 check(not firstSubscription.live, "Discovery destroy disconnects retained GUI subscriptions")

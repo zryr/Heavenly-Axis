@@ -64,10 +64,28 @@ local function parentScale(object)
     while current and current.ClassName ~= "PlayerGui" do result = result * ownScale(current); current = current.Parent end
     return result
 end
+local function controller(parent)
+    if not parent then return nil end
+    for _, child in ipairs(parent._children) do
+        if child.ClassName == "UIListLayout" or child.ClassName == "UIGridLayout" then return child end
+    end
+    return nil
+end
+local function guiSiblings(parent)
+    local result = {}
+    for _, sibling in ipairs(parent._children) do
+        if sibling:IsA("GuiObject") and sibling.Visible then result[#result + 1] = sibling end
+    end
+    return result
+end
 local function computedSize(object)
     if object.ClassName == "PlayerGui" or object.ClassName == "ScreenGui" then return {X = 1000, Y = 600} end
     local parent = object.Parent
     local parentSize = parent and parent.AbsoluteSize or {X = 1000, Y = 600}
+    local layout = controller(parent)
+    if layout and layout.ClassName == "UIGridLayout" then return {X = layout.CellWidth or 64, Y = layout.CellHeight or 56} end
+    if layout and layout.HorizontalFlex == "Fill" then return {X = parentSize.X / #guiSiblings(parent), Y = 56} end
+    if layout and layout.forceWidth then return {X = layout.forceWidth, Y = 56} end
     local s, q, scale = object.Size, parentScale(object), ownScale(object)
     local basisX, basisY = parentSize.X, parentSize.Y
     if object.SizeConstraint == "RelativeXX" then basisY = basisX end
@@ -82,6 +100,18 @@ local function computedPosition(object)
     local p = parent and parent.AbsolutePosition or {X = 0, Y = 0}
     local s = parent and parent.AbsoluteSize or {X = 1000, Y = 600}
     local position, anchor, q, size = object.Position, object.AnchorPoint, parentScale(object), object.AbsoluteSize
+    local layout = controller(parent)
+    if layout then
+        local siblings, gap, width = guiSiblings(parent), layout.Gap or 0, 0
+        for _, sibling in ipairs(siblings) do width = width + sibling.AbsoluteSize.X end
+        width = width + math.max(0, #siblings - 1) * gap
+        local x = p.X + (layout.HorizontalAlignment == "Center" and (s.X - width) / 2 or 0)
+        for _, sibling in ipairs(siblings) do
+            if sibling == object then break end
+            x = x + sibling.AbsoluteSize.X + gap
+        end
+        return {X = x, Y = p.Y}
+    end
     return {X = p.X + position.X.Scale * s.X + position.X.Offset * q - anchor.X * size.X,
         Y = p.Y + position.Y.Scale * s.Y + position.Y.Offset * q - anchor.Y * size.Y}
 end
@@ -200,28 +230,81 @@ flush()
 check(discovery.byObject[hiddenChild] ~= nil, "Hidden objects retain identity for restoration")
 for _, item in ipairs(discovery:list()) do check(item.object ~= hiddenChild and item.object ~= hidden, "Hidden hierarchy filtered") end
 local managed = create("Frame", "Managed", screen)
-local item = create("Frame", "Item", managed)
-create("UIListLayout", "Layout", managed)
+managed.Size = UDim2.new(0, 400, 0, 100)
+local item = create("TextButton", "Ability1", managed)
+local adjacentAbility = create("TextButton", "Ability2", managed)
+local listLayout = create("UIListLayout", "Layout", managed)
+listLayout.HorizontalAlignment, listLayout.Gap = "Center", 8
 flush()
-check(discovery.byObject[item].experimental and not discovery.byObject[item].editable, "Layout opt-in required")
-local managedRect = transform:selectionRects({key(item)})
-check(not transform:setRects({key(item)}, managedRect), "Unapproved experimental target rejected")
-check(discovery:approve(key(item), true), "Per-element experimental approval")
-check(transform:setRects({key(item)}, {{x = 20, y = 30, w = 100, h = 100}}), "Approved reversible write allowed")
+local itemKey, itemRecord = key(item), discovery.byObject[item]
+local originalPosition, alternateX = item.Position, adjacentAbility.AbsolutePosition.X
+check(not itemRecord.capabilities.move.supported and itemRecord.capabilities.resize.supported and not itemRecord.experimental,
+    "Plain listed ability can resize without an experimental approval, while its layout owns movement")
+check(not transform:setRects({itemKey}, {{x = 25, y = 30, w = 100, h = 100}}, "move"), "Known layout-managed movement is blocked immediately")
+discovery:approve(itemKey, true)
+check(not transform:setRects({itemKey}, {{x = 25, y = 30, w = 100, h = 100}}, "move"), "Approval cannot bypass a known list layout")
+discovery:approve(itemKey, false)
+local listPositionWrites = 0
+local listPositionConnection = item:GetPropertyChangedSignal("Position"):Connect(function() listPositionWrites = listPositionWrites + 1 end)
+check(transform:beginTransaction(), "List size transaction starts")
+check(transform:setRects({itemKey}, {{x = 300, y = 211, w = 140, h = 110}}, "resize"), "List size uses only supported Size")
+local listOutcome
+transform:endTransaction(function(success) listOutcome = success end)
 flush()
-transform.safe = true
-check(not transform:setRects({key(item)}, {{x = 30, y = 30, w = 100, h = 100}}), "Safe Mode blocks experimental")
-transform.safe = false
+check(listOutcome == true and listPositionWrites == 0 and item.Position == originalPosition, "Real layout reflow does not invalidate independent size verification")
+near(item.AbsoluteSize.X, 140, "Managed ability visibly changes width")
+check(adjacentAbility.AbsolutePosition.X ~= alternateX, "Plain-list fixture models sibling reflow")
+local listSaved = transform:capture()[itemKey]
+check(listSaved.position.xo == 0 and listSaved.size.xo == 140, "Checkpoint retains original raw position and chosen size")
+check(transform:restore({itemKey}) == 1 and transform:apply({[itemKey] = listSaved}) == 1, "Reset and restore a managed ability size")
+flush()
+near(item.AbsoluteSize.X, 140, "Saved size is restored without writing Position")
+local legacyList = Util.copy(listSaved)
+legacyList.position.xo, legacyList.size.xo = 47, 145
+applied, skipped = transform:apply({[itemKey] = legacyList})
+check(applied == 1 and skipped == 1 and listPositionWrites == 0, "Legacy unsupported Position is reported independently of a supported saved Size")
+flush()
+local parentRect = transform:selectionRects({key(managed)})[1]
+local abilityX = item.AbsolutePosition.X
+check(transform:setRects({key(managed)}, {{x = parentRect.x + 22, y = parentRect.y, w = parentRect.w, h = parentRect.h}}, "move"),
+    "Move the compatible entire ability bar")
+flush()
+near(item.AbsolutePosition.X, abilityX + 22, "Parent move relocates its controls without changing their raw positions")
+check(listPositionWrites == 0, "No supported list operation writes the managed Position")
+listPositionConnection:Disconnect()
+
+local flex = create("Frame", "FlexBar", screen)
+local flexAbility = create("TextButton", "Ability1", flex)
+local flexLayout = create("UIListLayout", "Layout", flex)
+flexLayout.HorizontalFlex = "Fill"
+local grid = create("Frame", "GridBar", screen)
+local gridAbility = create("TextButton", "Ability1", grid)
+create("UIGridLayout", "Layout", grid)
+flush()
+for _, control in ipairs({flexAbility, gridAbility}) do
+    local record = discovery.byObject[control]
+    check(not record.capabilities.move.supported and not record.capabilities.resize.supported
+        and record.capabilities.transparency.supported and not record.experimental, "Managed flex/grid control supports visual properties only")
+    local rect = transform:selectionRects({record.key})[1]
+    check(not transform:setRects({record.key}, {{x = rect.x, y = rect.y, w = 101, h = 82}}, "resize"), "Known controller size is rejected without a trial write")
+    check(transform:setProperty({record.key}, "transparency", 0.45) == 1, "Layout child still supports independent transparency")
+    near(control.BackgroundTransparency, 0.45, "Visual property writes without attempting geometry")
+end
+
 local constrained = create("Frame", "Constrained", screen)
 create("UIAspectRatioConstraint", "Aspect", constrained)
+local automatic = create("Frame", "Automatic", screen)
+automatic.AutomaticSize = "X"
 flush()
-discovery:approve(key(constrained), true)
-for _ = 1, 3 do
-    check(transform:setRects({key(constrained)}, {{x = 0, y = 0, w = 120, h = 80}}), "Experimental attempt starts")
+for _, control in ipairs({constrained, automatic}) do
+    local record = discovery.byObject[control]
+    check(record.capabilities.move.supported and not record.capabilities.resize.supported and not record.experimental,
+        "Known size control blocks only resizing, without encouraging repeat experiments")
+    check(not transform:setRects({record.key}, {{x = 0, y = 0, w = 120, h = 80}}, "resize"), "Constrained size is blocked before a write")
+    check(transform:setRects({record.key}, {{x = 12, y = 8, w = 100, h = 100}}, "move"), "Own size constraints do not prevent moving the layer")
     flush()
+    near(control.AbsolutePosition.X, 12, "Requested supported movement is applied")
 end
-check(discovery.byObject[constrained].experimentalSuspended, "Three failed stabilization checks suspend override")
-check(not transform:setRects({key(constrained)}, {{x = 0, y = 0, w = 120, h = 80}}), "Suspended override refuses more attempts")
 local a = create("Frame", "A", screen)
 local b = create("Frame", "B", screen)
 flush()
@@ -236,7 +319,8 @@ local rotatedParent = create("Frame", "RotatedParent", screen)
 rotatedParent.Rotation = 15
 local rotatedChild = create("Frame", "RotatedChild", rotatedParent)
 flush()
-check(not discovery.byObject[rotatedChild].editable, "Rotated ancestor rejects screen-space geometry")
+check(not discovery.byObject[rotatedChild].capabilities.move.supported and discovery.byObject[rotatedChild].capabilities.transparency.supported,
+    "Rotated ancestor rejects screen-space geometry and preserves visual operations")
 check(not transform:setRects({key(a)}, {{x = 0/0, y = 1, w = 100, h = 100}}), "Non-finite geometry rejected")
 check(not transform:setRects({key(a)}, {{x = 0, y = 1, w = 1, h = 100}}), "Impractically small size rejected")
 local hit = discovery:hit(a.AbsolutePosition.X + 5, a.AbsolutePosition.Y + 5)
@@ -254,12 +338,29 @@ transform:endTransaction()
 check(#pending == 1, "One stabilization check per completed drag")
 flush()
 check(Util.equal(Discovery.serialize(normal), normalBaseline), "Unstable drag rolls back the entire action")
-check(discovery.byObject[normal].experimental and not discovery.byObject[normal].editable, "Detected script-managed target requires explicit approval")
+local normalRecord = discovery.byObject[normal]
+check(normalRecord.experimental and not normalRecord.capabilities.move.supported and normalRecord.capabilities.resize.supported,
+    "Detected script overwrite requires approval only for the replaced property")
 check(transform:capture()[normalKey] == nil, "Rollback restores absence of a previous override")
 check(discovery:approve(normalKey, true), "Detected script-managed target can be explicitly approved")
+for _ = 1, 3 do
+    check(transform:setRects({normalKey}, {{x = 40, y = 40, w = 100, h = 100}}, "move"), "Approved position can be tested once per completed action")
+    normal.Position = UDim2.new(0, 777, 0, 777)
+    flush()
+end
+check(normalRecord.suspendedOperations.position and not normalRecord.capabilities.move.supported,
+    "Repeated observed position overwrites suspend only independent movement")
+check(normalRecord.capabilities.resize.supported and normalRecord.capabilities.transparency.supported,
+    "Suspended position cannot disable safe resize and visual operations")
+transform.safe = true
+check(transform:setRects({normalKey}, {{x = 0, y = 0, w = 110, h = 110}}, "resize"), "Safe Mode permits supported independent resizing")
+flush()
+check(not transform:setRects({normalKey}, {{x = 40, y = 40, w = 110, h = 110}}, "move"), "Safe Mode blocks experimental movement")
+transform.safe = false
 transform:apply({}, {replace = true})
 check(not discovery.approved[normalKey], "Replacing layout revokes absent experimental permission")
-check(not discovery.byObject[normal].editable, "Revoked experimental target stays noneditable")
+check(not normalRecord.capabilities.move.supported and normalRecord.capabilities.resize.supported,
+    "Revoked experimental operation stays blocked while safe resize remains available")
 
 -- Imports cannot make a new invalid tiny target, but exact original dimensions can be restored.
 local tiny = create("Frame", "TinyOriginal", screen)
@@ -307,9 +408,11 @@ check(key(lifecycle) == lifecycleKey and transform:apply({[lifecycleKey] = lifec
 flush()
 near(lifecycle.Position.X.Offset, 35, "Recreated lifecycle position restored once")
 
-local revoked = create("Frame", "RevokedReceipt", managed)
+local revoked = create("Frame", "RevokedReceipt", screen)
 flush()
 local revokedKey = key(revoked)
+discovery.byObject[revoked].overwrittenProperties = {position = true}
+discovery:_classify(discovery.byObject[revoked])
 local revokedEntry = Discovery.serialize(revoked)
 revokedEntry.descriptor = Util.copy(discovery.byObject[revoked].descriptor)
 revokedEntry.position.xo, revokedEntry.experimental = 12, true
@@ -324,7 +427,7 @@ local writesAfterRevoke = 0
 local revokeConnection = revoked:GetPropertyChangedSignal("Position"):Connect(function() writesAfterRevoke = writesAfterRevoke + 1 end)
 transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
 transform:apply({[revokedKey] = revokedEntry}, {onlyNew = true})
-check(writesAfterRevoke == 0 and revoked.Position.X.Offset == 444 and not discovery.byObject[revoked].editable,
+check(writesAfterRevoke == 0 and revoked.Position.X.Offset == 444 and not discovery.byObject[revoked].capabilities.move.supported,
     "revoked approval never restores the baseline repeatedly during unrelated HUD events")
 revokeConnection:Disconnect()
 

@@ -17,22 +17,31 @@ local descriptor = {path = {{name = "HUD", class = "ScreenGui"}, {name = "Jump M
 local record = {key = "a", descriptor = descriptor, object = target, editable = true, builtin = "JumpButton"}
 local record2 = {key = "b", descriptor = {path = {{name = "Second", class = "TextButton"}}}, object = second, editable = true}
 local records, listCalls = {record, record2}, 0
+local flags = {}
 local app = {version = "3.1.0", selection = {}, preferences = {grid = true, snapping = false, launcherX = .4, launcherY = .3},
     capabilities = {}, groups = {}, logs = {}, dirty = false, statusMessage = "Ready"}
 function app:log(message) self.logs[#self.logs + 1] = message end
 function app:status(message) self.statusMessage = message end
-function app:getRects(editableOnly)
+function app:getRects(editableOnly, operation)
     local result, keys = {}, {}
     for _, key in ipairs(self.selection) do
         local item = self.discovery:get(key)
-        if item and (not editableOnly or item.editable) then
+        local support = item and item.capabilities and item.capabilities[operation]
+        if item and (not editableOnly or (item.editable and (not support or support.supported))) and not (editableOnly and flags[key] and flags[key].locked) then
             result[#result + 1] = Coordinates.rect(item.object)
             keys[#keys + 1] = key
         end
     end
     return result, keys
 end
-function app:currentBounds(editableOnly) return Geometry.bounds(self:getRects(editableOnly)) end
+function app:currentBounds(editableOnly, operation) return Geometry.bounds(self:getRects(editableOnly, operation)) end
+function app:layerState(key) return flags[key] or {} end
+function app:setLayerState(key, field, value)
+    flags[key] = flags[key] or {}
+    flags[key][field] = value
+    self.layerRevision = (self.layerRevision or 0) + 1
+    self.ui:refresh()
+end
 function app:sizeInfo(bounds, rects, keys)
     bounds = bounds or self:currentBounds(true)
     if not bounds then return end
@@ -47,6 +56,7 @@ function app:setPreference(key, value) self.preferences[key] = value end
 function app:geometry(mode, value) self.lastGeometry = {mode = mode, value = value} end
 function app:resize(w, h) self.lastResize = {w = w, h = h} end
 function app:setSizePercent(percent) self.lastPercent = percent end
+function app:save() self.saved = true end
 function app:setLauncherPosition(x, y) self.preferences.launcherX, self.preferences.launcherY = x, y end
 function app:profile(...) self.lastProfile = {...} end
 function app:group(...) self.lastGroup = {...} end
@@ -152,6 +162,16 @@ check(not ui.touchHandleLink.Visible, "desktop markers sit on the outline withou
 services.UserInputService.PreferredInput = Enum.PreferredInput.Touch
 ui:layout()
 check(visibleHandles(ui) == 1, "hybrid touch input restores exterior handle")
+view.X, view.Y = 393, 852
+ui:layout()
+check(not ui.saveButton.Visible, "portrait gathers secondary toolbar actions under Tools")
+ui.toolsButton.Activated:Fire()
+local compactSave = buttonByText(ui.modalGui, "Save layout")
+check(compactSave ~= nil, "portrait toolbar exposes an explicit Save action")
+compactSave.Activated:Fire()
+check(app.saved, "compact Save reaches the App checkpoint action")
+view.X, view.Y = 800, 600
+ui:layout()
 
 local originalSize = target.Size
 target.Size = UDim2.fromOffset(100.34, 100)
@@ -214,18 +234,34 @@ local rows, connections = listCalls, mock.activeConnections
 ui:refreshElements(); ui:refreshElements()
 check(listCalls == rows and mock.activeConnections == connections, "unchanged element revision avoids enumeration and callback churn")
 ui:setOverlaps({record, record2})
-check(ui.overlapList.Visible and #ui.overlapConnections == 2, "touch overlap chooses from explicit candidates")
+check(ui.overlapList.Visible and ui:openSelectThrough(), "touch overlap opens the explicit layer picker")
+check(ui.modalOpen and #ui.pickerRows == 2, "layer picker shows all valid candidates")
+ui.pickerRows[2].button.Activated:Fire()
+check(app.selection[1] == "b" and not ui.modalOpen and not ui.workspace.Visible,
+    "choosing a deeper layer updates the selection immediately")
+ui:setTab("Elements")
 
-records = {}; app.discovery.revision = 2; ui:refreshElements()
-check(#ui.elementConnections == 0 and not ui.overlapList.Visible and #ui.overlapConnections == 0,
-    "removed browser and overlap rows disconnect completely")
+app:setLayerState("a", "ignored", true)
+ui:setLayerFilter("Ignored")
+check(ui.elementRows.a and not ui.elementRows.b and ui.elementRows.a.root.SelectLayer == nil,
+    "ignored filter includes explicitly inspectable layers")
+ui:setLayerFilter("Visible")
+record2.visibility = "hidden"; app.discovery.revision = 2; ui:refreshElements()
+check(not ui.elementRows.b, "visible browse filter excludes hidden layers")
+ui:setLayerFilter("All accessible")
+check(ui.elementRows.b ~= nil, "all accessible filter reveals hidden layers explicitly")
+record2.visibility = nil
+ui:setLayerFilter("Visible")
+
+records = {}; app.discovery.revision = 3; ui:refreshElements()
+check(#ui.elementConnections == 0 and not ui.overlapList.Visible, "removed browser rows and overlap references clear")
 records = {record, record2}
 for i = 1, 70 do
     local copy = {key = tostring(i), descriptor = {path = {{name = "Test " .. i}}}, object = second, editable = true}
     records[#records + 1] = copy
 end
-app.discovery.revision = 3; ui:refreshElements()
-check(#ui.elementConnections == 28 and ui.pager.Visible, "large browser caps active rows through pagination")
+app.discovery.revision = 4; ui:refreshElements()
+check(#ui.elementConnections == 22 and ui.pager.Visible, "large browser caps active rows through pagination")
 ui.search.Text = "Test 70"
 check(#ui.elementConnections == 1 and not ui.pager.Visible and ui.elementRows["70"], "search reaches results beyond the first result page")
 
@@ -237,6 +273,32 @@ app:select("a")
 check(ui.panel.AbsoluteSize.Y <= 56 and not ui.quickBody.Visible and visibleHandles(ui) == 0 and ui.quickHint.Text == "View details in Tools",
     "unsupported selection remains inspectable without resize affordances")
 record.editable = true
+function app:capabilitiesForSelection()
+    local item = self.discovery:get(self.selection[1])
+    if not item then return {} end
+    if self:layerState(item.key).locked then return {locked = true} end
+    return {move = item == record, resize = true, reset = true, visual = true,
+        parentKey = item == record2 and record.key or nil, layout = item == record2}
+end
+record2.displayName = "Ability slot 2"
+record2.capabilities = {move = {supported = false}, resize = {supported = true}}
+app:select("b")
+check(ui.quickName.Text == "Ability slot 2" and ui.sliderEnabled and ui.quickHint.Text == "Layout sets the position",
+    "compatible layout-owned control keeps its size editor and explains fixed position")
+ui:setTab("Advanced")
+check(ui.fields.X.TextEditable == false and ui.fields.W.TextEditable == true,
+    "Advanced enables size without enabling layout-owned position")
+ui:setWorkspace(false)
+check(ui.quickMore.Text == "Select container", "layout-owned selection offers a direct route to its parent")
+ui.quickMore.Activated:Fire()
+check(app.selection[1] == record.key and ui.panel.Visible, "parent route returns to the canvas with the container selected")
+app:setLayerState("a", "locked", true)
+check(ui.quickMore.Text == "Unlock" and not ui.sliderEnabled and visibleHandles(ui) == 0,
+    "locked layer shows Unlock and removes transformation affordances")
+ui.quickMore.Activated:Fire()
+check(not app:layerState("a").locked and ui.sliderEnabled, "Unlock restores compatible tools")
+app:setLayerState("a", "ignored", false)
+app.capabilitiesForSelection = nil
 app.previewState = {}
 ui:updateSelection()
 check(not ui.sliderEnabled and visibleHandles(ui) == 0 and ui.quickHint.Text == "Profile preview",

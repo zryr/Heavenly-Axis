@@ -58,7 +58,8 @@ local function label(parent, name, text, position, size)
         TextSize = 13, TextWrapped = true,
     }, parent)
 end
-local hud
+local hud, abilityScenarios
+local abilityScenariosVisible = false
 local function pointer(input)
     return input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1
 end
@@ -84,13 +85,60 @@ make("UISizeConstraint", {MaxSize = Vector2.new(560, 88)}, admin)
 label(admin, "Notice", "STUDIO FIXTURE · Mock HUD controls", UDim2.fromOffset(8, 0), UDim2.new(1, -16, 0, 20))
 local status = label(admin, "FixtureStatus", "Gameplay activations: 0", UDim2.fromOffset(8, 66), UDim2.new(1, -16, 0, 20))
 local function adminButton(column, name, text, callback)
-    return button(admin, name, text, UDim2.new((column - 1) * 0.2, 4, 0, 20), UDim2.new(0.2, -8, 0, 44), callback)
+    return button(admin, name, text, UDim2.new((column - 1) / 6, 4, 0, 20), UDim2.new(1 / 6, -8, 0, 44), callback)
 end
 local count = 0
 local function activate(name)
     count = count + 1
     status.Text = "Gameplay activations: " .. count .. " · " .. name
 end
+
+local function makeAbilityScenarios(parent)
+    local region = rounded(make("Frame", {
+        Name = "AbilityFixtures", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.48),
+        Size = UDim2.new(1, -26, 0, 227), BackgroundColor3 = Color3.fromRGB(28, 45, 57),
+        Visible = abilityScenariosVisible, ZIndex = 4,
+    }, parent))
+    make("UISizeConstraint", {MaxSize = Vector2.new(420, 227)}, region)
+    local function bar(name, title, top, class, props)
+        label(region, name .. "Caption", title, UDim2.fromOffset(8, top), UDim2.new(1, -16, 0, 19))
+        local frame = rounded(make("Frame", {
+            Name = name, Position = UDim2.fromOffset(12, top + 20), Size = UDim2.new(1, -24, 0, 45),
+            BackgroundColor3 = Color3.fromRGB(42, 64, 78),
+        }, region), 8)
+        make(class, props, frame)
+        local buttons = {}
+        for index = 1, 4 do
+            buttons[index] = button(frame, "Ability" .. index, tostring(index), UDim2.new(), UDim2.fromOffset(43, 40),
+                function() activate(title .. " ability " .. index) end)
+            buttons[index].LayoutOrder = index
+        end
+        return buttons
+    end
+    local plain = bar("PlainListAbilityBar", "List · Resize ability 1 or move the bar", 5, "UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 5),
+    })
+    local icon = label(plain[1], "DecorativeIcon", "✦", UDim2.fromOffset(2, 2), UDim2.fromOffset(12, 12))
+    icon.TextColor3 = cyan
+    plain[2].AutomaticSize = Enum.AutomaticSize.X
+    make("UIAspectRatioConstraint", {AspectRatio = 1.1}, plain[3])
+    make("UISizeConstraint", {MinSize = Vector2.new(28, 28), MaxSize = Vector2.new(64, 64)}, plain[3])
+    make("UIScale", {Scale = 0.85}, plain[4])
+    bar("FlexAbilityBar", "Flex · Move the bar or change a button's transparency", 79, "UIListLayout", {
+        FillDirection = Enum.FillDirection.Horizontal, HorizontalFlex = Enum.UIFlexAlignment.Fill,
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+        Padding = UDim.new(0, 5),
+    })
+    bar("GridAbilityBar", "Grid · Cell size belongs to the layout", 153, "UIGridLayout", {
+        CellSize = UDim2.new(0.225, 0, 0, 40), CellPadding = UDim2.new(0.02, 0, 0, 0),
+        FillDirectionMaxCells = 4, HorizontalAlignment = Enum.HorizontalAlignment.Center,
+        VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
+    })
+    return region
+end
+
 local function makeHud()
     for _, connection in ipairs(fixture.hudConnections) do connection:Disconnect() end
     fixture.hudConnections = {}
@@ -213,6 +261,7 @@ local function makeHud()
     for index = 1, 3 do
         button(hud, "GroupItem" .. index, "Group " .. index, UDim2.new(0.04, (index - 1) * 110, 0.44, index * 12), UDim2.fromOffset(88 + index * 6, 44 + index * 4), function() activate("Group") end)
     end
+    abilityScenarios = makeAbilityScenarios(hud)
 end
 makeHud()
 
@@ -316,4 +365,11 @@ adminButton(5, "ToggleCollection", "240 items", function()
         }, stress)
     end
     status.Text = "Added 240 fixture elements. Search StressTile197."
+end)
+
+adminButton(6, "AbilityScenarios", "Bars", function()
+    abilityScenariosVisible = not abilityScenariosVisible
+    if abilityScenarios and abilityScenarios.Parent then abilityScenarios.Visible = abilityScenariosVisible end
+    status.Text = abilityScenariosVisible and "Ability bars shown. Edit and then tap their buttons to check activation."
+        or "Ability bars hidden."
 end)

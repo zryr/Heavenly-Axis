@@ -19,11 +19,15 @@ The sources use the Lua/Luau common subset. Lua 5.4 test execution is practical 
 | `Capabilities` | Independent file, clipboard, input, and optional network capability discovery without brand assumptions |
 | `Storage` | Bounded JSON, validated reads, staged/backup saves with readback, export/import, separate draft data |
 | `Profiles` | Named scoped configurations, management, preview candidates, confirmed import overwrites/deletion |
+| `EditorPreferences` | Independent appearance and selection preferences, place-scoped exact identity rules, and tutorial completion |
 | `Discovery` | Accessible PlayerGui index, smart hit ranking, clipping and compatibility, per-instance baselines, event cleanup |
+| `SmartLayers` | Presentation-aware layer naming and content classification |
 | `Transform` | Idempotent property application, root-pruned screen geometry, UDim and UIScale conversion, stabilization and rollback |
 | `UILayout` | Pure responsive placement for the toolbar, Quick Edit and management workspace |
 | `UI` | Native toolbar, contextual inspector and workspace, launcher, selection overlays and dialogs |
 | `Input` | Interaction ownership, touch and mouse lifecycle, pinch, box/multi selection, sliders and floating surfaces |
+| `Onboarding` | Isolated practice targets using the same gesture owner and no saved HUD state |
+| `Notifications` | One passive status surface with semantic styling, safe placement, and bounded expiry |
 | `App` | Live authoritative layout, groups/preferences, checkpoints, previews, recovery, lifecycle and UI coordination |
 | `Bootstrap` | Service/client startup, bounded waits, public session reservation and duplicate prevention |
 
@@ -33,7 +37,7 @@ History and saved configuration contain plain tables, never Instance references.
 
 Matching requires a unique exact compatible hierarchy. Changes in name, parent, class, or ambiguity leave the entry unresolved. Unresolved entries remain in the profile; users can explicitly remap them and update group membership. Shape/color/screen proximity do not establish identity. Recognized built-in control hints require the actual `TouchGui/TouchControlFrame` lineage and expected classes; fixture mocks are game-specific objects.
 
-Discovery records accessible objects, while the UI/hit list filters visibility. A baseline is captured once per actual object before editor transforms. New instances get new baselines. Saved layouts specify absolute Position/Size UDim components so reapplication does not add offsets repeatedly. Baselines and live objects stay in runtime adapters; portable states survive destruction.
+Discovery indexes accessible objects. Ordinary taps use the engine hit set and presentation ranking. Select Through adds geographically relevant hidden and skipped layers on explicit demand. A baseline is captured once per actual object before editor transforms. New instances get new baselines. Saved layouts specify absolute Position/Size UDim components so reapplication does not add offsets repeatedly. Baselines and live objects stay in runtime adapters; portable states survive destruction.
 
 ## Coordinates and layout
 
@@ -49,7 +53,7 @@ The transform adapter validates intended roots before writing. A completed edit 
 
 The minimum interactive dimension is 16 Roblox UI units. Invalid values are rejected. Explicit position entry permits offscreen placement, and Recovery can bring a selection back. Group tools can scale the whole selection proportionally or adjust the dimensions of each supported member by the same amount. The anchor preference controls center-based adjustments.
 
-Properties controlled by layouts/constraints are experimental where reversible property edits are possible. They need explicit approval. Some structures remain unsupported. A bounded stabilization observation checks whether changes held; repeated failure suspends overrides. No continuous property-enforcement loop disables Roblox movement or fights the game indefinitely.
+Capability checks distinguish movement, resize, group operations, and appearance. A simple list owns position but can permit resizing a member. Verification checks the requested dimensions while allowing list reflow. Grid, flex, table, and other known layout-owned properties are withheld. A supported container can be selected separately. An editor lock also blocks editing an ancestor or reflowing a sibling where the selected action can disturb the locked layer. Reversible experiments apply only to otherwise viable properties affected by game scripts, with bounded rollback and suspension. [Roblox list and flex layout](https://create.roblox.com/docs/ui/list-flex-layouts) · [Grid and table layout](https://create.roblox.com/docs/ui/grid-table-layouts)
 
 ## History, checkpoints, and previews
 
@@ -77,6 +81,7 @@ File capability discovery requires separate readable/writable/existence function
 - `HeavenlyAxis-v3.backup.json`: previous validated save.
 - `HeavenlyAxis-v3.pending.json`: staged checkpoint.
 - `HeavenlyAxis-v3.draft.<experience>.<place>.<device>.<orientation>.json`: recoverable unsaved state, isolated by context and separate from profiles.
+- `HeavenlyAxis-v3.editor.json`: independently validated Smart Layers settings and tutorial progress. Ignore and Lock use exact descriptors scoped to experience and place. This document has its own staging and backup paths.
 
 Before overwriting the primary, Storage validates it, stages the new JSON, preserves a backup, writes, and checks exact readback. A damaged primary is retained and blocks overwrite; a valid backup may be loaded in memory. These APIs do not offer a portable atomic filesystem rename, so a crash during final write remains possible; the backup/staged files and manual export are recovery paths. Nothing silently deletes saved profiles.
 

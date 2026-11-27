@@ -4,6 +4,7 @@ local Coordinates = require("Coordinates")
 local Geometry = require("Geometry")
 local Input = {}
 Input.__index = Input
+local HOLD_SECONDS = 0.5
 
 local function touch(input)
     return input.UserInputType == Enum.UserInputType.Touch
@@ -11,6 +12,10 @@ end
 
 local function primary(input)
     return touch(input) or input.UserInputType == Enum.UserInputType.MouseButton1
+end
+
+local function secondaryMouse(input)
+    return input.UserInputType == Enum.UserInputType.MouseButton2
 end
 
 local function cancelled(input)
@@ -56,6 +61,14 @@ local function changedRects(before, after)
     return false
 end
 
+local function sameKeys(one, other)
+    if #one ~= #other then return false end
+    for i, key in ipairs(one) do
+        if key ~= other[i] then return false end
+    end
+    return true
+end
+
 function Input.new(app, ui, services)
     local self = setmetatable({
         app = app, ui = ui, uis = services.UserInputService, connections = {},
@@ -82,6 +95,31 @@ function Input:isBusy()
     return self.gesture ~= nil
 end
 
+function Input:isSelectThroughArmed()
+    return self.selectThroughArmed == true
+end
+
+function Input:_setSelectThroughArmed(armed)
+    if self:isSelectThroughArmed() == armed then return end
+    self.selectThroughArmed = armed
+    if self.ui.setSelectThroughArmed then self.ui:setSelectThroughArmed(armed) end
+end
+
+function Input:_blocked()
+    return self.ui.modalOpen or self.ui.onboardingOpen
+end
+
+function Input:armSelectThrough()
+    if self.destroyed or not self.app.editing or self:_blocked() or self.uis:GetFocusedTextBox() then return false end
+    self:cancel()
+    self:_setSelectThroughArmed(true)
+    return true
+end
+
+function Input:selectionChanged()
+    if not self.selectingForGesture then self:cancel() end
+end
+
 function Input:sliderRange()
     local gesture = self.gesture
     if gesture and gesture.kind == "slider" and gesture.sizeInfo then
@@ -89,9 +127,9 @@ function Input:sliderRange()
     end
 end
 
-function Input:_canStart(input)
-    return not self.destroyed and primary(input) and not self.ignored[input] and not cancelled(input) and not released(input)
-        and not self.ui.modalOpen and not self.uis:GetFocusedTextBox()
+function Input:_canStart(input, canvas)
+    return not self.destroyed and (primary(input) or (canvas and secondaryMouse(input))) and not self.ignored[input]
+        and not cancelled(input) and not released(input) and not self:_blocked() and not self.uis:GetFocusedTextBox()
 end
 
 function Input:_modifier(name)
@@ -124,9 +162,37 @@ end
 
 function Input:_disown(gesture, ended)
     self.gesture = nil
+    self:_cancelHold(gesture)
     for _, connection in ipairs(gesture.connections) do connection:Disconnect() end
     if touch(gesture.primary) and gesture.primary ~= ended then self.ignored[gesture.primary] = true end
     if gesture.secondary and gesture.secondary ~= ended then self.ignored[gesture.secondary] = true end
+end
+
+function Input:_cancelHold(gesture)
+    local timer = gesture.hold
+    gesture.hold = nil
+    if timer and task and task.cancel then task.cancel(timer) end
+end
+
+function Input:_showThrough(hits, p)
+    if self.app.openSelectThrough then self.app:openSelectThrough(hits, p)
+    elseif self.ui.showThrough then self.ui:showThrough(hits, p) end
+end
+
+function Input:_startHold(gesture)
+    if not touch(gesture.primary) or not task or not task.delay
+        or not (self.app.openSelectThrough or self.ui.showThrough) then return end
+    gesture.hold = task.delay(HOLD_SECONDS, function()
+        gesture.hold = nil
+        if self.gesture ~= gesture or gesture.kind ~= "canvas" or gesture.moved or not self.app.editing
+            or not self:_canStart(gesture.primary) then return end
+        local p = Coordinates.point(gesture.primary)
+        if distance(gesture.start, p) >= gesture.threshold or self.ui:pointInPanel(p.x, p.y) then return end
+        local hits = self:_canvasHits(p, true)
+        if #hits == 0 then return end
+        self:_disown(gesture)
+        self:_showThrough(hits, p)
+    end)
 end
 
 function Input:_handleAt(p)
@@ -143,39 +209,89 @@ function Input:_handleAt(p)
     return nearest
 end
 
-function Input:_canvasHits(p)
-    local hits, preferred = self.app.discovery:hit(p.x, p.y)
+function Input:_canvasHits(p, explicit)
+    local hits, preferred
+    if self.app.canvasHits then hits, preferred = self.app:canvasHits(p.x, p.y, explicit)
+    else hits, preferred = self.app.discovery:hit(p.x, p.y) end
     return hits, preferred == nil and hits[1] or (preferred or nil)
 end
 
-function Input:_snapshot(gesture)
-    local rects, keys, skipped = self.app:getRects(true)
+function Input:_operation(mode)
+    if #self.app.selection < 2 then return mode end
+    return mode == "move" and "groupMove" or "groupResize"
+end
+
+function Input:_supports(record, operation)
+    if not record then return false end
+    if not self.app.capability then return record.editable end
+    local capability = self.app:capability(record.key, operation)
+    return capability and capability.supported == true
+end
+
+function Input:_snapshot(gesture, mode)
+    local operation = self:_operation(mode)
+    local rects, keys, skipped = self.app:getRects(true, operation)
     if not rects or #rects == 0 then return false end
     gesture.rects, gesture.keys, gesture.skipped = rects, keys, skipped
-    gesture.bounds = Geometry.bounds(rects)
+    gesture.bounds, gesture.operation = Geometry.bounds(rects), operation
+    local discovery = self.app.discovery
+    gesture.objects, gesture.parents, gesture.revision = {}, {}, discovery.revision
+    for i, key in ipairs(keys) do
+        local record = discovery:get(key)
+        local object = record and record.object
+        gesture.objects[i], gesture.parents[i] = object or false, object and object.Parent
+    end
     return true
 end
 
-function Input:_prepareDrag(gesture)
-    if gesture.dragKey and not selected(self.app, gesture.dragKey) then
-        if gesture.additive then return false end
-        self.app:select(gesture.dragKey, false)
+function Input:_targetsValid(gesture)
+    local discovery = self.app.discovery
+    local changed = discovery.revision ~= gesture.revision
+    for i, object in ipairs(gesture.objects) do
+        if object then
+            if object.Parent ~= gesture.parents[i] then return false end
+            if changed then
+                local record = discovery:get(gesture.keys[i])
+                if not record or record.object ~= object then return false end
+            end
+        end
     end
-    return self:_snapshot(gesture)
+    gesture.revision = discovery.revision
+    return true
+end
+
+function Input:_prepareTransform(gesture, mode)
+    local key = gesture.pinchKey
+    if mode == "move" then key = gesture.dragKey end
+    if key and not selected(self.app, key) then
+        if gesture.additive then return false end
+        self.selectingForGesture = true
+        self.app:select(key, false)
+        self.selectingForGesture = false
+    end
+    return self:_snapshot(gesture, mode)
 end
 
 function Input:_pinchBegin(gesture, input, p)
     if not touch(input) or not touch(gesture.primary) or input == gesture.primary or gesture.secondary
-        or (gesture.kind ~= "canvas" and gesture.kind ~= "drag") then return end
-    if not gesture.dragKey and not gesture.groupGap then return end
-    if gesture.additive and not gesture.groupGap and not selected(self.app, gesture.dragKey) then return end
+        or (gesture.kind ~= "canvas" and gesture.kind ~= "drag" and gesture.kind ~= "pinchPending") then return end
+    if not gesture.pinchKey and not gesture.resizeGap then return end
+    if gesture.additive and not gesture.resizeGap and not selected(self.app, gesture.pinchKey) then return end
     if distance(gesture.latest, p) < 12 then return end
-    local bounds = gesture.lastRects and Geometry.bounds(gesture.lastRects) or self.app:currentBounds(true)
-    if gesture.kind == "canvas" and gesture.dragKey and not selected(self.app, gesture.dragKey) then
-        local record = self.app.discovery:get(gesture.dragKey)
+    local operation = self:_operation("resize")
+    local bounds = gesture.lastRects and Geometry.bounds(gesture.lastRects) or self.app:currentBounds(true, operation)
+    if gesture.kind ~= "drag" and gesture.pinchKey and not selected(self.app, gesture.pinchKey) then
+        local record = self.app.discovery:get(gesture.pinchKey)
         bounds = record and Coordinates.rect(record.object) or nil
     end
     if not contains(bounds, p, 16) then return end
+    if gesture.lastRects then
+        local _, keys = self.app:getRects(true, operation)
+        -- A running drag may already have moved roots that a group resize must
+        -- leave alone. Preserve the existing drag in that case.
+        if not keys or not sameKeys(gesture.keys, keys) then return end
+    end
+    self:_cancelHold(gesture)
     gesture.secondStart = p
     gesture.pinchStart = gesture.latest
     gesture.pinchDistance = distance(gesture.latest, p)
@@ -185,6 +301,7 @@ function Input:_pinchBegin(gesture, input, p)
     if gesture.lastRects then
         gesture.rects = gesture.lastRects
         gesture.bounds = Geometry.bounds(gesture.rects)
+        gesture.operation = operation
         gesture.pinchReady = true
     end
     self:_own(gesture, input)
@@ -192,10 +309,15 @@ function Input:_pinchBegin(gesture, input, p)
 end
 
 function Input:_canvasBegin(input)
-    if not self:_canStart(input) or not self.app.editing then return end
+    if not self:_canStart(input, true) or not self.app.editing then return end
     local p = Coordinates.point(input)
     if self.ui:pointInPanel(p.x, p.y) then return end
     if self.gesture then self:_pinchBegin(self.gesture, input, p); return end
+    if self:isSelectThroughArmed() or secondaryMouse(input) then
+        self:_setSelectThroughArmed(false)
+        self:_claim(input, "selectThrough", p)
+        return
+    end
     local handle = self:_handleAt(p)
     if handle then
         local gesture = self:_claim(input, "resize", p)
@@ -203,7 +325,7 @@ function Input:_canvasBegin(input)
         local marker = touch(input) and Coordinates.rect(handle.marker)
         gesture.tapThrough = marker and not contains(marker, p)
         gesture.additive = self:_multi(input)
-        if not self:_snapshot(gesture) then self:_disown(gesture, input) end
+        if not self:_snapshot(gesture, "resize") then self:_disown(gesture, input) end
         return
     end
     local additive = self:_multi(input)
@@ -218,24 +340,40 @@ function Input:_canvasBegin(input)
             if selected(self.app, hit.key) then record = hits[i % #hits + 1]; break end
         end
     end
-    local dragKey = record and record.editable and record.key or nil
+    local dragKey, pinchKey
+    local moveOperation, resizeOperation = self:_operation("move"), self:_operation("resize")
+    if self:_supports(record, selected(self.app, record and record.key) and moveOperation or "move") then dragKey = record.key end
+    if self:_supports(record, selected(self.app, record and record.key) and resizeOperation or "resize") then pinchKey = record.key end
+    local selectedDrag, selectedPinch
     for _, hit in ipairs(hits) do
-        if hit.editable and selected(self.app, hit.key) then dragKey = hit.key; break end
+        if selected(self.app, hit.key) then
+            if not selectedDrag and self:_supports(hit, moveOperation) then selectedDrag = hit.key end
+            if not selectedPinch and self:_supports(hit, resizeOperation) then selectedPinch = hit.key end
+            if selectedDrag and selectedPinch then break end
+        end
     end
-    local gap = not record and #self.app.selection > 1 and contains(self.app:currentBounds(true), p)
-    local kind = (record or dragKey or gap or touch(input)) and "canvas" or "box"
+    dragKey, pinchKey = selectedDrag or dragKey, selectedPinch or pinchKey
+    local moveGap, resizeGap
+    if not record and #self.app.selection > 1 then
+        moveGap = contains(self.app:currentBounds(true, moveOperation), p)
+        resizeGap = contains(self.app:currentBounds(true, resizeOperation), p)
+    end
+    local kind = (record or dragKey or moveGap or resizeGap or touch(input)) and "canvas" or "box"
     local gesture = self:_claim(input, kind, p)
-    gesture.additive, gesture.record, gesture.dragKey, gesture.groupGap = additive, record, dragKey, gap
+    gesture.additive, gesture.record, gesture.dragKey, gesture.pinchKey = additive, record, dragKey, pinchKey
+    gesture.moveGap, gesture.resizeGap = moveGap, resizeGap
     gesture.hits = hits
+    if kind == "canvas" then self:_startHold(gesture) end
 end
 
 function Input:_apply(gesture, rects, label)
     if not changedRects(gesture.lastRects or gesture.rects, rects) then return end
+    if not self:_targetsValid(gesture) then self:cancel(); return end
     if not gesture.transaction then
         if self.app:beginGesture(label, gesture.skipped) == false then self:cancel(); return end
         gesture.transaction = true
     end
-    if self.app:updateGesture(rects, gesture.keys) == false then
+    if self.app:updateGesture(rects, gesture.keys, gesture.operation) == false then
         self:cancel()
         return
     end
@@ -270,14 +408,15 @@ end
 
 function Input:_sliderBegin(input)
     if not self:_canStart(input) or not self.app.editing or self.gesture or self.ui.sliderEnabled == false then return end
-    local info = self.app:sizeInfo()
     local track
     if self.ui.sliderTrackRect then track = self.ui:sliderTrackRect()
     else track = Coordinates.rect(self.ui.slider) end
-    if not info or not track or track.w <= 0 or info.maximum <= info.minimum or info.scale <= 0 then return end
+    if not track or track.w <= 0 then return end
     local p = Coordinates.point(input)
     local gesture = self:_claim(input, "slider", p)
-    if not self:_snapshot(gesture) then self:_disown(gesture, input); return end
+    if not self:_snapshot(gesture, "resize") then self:_disown(gesture, input); return end
+    local info = self.app:sizeInfo(gesture.bounds, gesture.rects, gesture.keys)
+    if not info or info.maximum <= info.minimum or info.scale <= 0 then self:_disown(gesture, input); return end
     gesture.sizeInfo, gesture.track = info, track
     local fraction = math.max(0, math.min(1, (info.scale - info.minimum) / (info.maximum - info.minimum)))
     local thumbX = track.x + track.w * fraction
@@ -298,7 +437,7 @@ function Input:_updatePinch(gesture)
     local a, b = gesture.latest, gesture.secondLatest
     if not gesture.pinchReady then
         if math.max(distance(gesture.pinchStart, a), distance(gesture.secondStart, b)) < gesture.threshold then return end
-        if not self:_prepareDrag(gesture) then self:cancel(); return end
+        if not self:_prepareTransform(gesture, "resize") then self:cancel(); return end
         gesture.pinchReady = true
     end
     local center, bounds = midpoint(a, b), gesture.bounds
@@ -357,15 +496,22 @@ function Input:_changed(input)
     local mouseMove = not touch(gesture.primary) and input.UserInputType == Enum.UserInputType.MouseMovement
     if not owner and not mouseMove then return end
     if cancelled(input) then self:_ended(input); return end
-    if self.ui.modalOpen or (gesture.kind ~= "launcher" and not self.app.editing) then self:cancel(); return end
+    if self:_blocked() or (gesture.kind ~= "launcher" and not self.app.editing) then self:cancel(); return end
     local p = Coordinates.point(input)
     if input == gesture.secondary then gesture.secondLatest = p else gesture.latest = p end
     if gesture.kind == "pinch" then self:_updatePinch(gesture); return end
-    if not gesture.moved and distance(gesture.start, p) >= gesture.threshold then gesture.moved = true end
+    if not gesture.moved and distance(gesture.start, p) >= gesture.threshold then
+        gesture.moved = true
+        self:_cancelHold(gesture)
+    end
     if not gesture.moved then return end
     if gesture.kind == "canvas" then
-        if (not gesture.dragKey and not gesture.groupGap) or not self:_prepareDrag(gesture) then
-            gesture.kind = "passive"
+        if (not gesture.dragKey and not gesture.moveGap) or not self:_prepareTransform(gesture, "move") then
+            if gesture.record and self.app.capability and self.app.status and not gesture.additive then
+                local capability = self.app:capability(gesture.record.key, "move")
+                if capability and not capability.supported and capability.reason then self.app:status(capability.reason) end
+            end
+            gesture.kind = (gesture.pinchKey or gesture.resizeGap) and "pinchPending" or "passive"
             return
         end
         gesture.kind = "drag"
@@ -400,7 +546,8 @@ function Input:_boxEnd(gesture)
     end
     local discovery = self.app.discovery
     for _, record in ipairs(discovery:list()) do
-        if record.editable and not seen[record.key] then
+        local state = self.app.layerState and self.app:layerState(record.key)
+        if record.editable and not seen[record.key] and not (state and state.ignored) then
             local r
             if discovery.visibleRect then r = discovery:visibleRect(record)
             else r = Coordinates.rect(record.object) end
@@ -417,7 +564,7 @@ function Input:_tap(gesture)
         if gesture.additive or not selected(self.app, gesture.record.key) then
             self.app:select(gesture.record.key, gesture.additive)
         end
-    elseif not gesture.groupGap and not gesture.additive then
+    elseif not gesture.moveGap and not gesture.resizeGap and not gesture.additive then
         self.app:clearSelection()
     end
     if self.ui.setOverlaps then self.ui:setOverlaps(gesture.hits) end
@@ -438,8 +585,11 @@ function Input:_finish(gesture, cancelledGesture)
     elseif cancelledGesture then
         if gesture.transaction then self.app:cancelGesture() end
     elseif gesture.kind == "box" then self:_boxEnd(gesture)
+    elseif gesture.kind == "selectThrough" and not gesture.moved then
+        local hits = self:_canvasHits(gesture.start, true)
+        self:_showThrough(hits, gesture.start)
     elseif gesture.kind == "canvas" and not gesture.moved then self:_tap(gesture)
-    elseif gesture.kind == "pinch" and not gesture.pinchReady then self:_tap(gesture)
+    elseif gesture.kind == "pinch" and not gesture.pinchReady and not gesture.moved then self:_tap(gesture)
     elseif gesture.tapThrough and not gesture.moved then
         gesture.hits, gesture.record = self:_canvasHits(gesture.start)
         if gesture.record then self:_tap(gesture) end
@@ -455,9 +605,10 @@ function Input:_ended(input)
     local gesture = self.gesture
     if not gesture then return end
     local owned = input == gesture.primary or input == gesture.secondary
-        or (not touch(gesture.primary) and input.UserInputType == Enum.UserInputType.MouseButton1)
+        or (not touch(gesture.primary) and input.UserInputType == gesture.primary.UserInputType)
     if not owned then return end
-    local wasCancelled = cancelled(input) or self.ui.modalOpen or (gesture.kind ~= "launcher" and not self.app.editing)
+    local wasCancelled = cancelled(input) or self:_blocked() or (gesture.kind ~= "launcher" and not self.app.editing)
+        or (gesture.transaction == true and not self:_targetsValid(gesture))
     if not wasCancelled and touch(input) then
         local latest = input == gesture.secondary and gesture.secondLatest or gesture.latest
         if distance(Coordinates.point(input), latest) > 0 then
@@ -475,7 +626,7 @@ end
 
 function Input:_key(input, processed)
     if self.destroyed or input.UserInputType ~= Enum.UserInputType.Keyboard
-        or self.uis:GetFocusedTextBox() or self.ui.modalOpen then return end
+        or self.uis:GetFocusedTextBox() or self:_blocked() then return end
     local prefs = self.app.preferences
     local shortcut = Enum.KeyCode.F8
     local valid, configured = pcall(function() return Enum.KeyCode[prefs.shortcut or "F8"] end)
@@ -490,6 +641,7 @@ function Input:_key(input, processed)
         if key == Enum.KeyCode.Escape then self:cancel() end
         return
     end
+    if key == Enum.KeyCode.Escape and self:isSelectThroughArmed() then self:_setSelectThroughArmed(false); return end
     local control = self:_modifier("LeftControl") or self:_modifier("RightControl")
     local shift = self:_modifier("LeftShift") or self:_modifier("RightShift")
     if control then
@@ -508,6 +660,7 @@ function Input:_key(input, processed)
 end
 
 function Input:cancel()
+    self:_setSelectThroughArmed(false)
     local gesture = self.gesture
     if not gesture then return end
     self:_disown(gesture)

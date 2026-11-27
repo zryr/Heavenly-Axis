@@ -100,6 +100,14 @@ local transient = scheduled[#scheduled]
 toast:close()
 check(not toast.frame.Visible and not transient.pending and toast.current == nil, "closing discards ordinary transient notices and cancels expiry")
 
+toast:layout(safe, {safe})
+toast:show("Group created.", {kind = "success"})
+check(not toast.frame.Visible and pendingCount() == 1, "a crowded layout defers the notice instead of covering protected controls")
+toast:layout(safe, {selection})
+check(toast.frame.Visible and not Coordinates.intersection(bounds(), selection) and pendingCount() == 1,
+    "a deferred notice can appear when there is a free region, without another expiry")
+toast:close()
+
 toast:layout({x = 80, y = 40, w = 108, h = 38})
 toast:show("Wait until the keyboard closes.")
 check(not toast.frame.Visible and pendingCount() == 1, "message holds until there is a readable safe region")
@@ -126,4 +134,31 @@ fallback:layout(safe)
 fallback:show(warning, {kind = "warning"})
 check(fallback.frame.Visible and fallback.body.Size.Y.Offset > 17, "missing text service retains robust wrapping and safe bounds")
 fallback:destroy()
+
+local fades = {}
+TweenInfo = {new = function(duration) return {duration = duration} end}
+mock.services.TweenService = {Create = function(_, frame, info, target)
+    local animation = {info = info, target = target}
+    function animation:Play() frame.BackgroundTransparency = target.BackgroundTransparency end
+    function animation:Cancel() self.cancelled = true end
+    fades[#fades + 1] = animation
+    return animation
+end}
+local animated = Notifications.new(root, mock.services)
+animated:layout(safe)
+animated:show("A short entrance.")
+check(#fades == 1 and fades[1].info.duration == .16 and animated.frame.BackgroundTransparency == .04,
+    "motion-capable runtimes fade the surface without moving the toast")
+tick(scheduled[#scheduled])
+check(#fades == 2 and fades[1].cancelled and animated.frame.Visible and pendingCount() == 1,
+    "exit animation is bounded and leaves only one final expiry")
+tick(scheduled[#scheduled])
+check(not animated.frame.Visible and pendingCount() == 0, "animated exit finishes and releases expiry")
+mock.services.GuiService.ReducedMotionEnabled = true
+animated:show("Reduced motion.")
+check(#fades == 2 and animated.frame.Visible and animated.frame.BackgroundTransparency == .04,
+    "the Roblox reduced-motion preference bypasses both transitions")
+tick(scheduled[#scheduled])
+check(not animated.frame.Visible and #fades == 2, "reduced-motion expiry hides immediately")
+animated:destroy()
 return checks

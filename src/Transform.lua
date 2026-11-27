@@ -11,6 +11,10 @@ local MAX_RECT_ERROR = 1.5
 local dimensionKeys = {"xs", "xo", "ys", "yo"}
 local propertyNames = {"position", "size", "rotation", "transparency"}
 local rectKeys = {"x", "y", "w", "h"}
+local propertyOperations = {position = "move", size = "resize", rotation = "rotation", transparency = "transparency"}
+local operationProperties = {move = "position", groupMove = "position", resize = "size", groupResize = "size",
+    position = "position", size = "size", rotation = "rotation", transparency = "transparency"}
+local cached = {cached = true}
 local integerOffsets
 
 local function isA(object, class)
@@ -131,16 +135,24 @@ local function effectiveDimensions(object, size, root, projected)
     return basisX * size.xs * own + size.xo * sizeScale, basisY * size.ys * own + size.yo * sizeScale
 end
 
-local function screenGeometryAvailable(record)
-    return record and record.editable and record.object.Parent and math.abs(record.object.Rotation % 360) < 0.001
-end
-
 local function rectClose(actual, expected)
     if not actual then return false end
     for _, key in ipairs(rectKeys) do
         if math.abs(actual[key] - expected[key]) > MAX_RECT_ERROR then return false end
     end
     return true
+end
+
+local function sizeClose(actual, expected)
+    return actual and math.abs(actual.w - expected.w) <= MAX_RECT_ERROR and math.abs(actual.h - expected.h) <= MAX_RECT_ERROR
+end
+
+local function changedProperties(actual, expected)
+    local fields = {}
+    for _, field in ipairs(propertyNames) do
+        if not matchesProperty(actual, expected, field) then fields[field] = true end
+    end
+    return fields
 end
 
 local function frameReference(object, before, root)
@@ -187,43 +199,66 @@ function Transform:_record(key, entry)
     return self.discovery:match(entry.descriptor)
 end
 
-function Transform:_allowed(record, entry, options)
+function Transform:_allowed(record, operation, entry, options)
     if not record or not record.object.Parent then return false, "Element is missing" end
-    self.discovery:_classify(record)
+    if not options or not options.cached then self.discovery:_classify(record) end
     if record.descriptor.ambiguous then return false, record.reason end
-    if record.experimental then
+    local field = operationProperties[operation]
+    local hardReason = field and record.managedProperties and record.managedProperties[field]
+    if hardReason then return false, hardReason end
+    local capability = record.capabilities and record.capabilities[operation]
+    local experimental = capability and capability.experimental or (not capability and record.experimental)
+    if experimental then
         if self.safe or (options and options.safe) then return false, "Safe Mode blocks experimental overrides" end
-        if record.experimentalSuspended then return false, record.reason end
+        local suspended = record.suspendedOperations and record.suspendedOperations[field]
+        if suspended or (not capability and record.experimentalSuspended) then return false, capability and capability.reason or record.reason end
         local savedApproval = options and options.experimental and entry and entry.experimental == true
         if savedApproval and options.deferApproval then return true end
         if savedApproval then
             self.discovery.approved[record.key] = true
             record.experimentalApproved = true
             self.discovery:_classify(record)
+            capability = record.capabilities and record.capabilities[operation]
         end
-        if not record.experimentalApproved then return false, record.reason end
     end
+    if capability then return capability.supported == true, capability.reason end
     if not record.editable then return false, record.reason or "Unsupported transformation" end
     return true
 end
 
-function Transform:_failed(record, reason, scriptOverwrite)
-    if scriptOverwrite then record.managedByScript = true end
-    self.discovery:_classify(record)
-    if record.experimental then
-        record.failures = (record.failures or 0) + 1
-        if record.failures >= 3 then
-            record.experimentalSuspended = true
-            self.discovery:_classify(record)
+function Transform:_failed(record, reason, fields, scriptOverwrite, geometryMismatch, requested, actual)
+    if scriptOverwrite then
+        record.overwrittenProperties = record.overwrittenProperties or {}
+        for field in pairs(fields) do record.overwrittenProperties[field] = true end
+    elseif geometryMismatch and record.layoutController then
+        if record.observedGeometryController ~= record.layoutController then record.observedGeometryBlocks = nil end
+        record.observedGeometryController = record.layoutController
+        record.observedGeometryBlocks = record.observedGeometryBlocks or {}
+        for field in pairs(fields) do
+            record.observedGeometryBlocks[field] = "The layout did not honor this adjustment. Select the parent to edit the bar."
         end
     end
-    local label = record.experimentalSuspended and "Experimental override suspended" or "Transform failed"
+    self.discovery:_classify(record)
+    for field in pairs(fields) do
+        local cap = record.capabilities and record.capabilities[propertyOperations[field]]
+        if scriptOverwrite or (cap and cap.experimental) then
+            record.operationFailures = record.operationFailures or {}
+            record.operationFailures[field] = (record.operationFailures[field] or 0) + 1
+            if record.operationFailures[field] >= 3 then
+                record.suspendedOperations = record.suspendedOperations or {}
+                record.suspendedOperations[field] = true
+            end
+        end
+    end
+    self.discovery:_classify(record)
+    record.lastFailure = {reason = tostring(reason), requested = requested, actual = actual}
+    local label = record.suspendedOperations and next(record.suspendedOperations) and "Experimental override suspended" or "Transform failed"
     self.log(label .. " (" .. tostring(record.object.Name) .. "): " .. tostring(reason):sub(1, 160))
 end
 
 function Transform:_operation(record, before, after)
     return {record = record, before = before, after = after, previousTracked = self.tracked[record.key],
-        previousReceipt = self.receipts[record.object]}
+        previousReceipt = self.receipts[record.object], previousApproval = self.discovery.approved[record.key]}
 end
 
 local function portableEntry(record, before, previous)
@@ -248,6 +283,10 @@ function Transform:_rollback(operations)
         end
         self.tracked[record.key] = operation.previousTracked
         self.receipts[object] = operation.previousReceipt
+        if operation.setApproval and self.discovery.approved[record.key] ~= operation.previousApproval then
+            self.discovery.approved[record.key] = operation.previousApproval
+            self.discovery:_classify(record)
+        end
         rollbacks[record.key] = operation.previousTracked or false
     end
     return rollbacks, restored
@@ -270,8 +309,11 @@ function Transform:_writeBatch(operations, deferStore)
         if not ok then
             local written = {}
             for i = 1, index do written[i] = operations[i] end
+            local overwritten = tostring(problem):find("Requested properties were rejected", 1, true) ~= nil
+            local observed = Discovery.serialize(operation.record.object)
+            local fields = changedProperties(overwritten and observed or operation.before, operation.after)
             local _, restored = self:_rollback(written)
-            self:_failed(operation.record, problem)
+            self:_failed(operation.record, problem, fields, overwritten)
             return false, restored and "Transform rejected. The selection was restored." or "Transform rejected. Some original properties could not be restored."
         end
     end
@@ -283,23 +325,35 @@ end
 
 function Transform:_observation(operation)
     local object, reference = operation.record.object, operation.reference
-    if not object.Parent then return "An element disappeared during editing." end
-    if not matchesProperties(Discovery.serialize(object), operation.after) then
-        return "The game replaced the requested properties.", true
+    if not object.Parent then return "An element disappeared during editing.", {}, "environment" end
+    local observed = Discovery.serialize(object)
+    if not observed then return "The resulting GUI properties could not be read.", {}, "environment" end
+    local changed = changedProperties(observed, operation.after)
+    if next(changed) then
+        return "The game replaced the requested properties.", changed, "overwrite", operation.expectedRect and Coordinates.rect(object)
     end
     if operation.expectedRect and math.abs(object.Rotation % 360) > 0.001 then
-        return "The element rotated during editing.", false, true
+        return "The element rotated during editing.", {}, "environment"
     end
-    if operation.expectedRect and not rectClose(Coordinates.rect(object), operation.expectedRect) then
+    local actual, expected = Coordinates.rect(object), operation.expectedRect
+    if expected and operation.verify == "position" and actual then
+        expected = {x = expected.x - reference.anchorX * (actual.w - expected.w),
+            y = expected.y - reference.anchorY * (actual.h - expected.h), w = actual.w, h = actual.h}
+    end
+    local matches = not expected or (operation.verify == "size" and sizeClose(actual, expected))
+        or (operation.verify ~= "size" and rectClose(actual, expected))
+    if not matches then
         local parentRect = Coordinates.rect(object.Parent)
         local ps, ss = scales(object, self.discovery.root)
         local anchor = object.AnchorPoint
-        if object.Parent ~= reference.parent or (reference.parentRect and not rectClose(parentRect, reference.parentRect))
+        if object.Parent ~= reference.parent or (operation.verify ~= "size" and reference.parentRect and not rectClose(parentRect, reference.parentRect))
             or math.abs(ps - reference.positionScale) > 0.001 or math.abs(ss - reference.sizeScale) > 0.001
             or anchor.X ~= reference.anchorX or anchor.Y ~= reference.anchorY then
-            return "The parent layout changed during editing.", false, true
+            return "The parent layout changed during editing.", {}, "environment", actual
         end
-        return "The resulting geometry differed from the requested adjustment.", false, false, true
+        local fields = operation.verify == "size" and {size = true}
+            or operation.verify == "position" and {position = true} or {position = true, size = true}
+        return "The resulting geometry differed from the requested adjustment.", fields, "geometry", actual
     end
     if operation.checkSize then
         local width, height = effectiveDimensions(object, operation.after.size, self.discovery.root)
@@ -307,7 +361,7 @@ function Transform:_observation(operation)
         if not rect or not Util.finite(width) or not Util.finite(height)
             or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE
             or math.abs(rect.w - width) > MAX_RECT_ERROR or math.abs(rect.h - height) > MAX_RECT_ERROR then
-            return "The layout did not honor the requested dimensions.", false, false, true
+            return "The layout did not honor the requested dimensions.", {size = true}, "geometry", rect
         end
     end
 end
@@ -318,13 +372,13 @@ function Transform:_finish(job, cancellation, early)
     local reason, failures, onlyGeometry = cancellation, {}, true
     if not reason then
         for _, operation in ipairs(job.operations) do
-            local ok, problem, overwritten, environmentChanged, awaitingGeometry = pcall(self._observation, self, operation)
-            if not ok then problem = "The resulting GUI geometry could not be read." end
+            local ok, problem, fields, kind, actual = pcall(self._observation, self, operation)
+            if not ok then problem, fields, kind = "The resulting GUI geometry could not be read.", {}, "environment" end
             if problem then
                 reason = reason or problem
-                onlyGeometry = onlyGeometry and awaitingGeometry == true
-                failures[#failures + 1] = {record = operation.record, problem = problem,
-                    overwritten = overwritten, environmentChanged = environmentChanged}
+                onlyGeometry = onlyGeometry and kind == "geometry"
+                failures[#failures + 1] = {record = operation.record, problem = problem, fields = fields, kind = kind,
+                    requested = operation.expectedRect, actual = actual}
             end
         end
     end
@@ -334,8 +388,9 @@ function Transform:_finish(job, cancellation, early)
     if not next(jobs) then self.pendingStabilization = nil end
     if self.interactivePending == job then self.interactivePending = nil end
     for _, failure in ipairs(failures) do
-        if failure.record.object.Parent and not failure.environmentChanged then
-            self:_failed(failure.record, failure.problem, failure.overwritten)
+        if failure.record.object.Parent and failure.kind ~= "environment" then
+            self:_failed(failure.record, failure.problem, failure.fields, failure.kind == "overwrite", failure.kind == "geometry",
+                failure.requested, failure.actual)
         end
     end
     local rollbacks
@@ -367,7 +422,12 @@ function Transform:_schedule()
     if early and early.earlyChecked then early = nil end
     if early then
         for _, operation in ipairs(early.operations) do
-            if operation.record.experimental then early = nil; break end
+            local capabilities = operation.record.capabilities
+            for field in pairs(operation.after) do
+                local capability = capabilities and capabilities[field]
+                if capability and capability.experimental then early = nil; break end
+            end
+            if not early then break end
         end
     end
     local scheduled = {}
@@ -417,7 +477,7 @@ function Transform:_recordUpdates(operations)
             transaction.initial[object] = initial
             transaction.operations[#transaction.operations + 1] = initial
         else
-            initial.after, initial.expectedRect = operation.after, operation.expectedRect
+            initial.after, initial.expectedRect, initial.verify = operation.after, operation.expectedRect, operation.verify
             initial.portable, initial.checkSize = operation.portable, operation.checkSize
         end
     end
@@ -470,13 +530,16 @@ function Transform:capture()
     return result
 end
 
-function Transform:selectionRects(keys, editableOnly)
+function Transform:selectionRects(keys, editableOnly, operation)
+    if type(editableOnly) == "string" then operation, editableOnly = editableOnly, true end
     local seen, records, recordKeys, skipped = {}, {}, {}, 0
     for _, key in ipairs(keys or {}) do
         if not seen[key] then
             seen[key] = true
             local record = self.discovery:get(key)
-            if record and (not editableOnly or screenGeometryAvailable(record)) then
+            local supportsEdit = not editableOnly or (operation and self:_allowed(record, operation, nil, cached))
+                or (not operation and (self:_allowed(record, "move", nil, cached) or self:_allowed(record, "resize", nil, cached)))
+            if record and supportsEdit then
                 records[#records + 1], recordKeys[record.object] = record.object, key
             else skipped = skipped + 1 end
         end
@@ -499,13 +562,14 @@ local function sameDirectJob(job, records)
     return true
 end
 
-function Transform:setRects(keys, rects)
+function Transform:setRects(keys, rects, operation)
     if self.destroyed then return false, "Transform controller is closed." end
     if #keys ~= #rects or #keys == 0 then return false, "No valid selection." end
     local transaction, records, selected = self.transaction, {}, {}
     for _, key in ipairs(keys) do
         local record = self.discovery:get(key)
         if not record or not record.object.Parent then return false, "An element is missing." end
+        if record.descriptor.ambiguous then return false, record.reason or "This layer does not have a unique identity." end
         if transaction then
             local original = transaction.objectsByKey[key]
             if original and original ~= record.object then return false, "An element was recreated during editing." end
@@ -528,28 +592,49 @@ function Transform:setRects(keys, rects)
                 if selected[parent] then return false, "A selected parent already transforms its children." end
                 parent = parent.Parent
             end
-            local allowed, reason = self:_allowed(record)
-            if not allowed then return false, reason end
+            self.discovery:_classify(record)
         end
-        if not screenGeometryAvailable(record) then return false, record.reason or "Reset rotation to zero before editing screen geometry." end
         if not Geometry.valid(target) then return false, "Invalid dimensions." end
         for _, axis in ipairs(rectKeys) do
             if math.abs(target[axis]) > Geometry.MAX_SIZE then return false, "Invalid dimensions." end
         end
-        local ok, operation = pcall(function()
+        local ok, mutation = pcall(function()
             local before = Discovery.serialize(object)
             if not before then error("Properties inaccessible") end
-            if previous and not matchesProperties(before, previous.after) then error("The game replaced the adjustment during editing") end
+            if previous and not matchesProperties(before, previous.after) then
+                local message = "The game replaced the adjustment during editing"
+                self:_failed(record, message, changedProperties(before, previous.after), true)
+                error(message)
+            end
             -- Intermediate Roblox AbsolutePosition/AbsoluteSize can be one layout frame behind writes.
             local reference = previous and previous.reference or frameReference(object, before, self.discovery.root)
             if object.Parent ~= reference.parent then error("The element was moved to a different parent during editing") end
-            if (target.w < Geometry.MIN_SIZE and math.abs(target.w - reference.rect.w) > 0.001)
-                or (target.h < Geometry.MIN_SIZE and math.abs(target.h - reference.rect.h) > 0.001) then
+            local resizeMode = operation == "resize" or operation == "groupResize"
+            local resizeRequested = math.abs(target.w - reference.rect.w) > 0.001 or math.abs(target.h - reference.rect.h) > 0.001
+            local moveRequested = math.abs(target.x - reference.rect.x) > 0.001 or math.abs(target.y - reference.rect.y) > 0.001
+            local useSize = resizeRequested or resizeMode or (previous and previous.after.size ~= nil)
+            local canMove, moveReason = self:_allowed(record, operation == "groupMove" and "groupMove" or "move", nil, cached)
+            if (operation == "move" or operation == "groupMove" or (not resizeMode and moveRequested)) and not canMove then
+                error(moveReason or "Independent movement is unavailable")
+            end
+            if useSize then
+                local canResize, resizeReason = self:_allowed(record, operation == "groupResize" and "groupResize" or "resize", nil, cached)
+                if not canResize then error(resizeReason or "Independent resizing is unavailable") end
+            end
+            if not useSize and not canMove then error(moveReason or "Independent movement is unavailable") end
+            if useSize and ((target.w < Geometry.MIN_SIZE and math.abs(target.w - reference.rect.w) > 0.001)
+                or (target.h < Geometry.MIN_SIZE and math.abs(target.h - reference.rect.h) > 0.001)) then
                 error("Minimum resized dimension is 16 screen units")
             end
             local after = {position = Util.copy(before.position), size = Util.copy(before.size)}
             local expected = fitRect(reference, target, after)
-            if not validEntry(after) or not rectClose(expected, target) then error("This scale cannot represent the requested geometry accurately") end
+            local usePosition = canMove and (moveRequested or not useSize or (previous and previous.after.position ~= nil)
+                or not matchesProperty(reference.before, after, "position"))
+            if not validEntry(after) or (usePosition and not rectClose(expected, target)) or (useSize and not sizeClose(expected, target)) then
+                error("This scale cannot represent the requested geometry accurately")
+            end
+            if not usePosition then after.position = nil end
+            if not useSize then after.size = nil end
             local result = self:_operation(record, before, after)
             local prior = result.previousTracked
             if previous then prior = previous.previousTracked end
@@ -557,10 +642,11 @@ function Transform:setRects(keys, rects)
             if not matchesProperty(reference.before, after, "position") then result.portable.position = after.position end
             if not matchesProperty(reference.before, after, "size") then result.portable.size = after.size end
             result.reference, result.expectedRect = reference, Util.copy(target)
+            result.verify = usePosition and (useSize and "bounds" or "position") or "size"
             return result
         end)
-        if not ok then return false, tostring(operation):gsub("^.-:%d+: ", "") end
-        if direct or not matchesProperties(operation.before, operation.after) then operations[#operations + 1] = operation end
+        if not ok then return false, tostring(mutation):gsub("^.-:%d+: ", "") end
+        if direct or not matchesProperties(mutation.before, mutation.after) then operations[#operations + 1] = mutation end
     end
     if #operations == 0 then return true end
     local ok, reason = self:_writeBatch(operations)
@@ -569,11 +655,40 @@ function Transform:setRects(keys, rects)
     elseif direct then
         for index, operation in ipairs(operations) do
             direct.operations[index].after, direct.operations[index].expectedRect = operation.after, operation.expectedRect
-            direct.operations[index].portable = operation.portable
+            direct.operations[index].portable, direct.operations[index].verify = operation.portable, operation.verify
         end
         self:_queue(direct)
     else self:_queue({operations = operations, direct = true}) end
     return true
+end
+
+function Transform:_savedFields(record, before, entry, previous, options)
+    local portable = normalizeEntry(entry or record.baseline)
+    local raw, blocked = {}, nil
+    local revoking = entry and entry.experimental == false
+    local approval = {cached = true, experimental = options.experimental, deferApproval = true, safe = options.safe}
+    for _, field in ipairs(propertyNames) do
+        local value = portable[field]
+        local prior = previous and previous[field]
+        if value == nil and prior ~= nil and options.replace then value = record.baseline[field] end
+        local old = record.baseline[field]
+        if previous then old = prior end
+        local scriptOwned = record.overwrittenProperties and record.overwrittenProperties[field] == true
+        local revokeField = revoking and previous and previous.experimental == true and scriptOwned
+        if revokeField then
+            value = record.baseline[field]
+            portable[field] = value
+        end
+        local requested = value ~= nil and (not options.delta or not Util.equal(old, value) or revokeField)
+        if requested and (not revoking or not scriptOwned or revokeField) then
+            local allowed, reason = self:_allowed(record, field, entry, approval)
+            local owned = prior ~= nil and Util.equal(before[field], prior)
+            local safeRestore = (not entry or revokeField) and owned and not (record.managedProperties and record.managedProperties[field])
+            if allowed or safeRestore then raw[field] = value
+            elseif not Util.equal(before[field], value) then blocked = blocked or reason or "A layout controls this property" end
+        end
+    end
+    return raw, portable, blocked
 end
 
 function Transform:apply(layout, options)
@@ -594,8 +709,13 @@ function Transform:apply(layout, options)
             if not layout[key] then
                 local record = self:_record(key, entry)
                 if record then
-                    if restoreProperties(record.object, record.baseline) then self.receipts[record.object] = record.baseline
-                    else self.log("Original properties could not be restored for " .. tostring(record.object.Name)) end
+                    local before = Discovery.serialize(record.object)
+                    if before then
+                        self.discovery:_classify(record)
+                        local original = self:_savedFields(record, before, nil, entry, {replace = true, delta = true})
+                        if restoreProperties(record.object, original) then self.receipts[record.object] = record.baseline
+                        else self.log("Original properties could not be restored for " .. tostring(record.object.Name)) end
+                    end
                 end
             end
         end
@@ -617,21 +737,15 @@ function Transform:apply(layout, options)
         local object = record.object
         local previous = self.pendingByObject[object]
         if previous then self:_finish(previous) end
-        if entry.experimental == false then
-            self.discovery.approved[record.key] = nil
-            self.discovery:_classify(record)
-            if record.experimental then
-                local restored = restoreProperties(object, record.baseline)
-                self.receipts[object], self.tracked[record.key] = Util.copy(entry), nil
-                if not restored then self.log("Original properties unavailable while revoking experimental approval") end
-            end
-        end
-        local allowed, reason = self:_allowed(record, entry, options)
+        self.discovery:_classify(record)
+        local before = Discovery.serialize(object)
+        local after, portable, reason
+        if before then after, portable, reason = self:_savedFields(record, before, entry, self.tracked[record.key], options) end
         local width, height
-        local checkSize = not Util.equal(entry.size, record.baseline.size)
-        if allowed then
+        local checkSize = after and after.size ~= nil and not Util.equal(after.size, record.baseline.size)
+        if after then
             local dimensionsOK
-            dimensionsOK, width, height = pcall(effectiveDimensions, object, entry.size, self.discovery.root, projected)
+            dimensionsOK, width, height = pcall(effectiveDimensions, object, after.size or before.size, self.discovery.root, projected)
             local ancestor, parentResized = object.Parent, false
             while ancestor and ancestor ~= self.discovery.root do
                 if projected[ancestor] then parentResized = true break end
@@ -640,14 +754,16 @@ function Transform:apply(layout, options)
             if checkSize and (not dimensionsOK or not Util.finite(width) or not Util.finite(height)
                 or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE)
                 and not parentResized then
-                allowed, reason = false, "Saved dimensions fall outside the supported range"
+                after.size, checkSize, width, height = nil, false, nil, nil
+                reason = reason or "Saved dimensions fall outside the supported range"
             end
         end
-        local before = allowed and Discovery.serialize(object) or nil
-        if before then
-            local after = normalizeEntry(entry)
+        if reason then skipped = skipped + 1; self.log("Skipped part of " .. tostring(object.Name) .. ": " .. reason) end
+        if before and (not reason or not matchesProperties(before, after)) then
             local operation = self:_operation(record, before, after)
-            operation.receipt, operation.checkSize = Util.copy(entry), checkSize
+            operation.receipt, operation.checkSize, operation.portable = Util.copy(entry), checkSize, portable
+            if entry.experimental == false then operation.setApproval = "revoke"
+            elseif options.experimental and entry.experimental == true then operation.setApproval = "grant" end
             local ok, message = self:_writeBatch({operation})
             if ok then
                 applied = applied + 1
@@ -659,8 +775,16 @@ function Transform:apply(layout, options)
                 self.log(message)
             end
         else
-            skipped = skipped + 1
-            self.log("Skipped " .. tostring(object.Name) .. ": " .. tostring(reason or "Properties inaccessible"))
+            if not before then
+                skipped = skipped + 1
+                self.log("Skipped " .. tostring(object.Name) .. ": Properties inaccessible")
+            else
+                self.receipts[object] = Util.copy(entry)
+                if entry.experimental == false then
+                    self.discovery.approved[record.key] = nil
+                    self.discovery:_classify(record)
+                end
+            end
         end
     end
     self:_schedule()
@@ -684,25 +808,21 @@ function Transform:applyHistory(previous, desired, callback)
             local pending = self.pendingByObject[record.object]
             if pending then self:_finish(pending) end
             self.discovery:_classify(record)
-            local revoke = not entry or (record.experimental and entry.experimental == false)
-            local requested = revoke and record.baseline or entry
-            if not revoke then
-                if record.experimental and entry.experimental ~= true then
-                    callback(false, "An element now requires experimental approval to restore its previous layout.", skipped)
-                    return true
-                end
-                local allowed, reason = self:_allowed(record, entry, {experimental = true, deferApproval = true})
-                if not allowed then callback(false, reason, skipped); return true end
-            end
             local before = Discovery.serialize(record.object)
-            if not before or not validEntry(requested) then
+            if not before or not validEntry(entry or record.baseline) then
                 callback(false, "The previous layout properties are unavailable.", skipped)
                 return true
             end
-            local operation = self:_operation(record, before, normalizeEntry(requested))
-            operation.removeTracked = revoke
-            operation.checkSize = not Util.equal(requested.size, record.baseline.size)
-            operation.setApproval = entry and entry.experimental == true and "grant" or "revoke"
+            local raw, portable, problem = self:_savedFields(record, before, entry, previous[key],
+                {delta = true, replace = true, experimental = true})
+            if problem then callback(false, problem, skipped); return true end
+            local operation = self:_operation(record, before, raw)
+            operation.portable = portable
+            operation.removeTracked = entry == nil
+            operation.checkSize = raw.size ~= nil and not Util.equal(raw.size, record.baseline.size)
+            if (entry and entry.experimental == true) ~= (previous[key] and previous[key].experimental == true) then
+                operation.setApproval = entry and entry.experimental == true and "grant" or "revoke"
+            end
             operation.receipt = entry and Util.copy(entry) or operation.after
             operations[#operations + 1] = operation
         end
@@ -718,13 +838,13 @@ function Transform:applyHistory(previous, desired, callback)
     return true
 end
 
-function Transform:_editProperties(keys, createEntry, checkEditable, rootOnly)
+function Transform:_editProperties(keys, createEntry, capability, rootOnly)
     local operations, seen, failed = {}, {}, 0
     for _, key in ipairs(keys) do
         local record = self:_record(key, self.tracked[key])
         if record and seen[record.object] then
             -- Repeated keys or matched aliases refer to the same live target.
-        elseif record and (not checkEditable or self:_allowed(record)) then
+        elseif record and (not capability or self:_allowed(record, capability)) then
             local object = record.object
             seen[object] = true
             local previous = self.pendingByObject[object]
@@ -775,7 +895,7 @@ function Transform:setProperty(keys, property, value)
             portable[property] = value
         end
         return after, portable
-    end, true, property == "rotation")
+    end, property, property == "rotation")
 end
 
 function Transform:restore(keys)
@@ -786,12 +906,14 @@ function Transform:restore(keys)
         for key in pairs(self.tracked) do targets[#targets + 1] = key end
     end
     local restored, failed = self:_editProperties(targets, function(record, before)
-        local after = Util.copy(record.baseline)
         local previous = self.tracked[record.key]
-        local portable = portableEntry(record, after, previous)
-        portable.position, portable.size = after.position, after.size
+        self.discovery:_classify(record)
+        local after = self:_savedFields(record, before, nil, previous, {delta = keys == nil, replace = true})
+        local portable = portableEntry(record, before, previous)
+        if after.position then portable.position = after.position end
+        if after.size then portable.size = after.size end
         for _, property in ipairs({"rotation", "transparency"}) do
-            if (previous and previous[property] ~= nil) or not matchesProperty(before, after, property) then
+            if after[property] and ((previous and previous[property] ~= nil) or not matchesProperty(before, after, property)) then
                 portable[property] = after[property]
             end
         end

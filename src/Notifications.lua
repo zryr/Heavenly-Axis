@@ -44,16 +44,15 @@ local function encloses(area, rect)
         and rect.y + rect.h <= area.y + area.h
 end
 
-local function overlap(rect, obstacles)
-    local pixels = 0
+local function overlaps(rect, obstacles)
     for _, obstacle in ipairs(obstacles) do
         if valid(obstacle) then
             local width = math.min(rect.x + rect.w, obstacle.x + obstacle.w + GUTTER) - math.max(rect.x, obstacle.x - GUTTER)
             local height = math.min(rect.y + rect.h, obstacle.y + obstacle.h + GUTTER) - math.max(rect.y, obstacle.y - GUTTER)
-            if width > 0 and height > 0 then pixels = pixels + width * height end
+            if width > 0 and height > 0 then return true end
         end
     end
-    return pixels
+    return false
 end
 
 local function place(area, width, height, obstacles)
@@ -67,16 +66,12 @@ local function place(area, width, height, obstacles)
         end
     end
     ys[#ys + 1] = (top + bottom) / 2
-    local best, lowest = nil, math.huge
     for _, y in ipairs(ys) do
         for _, x in ipairs(xs) do
             local rect = {x = math.max(left, math.min(x, right)), y = math.max(top, math.min(y, bottom)), w = width, h = height}
-            local pixels = overlap(rect, obstacles)
-            if pixels == 0 then return rect end
-            if pixels < lowest then best, lowest = rect, pixels end
+            if not overlaps(rect, obstacles) then return rect end
         end
     end
-    return best
 end
 
 local function normalize(message)
@@ -89,7 +84,7 @@ local function count(message)
 end
 
 function Notifications.new(parent, services)
-    local self = setmetatable({parent = parent, textService = services and services.TextService, generation = 0, obstacles = {}}, Notifications)
+    local self = setmetatable({parent = parent, services = services or {}, generation = 0, obstacles = {}}, Notifications)
     self.styles = {
         info = {accent = Color3.fromRGB(112, 229, 236), title = "", glyph = "i", duration = 3.0},
         success = {accent = Color3.fromRGB(138, 233, 197), title = "Complete", glyph = "", duration = 3.2},
@@ -141,8 +136,9 @@ function Notifications:_dimensions(area)
     local bodyWidth = width - TEXT_LEFT - TEXT_RIGHT
     if width ~= self.measuredWidth then
         local measured
-        if self.textService then
-            local ok, bounds = pcall(self.textService.GetTextSize, self.textService, message.body, BODY_SIZE, Enum.Font.Gotham,
+        local textService = self.services.TextService
+        if textService then
+            local ok, bounds = pcall(textService.GetTextSize, textService, message.body, BODY_SIZE, Enum.Font.Gotham,
                 Vector2.new(bodyWidth, 10000))
             if ok and bounds and Util.finite(bounds.Y) then measured = math.ceil(bounds.Y) + 3 end
         end
@@ -162,10 +158,11 @@ function Notifications:layout(area, avoidRects)
     if self.area then width, height, bodyHeight, bodyTop = self:_dimensions(area) end
     if not width then self.frame.Visible = false; return end
     local rect = self.rect
-    if not rect or width ~= rect.w or height ~= rect.h or not encloses(area, rect) or overlap(rect, self.obstacles) > 0 then
+    if not rect or width ~= rect.w or height ~= rect.h or not encloses(area, rect) or overlaps(rect, self.obstacles) then
         rect = place(area, width, height, self.obstacles)
         self.rect = rect
     end
+    if not rect then self.frame.Visible = false; return end
     if self.drawnWidth ~= width or self.drawnHeight ~= height or self.drawnBodyTop ~= bodyTop or self.drawnBodyHeight ~= bodyHeight then
         self.frame.Size = UDim2.fromOffset(width, height)
         self.body.Size = UDim2.fromOffset(width - TEXT_LEFT - TEXT_RIGHT, bodyHeight)
@@ -180,6 +177,27 @@ function Notifications:layout(area, avoidRects)
     self.frame.Visible = true
 end
 
+function Notifications:_cancelTween()
+    if self.tween then pcall(self.tween.Cancel, self.tween); self.tween = nil end
+end
+
+function Notifications:_fade(transparency, duration)
+    if not self.frame.Visible then return false end
+    local service, guiService = self.services.TweenService, self.services.GuiService
+    if not service or not TweenInfo then return false end
+    local ok, reduced = pcall(function() return guiService and guiService.ReducedMotionEnabled end)
+    if ok and reduced then return false end
+    self:_cancelTween()
+    local started, tween = pcall(function()
+        local animation = service:Create(self.frame, TweenInfo.new(duration, Enum.EasingStyle.Sine, Enum.EasingDirection.Out),
+            {BackgroundTransparency = transparency})
+        animation:Play()
+        return animation
+    end)
+    if started then self.tween = tween end
+    return started
+end
+
 function Notifications:_cancelExpiry()
     self.generation = self.generation + 1
     if self.timer and task and task.cancel then pcall(task.cancel, self.timer) end
@@ -188,6 +206,7 @@ end
 
 function Notifications:_hide()
     self:_cancelExpiry()
+    self:_cancelTween()
     self.current, self.rect = nil, nil
     self.frame.Visible = false
 end
@@ -208,6 +227,7 @@ function Notifications:show(message, options)
         if current.kind == kind and current.title == title and current.body == body and current.keepOnClose == keep then return false end
     end
     self:_cancelExpiry()
+    self:_cancelTween()
     local generation = self.generation
     self.current = {kind = kind, style = style, title = title, body = body, keepOnClose = keep}
     self.rect, self.measuredWidth = nil, nil
@@ -217,11 +237,17 @@ function Notifications:show(message, options)
     self.title.Text, self.title.TextColor3, self.title.Visible = title, style.accent, title ~= ""
     self.body.Text = body
     self:layout(self.area, self.obstacles)
+    self.frame.BackgroundTransparency = .24
+    if not self:_fade(.04, .16) then self.frame.BackgroundTransparency = .04 end
     if task and task.delay then
-        self.timer = task.delay(style.duration, function()
+        local function expire()
             if self.dead or generation ~= self.generation then return end
             self.timer = nil
             self:_hide()
+        end
+        self.timer = task.delay(style.duration, function()
+            if self.dead or generation ~= self.generation then return end
+            if self:_fade(.24, .12) then self.timer = task.delay(.12, expire) else expire() end
         end)
     end
     return true

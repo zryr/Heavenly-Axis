@@ -20,6 +20,10 @@ Build output must be byte-identical between clean runs and match both tracked ar
 
 ## Controlled Studio fixture
 
+For V3.2.0, start or skip the practice tutorial before editing the game HUD. On a touch viewport, long-press an overlapping control and select a candidate from Select Through. Repeat with its explicit action in Layers. Set Ignore and Lock separately and verify that the canvas selection, editing controls, and parent protection change while the fixture GUI itself stays unchanged.
+
+Use **Bars** in the fixture controls to show the representative numbered ability bars. The simple list should permit resizing the first button without changing its raw Position. The flex and grid cases should offer a container route when the layout owns the adjustment. Move the container and use Undo, confirming that tapping a fixture ability after Done still reports its activation. These fixtures exercise supported Roblox layouts. A live Heroes Battlegrounds session is a separate validation step.
+
 1. Open an empty place in Roblox Studio. Put `studio/TestHUD.client.lua` in `StarterPlayer > StarterPlayerScripts` as a LocalScript.
 2. Put the complete generated `dist/HeavenlyAxis.lua` into a second LocalScript in the same folder. The release has its own bundled module loader; no executor or runtime HTTP loading is needed for these accessible mock GUIs.
 3. Play as a client. Start with 1536×695, 960×440, 640×360, and 932×430 landscape. Then try 393×852 and 360×640 portrait, 1024×768 tablet, and 1920×1080 desktop. Use Studio's [Device Simulator](https://create.roblox.com/docs/studio/testing-modes#device-simulation) and include a notched profile in both orientations. Record rendered viewport and simulator scale rather than assuming the preset matches Roblox UI units.

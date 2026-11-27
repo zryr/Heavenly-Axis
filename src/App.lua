@@ -8,12 +8,13 @@ local History = require("History")
 local Capabilities = require("Capabilities")
 local Storage = require("Storage")
 local Profiles = require("Profiles")
+local EditorPreferences = require("EditorPreferences")
 local Discovery = require("Discovery")
 local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.1.2"
+App.VERSION = "3.2.0"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -64,6 +65,7 @@ function App.new(env, services, playerGui, options)
     local function log(message) self:log(message) end
     self.capabilities = Capabilities.detect(env, services)
     self.storage = Storage.new(self.capabilities, services.HttpService, log, self.context)
+    self.editorPreferences = EditorPreferences.new(self.storage, self.context, log)
     local data, loadError = self.storage:load()
     if loadError then self:log(loadError) end
     self.profiles = Profiles.new(data or Config.empty(), self.storage, self.context, log)
@@ -71,6 +73,7 @@ function App.new(env, services, playerGui, options)
     self.layout, self.groups, self.preferences = initial.layout, initial.groups, initial.preferences
     self.discovery = Discovery.new(playerGui, nil, log, services.GuiService)
     self.transform = Transform.new(self.discovery, log)
+    self:_refreshSmartLayers()
     if self.options.SafeMode then
         self.suspendedState = {layout = Util.copy(self.layout), groups = Util.copy(self.groups), preferences = Util.copy(self.preferences)}
         self.profiles:suspend(true)
@@ -84,6 +87,7 @@ function App.new(env, services, playerGui, options)
         self:changed()
     end
     self.discovery:start(function(reason) self:_discoveryChanged(reason) end)
+    self:_indexLayerLocks()
     self:_applyLayout(self.layout, true)
     self.savedProfilesData = Util.copy(self.profiles.data)
     self.savedState = self:getState()
@@ -130,6 +134,7 @@ function App:_discoveryChanged(reason)
     task.delay(0.12, function()
         self.discoveryPending = false
         if not self.alive then return end
+        self:_indexLayerLocks()
         if self.discoveryRestorationRequested then
             self.discoveryRestorationRequested = nil
             if not self.gesture and not self.finishingGesture then self:_applyLayout(self.layout, false, true)
@@ -234,9 +239,14 @@ function App:_setState(state, keepLauncher)
         for key, value in pairs(self.launcherOverrides or {}) do self.preferences[key] = value end
         for key in pairs(self.toolModes or {}) do self.toolDefaults[key] = self.preferences[key] end
         for key, value in pairs(self.toolModes or {}) do self.preferences[key] = value end
+        local group = self.groupFocus
+        if group and group.name then
+            if self.groups[group.name] then group.keys = self:_groupKeys(group.name)
+            else group.name = nil end
+        end
     else
         self.launcherOverrides, self.toolModes, self.toolDefaults = nil, nil, nil
-        self.sizeReference = nil
+        self.sizeReference, self.groupFocus = nil, nil
     end
 end
 function App:loadState(state, keepLauncher)
@@ -279,15 +289,218 @@ function App:changed()
 end
 function App:_selectionChanged()
     self.sizeReference = nil
+    if self.input and self.input.selectionChanged then self.input:selectionChanged() end
     if self.ui then
         if self.ui.selectionChanged then self.ui:selectionChanged() else self.ui:refresh() end
     end
+end
+
+function App:_indexLayerLocks()
+    local ancestors, controllers = {}, {}
+    for key in pairs(self.layerPolicy and self.layerPolicy.locked or {}) do
+        local record = self.discovery:get(key)
+        if record then
+            local _, locked = self.editorPreferences:elementFlags(record.descriptor, key)
+            if not locked then record = nil end
+        end
+        while record do
+            if record.layoutController then controllers[record.layoutController] = true end
+            local parent = record.parentKey
+            if not parent or ancestors[parent] then break end
+            ancestors[parent] = true
+            record = self.discovery:get(parent)
+        end
+    end
+    self.lockedAncestors, self.lockedControllers = ancestors, controllers
+end
+
+function App:_refreshSmartLayers()
+    self.smartPreferences = self.editorPreferences.data
+    local function ruleKeys(field)
+        local keys = {}
+        for _, descriptor in ipairs(self.editorPreferences:listElementFlags(field)) do keys[Identity.key(descriptor)] = true end
+        return keys
+    end
+    self.layerPolicy = {smartSelection = self.smartPreferences.smartSelection, skipTransparent = self.smartPreferences.skipTransparent,
+        ignored = ruleKeys("ignored"), locked = ruleKeys("locked")}
+    self.layerRevision = (self.layerRevision or 0) + 1
+    if self.discovery.setSelectionPolicy then self.discovery:setSelectionPolicy(self.layerPolicy) end
+    self:_indexLayerLocks()
+    if self.ui then self.ui:refresh() end
+end
+
+function App:layerState(key)
+    local record = self.discovery:get(key)
+    local ignored, locked = self.editorPreferences:elementFlags(record and record.descriptor, key)
+    return {ignored = ignored, locked = locked}
+end
+
+function App:setLayerState(key, field, value)
+    local record = self.discovery:get(key)
+    if not record then return false end
+    if self.finishingGesture or self.saving or self.updatingLayerRules then return false end
+    if self.input then self.input:cancel() end
+    self.updatingLayerRules = true
+    local accepted, message, durable = self.editorPreferences:setElementFlag(field, record.descriptor, value)
+    self.updatingLayerRules = nil
+    if not self.alive then return false end
+    if not accepted then self:status(message, {kind = "warning", title = "Layer rule unchanged"}); return false end
+    self:_refreshSmartLayers()
+    local title = field == "ignored" and (value and "Layer ignored" or "Layer included")
+        or (value and "Layer locked" or "Layer unlocked")
+    local detail = field == "ignored" and (value and "Still available in Layers and Select Through." or "Canvas taps can select it again.")
+        or (value and "Inspect it in Layers. Unlock it to edit." or "The editor lock is off.")
+    if not durable then detail = detail .. " This session only." end
+    self:status(detail, {kind = "success", title = title})
+    return true
+end
+
+function App:clearLayerStates(field)
+    if self.finishingGesture or self.saving or self.updatingLayerRules then return false end
+    if self.input then self.input:cancel() end
+    self.updatingLayerRules = true
+    local accepted, message = self.editorPreferences:clearElementFlags(field)
+    self.updatingLayerRules = nil
+    if not self.alive then return false end
+    if accepted then self:_refreshSmartLayers() end
+    self:status(message or "Layer rules were cleared for this place.")
+    return accepted
+end
+
+function App:setSmartPreference(name, value)
+    if self.input then self.input:cancel() end
+    local accepted, message, durable = self.editorPreferences:setPreference(name, value)
+    if accepted then self:_refreshSmartLayers() end
+    if not accepted or not durable then self:status(message) end
+    return accepted
+end
+
+function App:hasSeenTutorial() return self.editorPreferences.data.onboardingCompleted end
+function App:markTutorialSeen()
+    local accepted, message, durable = self.editorPreferences:setPreference("onboardingCompleted", true)
+    self.smartPreferences = self.editorPreferences.data
+    if not durable and message then self:log(message) end
+    return accepted
+end
+
+function App:canvasHits(x, y, explicit)
+    if explicit and self.discovery.hitThrough then return self.discovery:hitThrough(x, y, self.selection) end
+    return self.discovery:hit(x, y, self.selection)
+end
+
+function App:openSelectThrough(hits, point)
+    if self.ui and self.ui.openSelectThrough then return self.ui:openSelectThrough(hits, point) end
+end
+
+function App:armSelectThrough()
+    if not self.input or not self.input.armSelectThrough then return false end
+    if self.ui and self.ui.setWorkspace then self.ui:setWorkspace(false) end
+    if not self.input:armSelectThrough() then return false end
+    self:status("Tap the spot you want to inspect.", {kind = "info", title = "Select through"})
+    return true
+end
+
+local function groupOperation(operation, count)
+    if count < 2 then return operation end
+    if operation == "move" then return "groupMove" end
+    if operation == "resize" then return "groupResize" end
+    return operation
+end
+
+function App:capability(key, operation)
+    local record = self.discovery:get(key)
+    if not record then return {supported = false, reason = "This control is unavailable."} end
+    if self.layerPolicy.locked[key] then
+        local _, locked = self.editorPreferences:elementFlags(record.descriptor, key)
+        if locked then return {supported = false, locked = true, reason = "Unlock this control in Layers to edit it."} end
+    end
+    if operation ~= "visual" and operation ~= "transparency" and self.lockedAncestors[key] then
+        return {supported = false, locked = true, reason = "This adjustment could move a locked control inside the container."}
+    end
+    if (operation == "resize" or operation == "groupResize" or operation == "reset")
+        and record.layoutController and self.lockedControllers[record.layoutController] then
+        return {supported = false, locked = true, reason = "Resizing would rearrange a locked control in this row."}
+    end
+    local operations = record.capabilities
+    if operations then
+        if operation == "reset" then
+            return {supported = operations.move.supported or operations.resize.supported or operations.visual.supported,
+                reason = "The layout controls this element. Try its container."}
+        end
+        if operation and operations[operation] then return operations[operation] end
+    end
+    return {supported = record.editable == true, reason = record.reason}
+end
+
+function App:capabilitiesForSelection()
+    local result = {move = false, resize = false, rotation = false, transparency = false, reset = false, groupMove = false, groupResize = false}
+    for _, key in ipairs(self.selection) do
+        for _, operation in ipairs({"move", "resize", "rotation", "transparency", "reset", "groupMove", "groupResize"}) do
+            local capability = self:capability(key, groupOperation(operation, #self.selection))
+            result[operation] = result[operation] or capability.supported
+            result.locked = result.locked or capability.locked
+            if not capability.supported then result.reason = result.reason or capability.reason end
+        end
+    end
+    result.visual = result.rotation or result.transparency
+    if #self.selection == 1 then
+        local record = self.discovery:get(self.selection[1])
+        if record then
+            result.layout = record.layoutController ~= nil
+            local parent = record.parentKey
+            while parent do
+                if self:capability(parent, "move").supported then result.parentKey = parent; break end
+                local nextRecord = self.discovery:get(parent)
+                parent = nextRecord and nextRecord.parentKey
+            end
+        end
+    end
+    return result
+end
+
+function App:layerDetails(key)
+    local record = self.discovery:get(key)
+    if not record then return nil end
+    local descriptor = record.descriptor
+    local path = {}
+    for _, segment in ipairs(descriptor.path) do path[#path + 1] = segment.name end
+    local flags = self:layerState(key)
+    local lines = {"Name · " .. (record.displayName or path[#path]), "Class · " .. descriptor.class,
+        "Path · " .. table.concat(path, " / "), "Visibility · " .. (record.visibility or (record.visible and "visible" or "hidden")),
+        "Ignored · " .. (flags.ignored and "yes" or "no"), "Locked · " .. (flags.locked and "yes" or "no")}
+    if record.layoutController then lines[#lines + 1] = "Layout · " .. tostring(record.layoutController.ClassName) end
+    for _, pair in ipairs({{"move", "Move"}, {"resize", "Resize"}, {"rotation", "Rotate"}, {"transparency", "Background transparency"}}) do
+        local capability = self:capability(key, pair[1])
+        lines[#lines + 1] = pair[2] .. " · " .. (capability.supported and "Supported" or (capability.reason or "Unavailable"))
+    end
+    local groups = self:groupMembers(key)
+    if #groups > 0 then lines[#lines + 1] = "Groups · " .. table.concat(groups, ", ") end
+    local failure = record.lastFailure
+    if type(failure) == "table" then
+        if failure.reason then lines[#lines + 1] = "Last adjustment · " .. tostring(failure.reason) end
+        for _, property in ipairs({"requested", "actual"}) do
+            local rect = failure[property]
+            if Geometry.valid(rect) then
+                lines[#lines + 1] = string.format("%s · (%.0f, %.0f) %.0f × %.0f", property, rect.x, rect.y, rect.w, rect.h)
+            end
+        end
+    elseif type(failure) == "string" then lines[#lines + 1] = "Last adjustment · " .. failure end
+    return table.concat(lines, "\n")
+end
+
+function App:copyLayerDetails(key)
+    local details = self:layerDetails(key)
+    if not details then return nil end
+    local ok, message = self.storage:copy(details)
+    if ok then self:status("The layer report is on the clipboard.", {kind = "success", title = "Details copied"}) end
+    return ok, message, details
 end
 function App:select(key, toggle)
     if not key then return self:clearSelection() end
     local record = self.discovery:get(key)
     if not record then return self:status("Element no longer available. Use the list to select another.") end
     if toggle or self.preferences.multiSelect then
+        self.groupFocus = nil
         local selected = Util.copy(self.selection)
         for index, old in ipairs(selected) do
             if old == key then table.remove(selected, index); self.selection = selected; self:_selectionChanged(); return end
@@ -295,28 +508,40 @@ function App:select(key, toggle)
         selected[#selected + 1] = key
         self.selection = selected
     elseif #self.selection == 1 and self.selection[1] == key then return
-    else self.selection = {key} end
-    if not record.editable then self:status(record.reason or "Unsupported element.") end
+    else self.selection, self.groupFocus = {key}, nil end
     self:_selectionChanged()
 end
-function App:selectMany(keys)
+function App:selectMany(keys, keepGroup)
     local selection, seen = {}, {}
     for _, key in ipairs(keys) do
         if not seen[key] and self.discovery:get(key) then selection[#selection + 1] = key; seen[key] = true end
     end
-    if Util.equal(selection, self.selection) then return end
+    if Util.equal(selection, self.selection) then return false end
+    if not keepGroup then self.groupFocus = nil end
     self.selection = selection
     self:_selectionChanged()
+    return true
 end
 function App:clearSelection() self:selectMany({}) end
-function App:getRects(editableOnly) return self.transform:selectionRects(self.selection, editableOnly) end
-function App:currentBounds(editableOnly)
-    local rects = self:getRects(editableOnly)
+function App:getRects(editableOnly, operation)
+    if not editableOnly then return self.transform:selectionRects(self.selection, false) end
+    operation = groupOperation(operation, #self.selection)
+    local selected, skipped = {}, 0
+    for _, key in ipairs(self.selection) do
+        if self:capability(key, operation).supported then selected[#selected + 1] = key
+        else skipped = skipped + 1 end
+    end
+    local rects, keys, unavailable = self.transform:selectionRects(selected, true, operation)
+    return rects, keys, skipped + (unavailable or 0)
+end
+function App:currentBounds(editableOnly, operation)
+    local rects = self:getRects(editableOnly, operation)
     return Geometry.bounds(rects)
 end
 function App:beginGesture(label, skipped)
     if self.previewState then self:status("Apply or cancel the profile preview before editing."); return false end
     if self.profiles.suspended then self:status("Profiles are suspended. Resume application before editing."); return false end
+    if self.updatingLayerRules then return false end
     if self.gesture then return false end
     if self.finishingGesture or self.saving or (self.transform.beginTransaction and self.transform:beginTransaction() == false) then
         self:status("Finishing the previous adjustment. Try again in a moment.")
@@ -325,9 +550,22 @@ function App:beginGesture(label, skipped)
     self.gesture = {before = self:getState(), label = label or "Transform", skipped = skipped}
     return true
 end
-function App:updateGesture(rects, keys)
-    if not self.gesture then return false end
-    local ok, reason = self.transform:setRects(keys or self.selection, rects)
+function App:updateGesture(rects, keys, operation)
+    local gesture = self.gesture
+    if not gesture then return false end
+    keys = keys or self.selection
+    operation = groupOperation(operation, #keys)
+    if gesture.authorizedKeys ~= keys or gesture.authorizedOperation ~= operation or gesture.layerRevision ~= self.layerRevision then
+        for _, key in ipairs(keys) do
+            local capability = self:capability(key, operation)
+            if not capability.supported then
+                self:status(capability.reason or "This control cannot make that adjustment.", {kind = "warning", title = "Adjustment unavailable"})
+                return false
+            end
+        end
+        gesture.authorizedKeys, gesture.authorizedOperation, gesture.layerRevision = keys, operation, self.layerRevision
+    end
+    local ok, reason = self.transform:setRects(keys, rects, operation)
     if not ok then
         self:status(reason or "Transformation is unsupported.", {kind = "error", title = "Adjustment stopped"})
         return false
@@ -396,18 +634,23 @@ function App:cancelGesture()
     end
     self:changed()
 end
-function App:_rectAction(label, callback)
-    local rects, keys, skipped = self:getRects(true)
-    if #keys == 0 then return self:status("Select an editable element first.") end
+function App:_rectAction(label, operation, callback)
+    operation = groupOperation(operation, #self.selection)
+    local rects, keys, skipped = self:getRects(true, operation)
+    if #keys == 0 then
+        local first = self.selection[1]
+        local reason = first and self:capability(first, operation).reason
+        return self:status(reason or "Select a control that supports this adjustment.", {kind = "warning", title = "Adjustment unavailable"})
+    end
     if not self:beginGesture(label, skipped) then return end
     local ok, result = pcall(callback, rects)
-    if ok and result and self:updateGesture(result, keys) then return self:endGesture() end
+    if ok and result and self:updateGesture(result, keys, operation) then return self:endGesture() end
     self:cancelGesture()
     if not ok or not result then self:status("Invalid transformation; layout retained.") end
 end
 function App:move(dx, dy)
     if not Util.finite(dx) or not Util.finite(dy) then return end
-    self:_rectAction("Move", function(rects)
+    self:_rectAction("Move", "move", function(rects)
         local moved = {}
         for index, rect in ipairs(rects) do moved[index] = Geometry.translate(rect, dx, dy) end
         return moved
@@ -439,7 +682,7 @@ function App:sizeRects(rects, width, height, center, basis, aspectAxis)
 end
 
 function App:sizeInfo(bounds, rects, keys)
-    if not rects or not keys then rects, keys = self:getRects(true); bounds = nil end
+    if not rects or not keys then rects, keys = self:getRects(true, "resize"); bounds = nil end
     bounds = bounds or Geometry.bounds(rects)
     if not bounds or bounds.w <= 0 or bounds.h <= 0 then return nil end
     local individual = self.preferences.equalSize and #rects > 1
@@ -491,7 +734,7 @@ function App:resize(width, height, center, aspectAxis)
         return self:status("Enter width and height between 16 and 100000 pixels.")
     end
     if center == nil then center = self.preferences.centerScale end
-    self:_rectAction("Resize", function(rects)
+    self:_rectAction("Resize", "resize", function(rects)
         return self:sizeRects(rects, width, height, center, nil, aspectAxis)
     end)
 end
@@ -502,7 +745,7 @@ function App:scale(factor)
 end
 function App:geometry(mode, value)
     if mode == "position" then
-        local bounds = self:currentBounds(true)
+        local bounds = self:currentBounds(true, "move")
         if bounds and type(value) == "table" and Util.finite(value.x) and Util.finite(value.y) then
             self:move(value.x - bounds.x, value.y - bounds.y)
         end
@@ -510,27 +753,35 @@ function App:geometry(mode, value)
         if not Util.finite(value) then return self:status("Enter a finite number.") end
         if mode == "rotation" and (value < -360 or value > 360) then return self:status("Rotation range: -360 to 360.") end
         if mode == "transparency" and (value < 0 or value > 1) then return self:status("Transparency range: 0 to 1.") end
+        local keys = {}
+        for _, key in ipairs(self.selection) do
+            if self:capability(key, mode).supported then keys[#keys + 1] = key end
+        end
+        if #keys == 0 then return self:status("Select a control that supports appearance changes.", {kind = "warning", title = "Adjustment unavailable"}) end
         if not self:beginGesture(mode) then return end
-        local _, skipped = self.transform:setProperty(self.selection, mode, value)
-        self.gesture.skipped = skipped
+        local _, skipped = self.transform:setProperty(keys, mode, value)
+        self.gesture.skipped = #self.selection - #keys + (skipped or 0)
         self:endGesture()
     end
 end
 function App:align(mode)
-    self:_rectAction("Align " .. tostring(mode), function(rects) return Geometry.align(rects, mode) end)
+    self:_rectAction("Align " .. tostring(mode), "groupMove", function(rects) return Geometry.align(rects, mode) end)
 end
 function App:distribute(axis)
-    self:_rectAction("Distribute " .. tostring(axis), function(rects) return Geometry.distribute(rects, axis) end)
+    self:_rectAction("Distribute " .. tostring(axis), "groupMove", function(rects) return Geometry.distribute(rects, axis) end)
 end
 function App:reset()
     if #self.selection == 0 then return self:status("Select elements to reset to their original properties.") end
+    local keys = {}
+    for _, key in ipairs(self.selection) do if self:capability(key, "reset").supported then keys[#keys + 1] = key end end
+    if #keys == 0 then return self:status("The selected controls cannot be reset.", {kind = "warning", title = "Reset unavailable"}) end
     if not self:beginGesture("Reset to original") then return end
-    local _, skipped = self.transform:restore(self.selection)
-    self.gesture.skipped = skipped
+    local _, skipped = self.transform:restore(keys)
+    self.gesture.skipped = #self.selection - #keys + (skipped or 0)
     self:endGesture()
 end
 function App:recover()
-    self:_rectAction("Recover offscreen selection", function(rects)
+    self:_rectAction("Recover offscreen selection", "move", function(rects)
         local bounds = Geometry.bounds(rects)
         local w, h = viewport(self.services)
         local safe = Coordinates.coreRect(self.services.GuiService, w, h)
@@ -749,19 +1000,110 @@ function App:setLauncherPosition(x, y)
     self.preferences.launcherX, self.preferences.launcherY = x, y
     self:changed()
 end
+
+function App:siblingKeys(key)
+    local record = self.discovery:get(key)
+    if not record then return {} end
+    local parent = record.parentKey and self.discovery:get(record.parentKey)
+    local candidates = parent and parent.childKeys
+    if not candidates then
+        candidates = {}
+        for _, candidate in ipairs(self.discovery:list("visible")) do
+            if candidate.object.Parent == record.object.Parent then candidates[#candidates + 1] = candidate.key end
+        end
+    end
+    local keys = {}
+    for _, candidateKey in ipairs(candidates) do
+        local candidate = self.discovery:get(candidateKey)
+        if candidate and candidate.visible ~= false and not self.layerPolicy.ignored[candidateKey]
+            and not self.layerPolicy.locked[candidateKey] and (candidateKey == key or candidate.typeIcon == record.typeIcon)
+            and (self:capability(candidateKey, "move").supported or self:capability(candidateKey, "resize").supported) then
+            keys[#keys + 1] = candidateKey
+        end
+    end
+    return keys
+end
+
+function App:selectSiblings()
+    local key = self.selection[1]
+    local keys = key and self:siblingKeys(key) or {}
+    if #keys < 2 then return self:status("No other editable controls of this type share the same container.") end
+    self:selectMany(keys)
+    return true
+end
+
+function App:quickGroup()
+    if #self.selection < 2 then return self:status("Use Multi to select at least two controls.") end
+    self.groupFocus = {keys = Util.copy(self.selection)}
+    self:_selectionChanged()
+    self:status(tostring(#self.selection) .. " controls selected together. Name the group to reuse it.",
+        {kind = "success", title = "Quick group created"})
+    return true
+end
+
+function App:groupMembers(key)
+    local names = {}
+    for name, descriptors in pairs(self.groups) do
+        for _, descriptor in ipairs(descriptors) do
+            if Identity.key(descriptor) == key then names[#names + 1] = name; break end
+        end
+    end
+    table.sort(names)
+    return names
+end
+
+function App:enterGroupMember(key)
+    local focus = self.groupFocus
+    if not focus then return false end
+    for _, member in ipairs(focus.keys) do
+        if member == key and self.discovery:get(key) then
+            focus.member = key
+            if not self:selectMany({key}, true) then self:_selectionChanged() end
+            return true
+        end
+    end
+    return false
+end
+
+function App:returnToGroup()
+    local focus = self.groupFocus
+    if not focus then return false end
+    focus.member = nil
+    if not self:selectMany(focus.keys, true) then self:_selectionChanged() end
+    return true
+end
+
+function App:ungroup(deleteNamed)
+    local focus = self.groupFocus
+    if not focus then return false end
+    if deleteNamed and focus.name then
+        self:group("delete", focus.name)
+        if self.groups[focus.name] then return false end
+    end
+    self.groupFocus = nil
+    local key = focus.member or self.selection[1]
+    if not self:selectMany(key and {key} or {}) then self:_selectionChanged() end
+    return true
+end
+
+function App:_groupKeys(name)
+    local keys, missing = {}, 0
+    for _, descriptor in ipairs(self.groups[name] or {}) do
+        local key = Identity.key(descriptor)
+        if self.discovery:get(key) then keys[#keys + 1] = key else missing = missing + 1 end
+    end
+    return keys, missing
+end
+
 function App:group(action, name, extra)
     if self.previewState then return self:status("Apply or cancel the preview first.") end
     if action ~= "select" and self.profiles.suspended then return self:status("Resume the profile before editing groups.") end
     if action ~= "select" and (self.finishingGesture or self.saving) then return end
     if action == "select" then
-        local keys = {}
-        local members = self.groups[name] or {}
-        for _, descriptor in ipairs(members) do
-            local key = Identity.key(descriptor)
-            if self.discovery:get(key) then keys[#keys + 1] = key end
-        end
-        self:selectMany(keys)
-        if #keys < #members then self:status(tostring(#members - #keys) .. " group members are currently missing.") end
+        local keys, missing = self:_groupKeys(name)
+        self.groupFocus = {name = name, keys = keys}
+        if not self:selectMany(keys, true) then self:_selectionChanged() end
+        if missing > 0 then self:status(tostring(missing) .. " group members are currently missing.") end
         return
     end
     if type(name) ~= "string" or not name:match("%S") or #name > 64 or name:find("[%c]") then return self:status("Group names need 1–64 readable characters.") end
@@ -778,7 +1120,8 @@ function App:group(action, name, extra)
         if not self.groups[name] then return self:status("Select a saved group first.") end
         local seen = {}
         for _, descriptor in ipairs(self.groups[name]) do seen[Identity.key(descriptor)] = true end
-        for _, key in ipairs(self.selection) do
+        local selection = action == "create" and self.groupFocus and self.groupFocus.keys or self.selection
+        for _, key in ipairs(selection) do
             local record = self.discovery:get(key)
             if record and not seen[key] then self.groups[name][#self.groups[name] + 1] = Util.copy(record.descriptor); seen[key] = true end
         end
@@ -791,6 +1134,14 @@ function App:group(action, name, extra)
     end
     local valid, reason = Config.validateGroups(self.groups)
     if not valid then self.groups = before.groups; return self:status(reason) end
+    if self.groupFocus and self.groupFocus.name == name then
+        if action == "delete" then self.groupFocus = nil
+        elseif action == "rename" then self.groupFocus.name = extra
+        else self.groupFocus.keys = self:_groupKeys(name) end
+    elseif action == "create" then
+        self.groupFocus = {name = name, keys = self:_groupKeys(name), member = self.groupFocus and self.groupFocus.member}
+        self:status("Save the layout to reuse this group later.", {kind = "success", title = "Named group created"})
+    end
     self.history:push(before, self:getState(), "Group " .. action)
     self:changed()
 end
@@ -968,6 +1319,9 @@ function App:approve(key, enabled)
     if self.gesture or self.finishingGesture or self.saving then return end
     local record = self.discovery:get(key)
     if not record then return end
+    if self:layerState(key).locked or self.lockedAncestors[key] then
+        return self:status("Unlock this selection before changing its layout permissions.")
+    end
     if not record.experimental then return self:status("This target has no experimental editing option.") end
     if self.transform.safe then return self:status("Safe Mode disables experimental editing. Resume the profile to leave Safe Mode.") end
     local before = self:getState()
@@ -984,7 +1338,9 @@ function App:remap(oldKey, newKey)
     if self.gesture or self.finishingGesture or self.saving then return end
     local old, target = self.layout[oldKey], self.discovery:get(newKey)
     if not old or not target then return self:status("Select an unmatched entry and an accessible replacement first.") end
-    if not target.editable then return self:status(target.reason or "The selected replacement is unavailable for editing.") end
+    if not self:capability(newKey, "move").supported or not self:capability(newKey, "resize").supported then
+        return self:status("Choose an unlocked replacement that can move and resize independently.")
+    end
     if self.layout[newKey] then return self:status("Replacement already has saved settings. Choose another element.") end
     local before = self:getState()
     local state = Util.copy(before)

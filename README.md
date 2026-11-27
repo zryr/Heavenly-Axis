@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.1.2**
+**Roblox HUD & Interface Editor · V3.2.0**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -20,14 +20,16 @@ The legacy [`Source`](Source) path contains the identical generated script. Do n
 
 ## Editing on Android
 
-1. On a landscape phone, open the editor and tap **Jump** in Elements, or tap the jump button on the canvas. Quick Edit appears beside the canvas after selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
+1. Open the editor and take or skip the practice tutorial. Tap **Jump** in Layers or tap the jump button on the canvas. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
 2. Drag the selection with one finger. Resize with the size slider, two-finger pinch, or the touch handle. The percentage refers to the original size when available and otherwise to the size when selected. Tap the percentage field for a precise value, or use the minus and plus controls for fine adjustment.
-3. Use **Elements** to search, find built-in touch controls, or move through the hierarchy. Use overlap choices when several elements share a point. Toggle **Multi** to add or remove targets by touch.
+3. Hold a spot to **Select Through**, or arm the tool in **Layers** and tap the spot. Layers also offers search, filters, hierarchy navigation, and per-layer Details. Toggle **Multi** to add or remove targets by touch.
 4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Return to the canvas to continue with the same selection.
 
 Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing enforces a 16-unit minimum. The grid starts on and snapping starts off, with alignment guides available in either mode.
 
 Short notifications confirm saves, show recovery and history results, and flag errors. The verified Save confirmation stays visible briefly when Done returns you to gameplay.
+
+**Ignore** skips a layer during ordinary taps. **Lock** lets you inspect a layer and prevents edits that would move or resize it, including changes through its container. Both are editor-only preferences scoped to the current experience and place. Clear them in Smart Layers settings. The practice tutorial is replayable in Help, with practice controls separate from the game HUD and undo history.
 
 The selection boundary represents screen-space bounds. Pixel changes retain existing UDim scale components; scale-based layout still adapts with its parent while offsets remain fixed. Heavenly Axis does not guess a proportional conversion for offset-based layouts. Use device/orientation profile overrides when you need distinct arrangements.
 
@@ -43,7 +45,7 @@ Use mouse dragging, eight resize handles, numeric inputs, and the same groups/pr
 | --- | --- |
 | Open/close editor | F8 by default; configurable in Settings |
 | Add/remove selection | Shift/Ctrl click, or multi-select mode |
-| Choose overlapping element | Alt click cycles hits; use Elements hierarchy for precise parent/child choice |
+| Choose overlapping element | Right-click opens Select Through. Alt click cycles hits. |
 | Box selection | Drag empty canvas, or toggle box mode with B |
 | Move selected controls | Arrow keys; Shift uses 10-pixel steps |
 | Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
@@ -53,6 +55,8 @@ Use mouse dragging, eight resize handles, numeric inputs, and the same groups/pr
 Shortcuts pause while a textbox has focus. Close editing before normal gameplay. Some games also listen to these keys; editor shortcuts do not promise complete game-input isolation.
 
 ## Groups
+
+Select multiple compatible layers, then choose **Quick Group** in Groups to work with them together. Name it to reuse it later. You can work on one member, return to the group, or ungroup while keeping the current geometry. **Select Siblings** previews related controls in the same container.
 
 Enable multi-select and tap/click members. Moving a selection transforms only selected roots so a selected child is not moved twice through its selected parent. Use group controls to align edges/centers and distribute three or more elements evenly.
 
@@ -116,7 +120,7 @@ getgenv().HeavenlyAxisOptions = { SafeMode = true }
 
 For an existing session, call `getgenv().__HEAVENLY_AXIS_V3:SafeMode()`. Use profile Resume to leave suspension deliberately. **Restore originals** also preserves saved profiles; confirmed deletion is a separate operation. Offscreen recovery controls move selected targets back into the usable display region. `:Destroy()` disconnects the session and restores available originals; `:Destroy(false)` tears down while retaining the current layout.
 
-Layout-managed or constrained targets are restricted. Experimental editing is disabled for new targets, requires per-element approval, retains original properties, and uses bounded stabilization checks. Repeated failure suspends the target; the editor does not continually fight another script. Some targets remain unsupported even with approval. Safe Mode disables experimental behavior globally.
+Each layer reports separate support for movement, resizing, and appearance. A simple list can allow size changes while keeping positions under its control. Flex, grid, table, automatic sizing, and constraints can limit those adjustments. Use **Select container** when offered to move the whole bar. Layout-owned operations remain unavailable through the editor. Details can copy the layer path, its controller, and the latest failed adjustment when clipboard access is available. The live Heroes Battlegrounds layout remains unverified. [Layout and size behavior](https://create.roblox.com/docs/ui/list-flex-layouts)
 
 ## Compatibility and diagnostics
 
@@ -161,3 +165,4 @@ Use [`studio/TestHUD.client.lua`](studio/TestHUD.client.lua) for controlled rend
 - `tools/`, `tests/`, `studio/`, `docs/`: deterministic packaging, automated checks, controlled HUD, and verification instructions.
 
 See the [mobile rescue audit](docs/MOBILE_RESCUE.md), [architecture](docs/ARCHITECTURE.md), and [V2 audit](docs/AUDIT.md).
+See [release changes](docs/CHANGELOG.md) for V3.2.0.

@@ -43,6 +43,10 @@ local container = make("Frame", "TouchControlFrame", hud)
 container.BackgroundTransparency, container.Size = 1, UDim2.fromScale(1, 1)
 local jump = make("ImageButton", "JumpButton", container)
 jump.Position, jump.Size = UDim2.fromOffset(762, 274), UDim2.fromOffset(96, 96)
+local overlay = make("Frame", "Transparent overlay", container)
+overlay.Position, overlay.Size, overlay.BackgroundTransparency, overlay.ZIndex = jump.Position, jump.Size, 1, 31
+local auxiliary = make("TextButton", "Interact", container)
+auxiliary.Position, auxiliary.Size, auxiliary.Text = UDim2.fromOffset(535, 230), UDim2.fromOffset(75, 54), "Interact"
 local origin = jump.AbsolutePosition
 
 -- Opaque tokens stand in for Roblox JSON. Profile validation and storage readback use shipped code.
@@ -61,12 +65,22 @@ function mock.services.HttpService:JSONDecode(text)
     return copy(assert(tokens[tonumber(text:match('^%{"stubJSON":(%d+)%}$'))], "Unknown mock JSON token"))
 end
 
+local function skipTutorial(editor)
+    local tutorial = editor.ui.onboarding
+    check(tutorial and tutorial:isActive(), "fresh editor opens its isolated welcome")
+    tutorial.skip.Activated:Fire()
+    mock:flush()
+    check(editor:hasSeenTutorial() and not tutorial:isActive() and #editor.history.past == 0 and not editor.dirty,
+        "Skip records tutorial progress separately from the layout and undo history")
+end
+
 -- Standard LocalScripts have the shared _G session and no executor file helpers.
 getgenv = nil
 local studio = release()
 mock:flush()
 check(studio and studio == _G.__HEAVENLY_AXIS_V3 and studio.editing and studio.ui.toolbar.Visible,
     "fresh LocalScript path constructs the actual editor: " .. table.concat(warnings, " | "))
+skipTutorial(studio)
 local durable, _, accepted = studio:save()
 check(not durable and accepted and studio:VerifyStartup().storage == "Unsupported" and type(studio:export()) == "string",
     "fresh LocalScript Save reports an in-memory checkpoint with export available")
@@ -88,6 +102,7 @@ check(app and app == env.__HEAVENLY_AXIS_V3 and app.editing and app.ui.canvas.Vi
     "fresh shared-environment bundle starts on a clear mobile editing canvas: " .. table.concat(warnings, " | "))
 check(app.version == buildVersion, "shipped and maintained application versions agree")
 local ui = app.ui
+skipTutorial(app)
 local connections = mock.activeConnections
 check(release() == app and app.ui == ui and mock.activeConnections == connections,
     "fresh session protects the actual UI from duplicate initialization")
@@ -129,6 +144,25 @@ check(key and app.discovery:get(key).object == jump and ui.panel.Visible and #ap
     "canvas tap chooses JumpButton over its structural parent and opens Quick Edit without history")
 check(ui.selectionBounds.AbsolutePosition.X == origin.X and ui.selectionBounds.AbsolutePosition.Y == origin.Y,
     "selection outline and target agree in a mock nonzero overlay origin")
+
+do
+    check(app:armSelectThrough(), "the dedicated Select Through action arms one canvas tap")
+    releasePointer(jumpPointer())
+    check(ui.modalOpen and #ui.pickerRows >= 2 and app.selection[1] == key,
+        "Select Through reveals deeper candidates without moving or selecting anything yet")
+    local overlayKey
+    for _, row in ipairs(ui.pickerRows) do
+        if row.record.object == overlay then overlayKey = row.record.key; row.button.Activated:Fire(); break end
+    end
+    check(overlayKey and app.selection[1] == overlayKey and not ui.modalOpen,
+        "explicit picker selects the transparent overlay for inspection")
+    check(app:setLayerState(overlayKey, "ignored", true), "an accessible layer can be ignored from editor preferences")
+    releasePointer(jumpPointer())
+    check(app.selection[1] == key and overlay.BackgroundTransparency == 1 and overlay.Position.X.Offset == 762 and not app.dirty,
+        "ignoring the overlay leaves the game object intact and keeps Jump selectable")
+    check(files["HeavenlyAxis-v3.editor.json"] and not files["HeavenlyAxis-v3.json"],
+        "layer rules and tutorial state are stored separately from HUD layouts")
+end
 
 local pointer = jumpPointer()
 move(pointer, -36, 14)
@@ -194,6 +228,61 @@ check(not app.editing and not app.dirty and jump.AbsolutePosition.X == editedPos
     and files[path] == checkpoint,
     "Discard verifies the last checkpoint before Done closes")
 
+do
+    app:Open()
+    local secondKey
+    for _, record in ipairs(app.discovery:list("all")) do if record.object == auxiliary then secondKey = record.key; break end end
+    check(secondKey ~= nil, "the second gameplay control is available to group")
+    app:selectMany({key, secondKey})
+    check(app:quickGroup() and #app.history.past == 0, "Quick Group establishes a temporary editing selection")
+    local before = auxiliary.AbsolutePosition
+    app:move(-18, 0)
+    mock:flush()
+    check(jump.AbsolutePosition.X == editedPosition.X - 18 and auxiliary.AbsolutePosition.X == before.X - 18,
+        "temporary grouping transforms both selected controls")
+    app:group("create", "Gameplay")
+    check(#app.groups.Gameplay == 2 and app:enterGroupMember(secondKey) and app:returnToGroup(),
+        "a named group can temporarily focus one member and return to both")
+    check(app:ungroup(true) and not app.groups.Gameplay and auxiliary.AbsolutePosition.X == before.X - 18,
+        "ungrouping removes the group and preserves live geometry")
+    app:cancel()
+    mock:flush()
+    check(not app.dirty and auxiliary.AbsolutePosition.X == before.X and jump.AbsolutePosition.X == editedPosition.X and files[path] == checkpoint,
+        "group edits can be discarded back to the original stored checkpoint")
+end
+
+do
+    local bar = make("Frame", "Practice ability bar", hud)
+    bar.Position, bar.Size = UDim2.fromOffset(550, 100), UDim2.fromOffset(240, 50)
+    local list = make("UIListLayout", "Row", bar)
+    list.Padding = UDim.new(0, 6)
+    local ability = make("TextButton", "Ability 1", bar)
+    ability.Text, ability.Position, ability.Size = "1", UDim2.fromOffset(0, 0), UDim2.fromOffset(42, 40)
+    mock:flush()
+    local abilityKey
+    for _, record in ipairs(app.discovery:list("all")) do if record.object == ability then abilityKey = record.key; break end end
+    check(abilityKey ~= nil, "layout-managed numbered button is available for inspection")
+    app:selectMany({abilityKey})
+    local operations = app:capabilitiesForSelection()
+    check(not operations.move and operations.resize and operations.parentKey and app:layerDetails(abilityKey):find("UIListLayout", 1, true),
+        "the selected list member offers resize and a movable parent, and explains position ownership")
+    local position = ability.Position
+    app:move(15, 0)
+    check(ability.Position == position and not app.dirty, "a known managed position is refused before any edit")
+    app:resize(63, 60)
+    mock:flush()
+    check(ability.Position == position and math.abs(ability.AbsoluteSize.X - 63) < 1 and app.dirty,
+        "supported list resize writes size without writing position")
+    app:selectMany({operations.parentKey})
+    app:move(15, 0)
+    mock:flush()
+    check(bar.Position.X.Offset == 565, "selecting the container moves the representative bar")
+    app:cancel()
+    mock:flush()
+    check(bar.Position.X.Offset == 550 and ability.AbsoluteSize.X == 42 and not app.dirty,
+        "discard restores the representative bar and member without changing the saved checkpoint")
+end
+
 app:Destroy()
 mock:flush()
 check(env.__HEAVENLY_AXIS_V3 == nil and mock.activeConnections == 0 and jump.AbsolutePosition.X == origin.X and jump.AbsoluteSize.X == 96,
@@ -203,6 +292,7 @@ local restored = source()
 mock:flush()
 check(restored and not restored.ui and restored:VerifyStartup().mode == "loader" and jump.AbsolutePosition.X == editedPosition.X
     and jump.AbsoluteSize.X == savedSize, "legacy Source cold loader restores checkpoint without creating UI")
+check(restored:hasSeenTutorial(), "cold startup remembers completed or skipped onboarding")
 check(release() == restored and not restored.ui and jump.AbsoluteSize.X == savedSize,
     "duplicate loader execution does not construct an editor or compound properties")
 env.HeavenlyAxisOptions = {SafeMode = true}

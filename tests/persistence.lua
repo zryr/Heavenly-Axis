@@ -4,6 +4,7 @@ local Identity = require("Identity")
 local Capabilities = require("Capabilities")
 local Storage = require("Storage")
 local Profiles = require("Profiles")
+local EditorPreferences = require("EditorPreferences")
 local checks = 0
 local function check(condition, message)
     checks = checks + 1
@@ -408,6 +409,111 @@ check(migrating:beginImport(movedJson, true) and migrating:applyPreview()
     and migrating.data.active[Config.scopeKey(movedScope)] == movedScope.id
     and migrating.data.active[Config.scopeKey(oldPlace)] == oldPlace.id,
     "confirmed import moves its stale activation without dropping unrelated scopes")
+
+local function checkEditorPreferences()
+    local editorFiles = Storage.EDITOR_FILES
+    local hudRaw, hudBackup = files[Storage.FILES.saved], files[Storage.FILES.backup]
+    local fileWrites = writes
+    local editor = EditorPreferences.new(oldStorage, context)
+    check(editor.data.smartSelection and editor.data.skipTransparent and not editor.data.onboardingCompleted and writes == fileWrites,
+        "legacy V3 installations use Smart Layers and first-run defaults without rewriting storage")
+    local changedEditor, editorReason, durableEditor = editor:setPreference("smartSelection", false)
+    check(changedEditor and durableEditor and editorReason == nil and not editor.data.smartSelection,
+        "a Smart Selection preference is saved and verified independently")
+    check(editor:setPreference("skipTransparent", false) and editor:setPreference("onboardingCompleted", true),
+        "filtering and finishing onboarding use the editor document")
+    local completionWrites = writes
+    check(editor:setPreference("onboardingCompleted", true) and writes == completionWrites,
+        "replaying completed onboarding is a no-op for persistence")
+    check(files[Storage.FILES.saved] == hudRaw and files[Storage.FILES.backup] == hudBackup,
+        "editor preferences and onboarding never replace saved HUDs or backups")
+    check(not oldStorage:import(files[editorFiles.saved]) and not Config.validateEditorPreferences(migrated),
+        "editor metadata is not accepted as a portable layout or vice versa")
+
+    check(editor:setElementFlag("ignored", target.descriptor, true) and editor:setElementFlag("locked", target.descriptor, true),
+        "a layer can be independently ignored and locked")
+    local recreated = Util.copy(target.descriptor)
+    local ignored, locked = editor:elementFlags(recreated, key)
+    check(ignored and locked and #editor:listElementFlags("ignored") == 1 and #editor:listElementFlags("locked") == 1,
+        "stable preferences match an exact recreated descriptor and remain available for explicit inspection")
+    local detached = editor:listElementFlags("ignored")
+    detached[1].path[2].name = "Renamed copy"
+    check(editor:elementFlags(recreated, key), "preference lists do not expose mutable stored identities")
+    local ambiguousLayer = Util.copy(recreated)
+    ambiguousLayer.ambiguous = true
+    local changedLayer = Util.copy(recreated)
+    changedLayer.path[2].ordinal = 2
+    check(not editor:elementFlags(ambiguousLayer, key) and not editor:setElementFlag("locked", ambiguousLayer, true)
+        and not editor:elementFlags(changedLayer, key), "ambiguous or different layers cannot inherit a saved preference")
+    local reoriented = Util.copy(context)
+    reoriented.orientation, reoriented.device = "portrait", "desktop"
+    local reopened = EditorPreferences.new(oldStorage, reoriented)
+    local reopenedIgnore, reopenedLock = reopened:elementFlags(recreated)
+    check(reopenedIgnore and reopenedLock and reopened.data.onboardingCompleted and not reopened.data.skipTransparent,
+        "reopening preserves layer rules within the same place and completes onboarding across orientations")
+    local differentPlace, differentExperience = Util.copy(context), Util.copy(context)
+    differentPlace.place = "201"
+    differentExperience.experience = "101"
+    local otherEditor = EditorPreferences.new(oldStorage, differentPlace)
+    check(not otherEditor:elementFlags(recreated) and not EditorPreferences.new(oldStorage, differentExperience):elementFlags(recreated),
+        "matching identities from another place or experience do not inherit rules")
+    check(otherEditor:setElementFlag("ignored", recreated, true), "another place can independently persist the same identity")
+    local staleAccepted, staleMessage, staleDurable = reopened:clearElementFlags("ignored")
+    check(staleAccepted and not staleDurable and staleMessage:find("another session"),
+        "a stale editor applies a preference locally without overwriting newer saved rule sets")
+    reopened = EditorPreferences.new(oldStorage, context)
+    check(reopened:clearElementFlags("ignored"), "the ignored list can be safely cleared after reading current preferences")
+    local clearedIgnore, retainedLock = reopened:elementFlags(recreated)
+    check(not clearedIgnore and retainedLock and EditorPreferences.new(oldStorage, differentPlace):elementFlags(recreated),
+        "clearing ignored layers preserves locks and ignores from other places")
+    check(reopened:setElementFlag("locked", recreated, false) and #reopened:listElementFlags("locked") == 0,
+        "unlock remains available even when the layer is no longer present")
+
+    local storedPreferencesRaw = files[editorFiles.saved]
+    faults.write = editorFiles.pending
+    local failedEditorAccepted, failedEditorMessage, failedEditorDurable = reopened:setPreference("skipTransparent", true)
+    check(failedEditorAccepted and reopened.data.skipTransparent and not failedEditorDurable
+        and failedEditorMessage:find("session only") and files[editorFiles.saved] == storedPreferencesRaw,
+        "an editor preference write failure is honest and keeps the last verified file")
+    faults.write = nil
+    local _, _, retriedEditorDurable = reopened:setPreference("skipTransparent", true)
+    check(retriedEditorDurable and EditorPreferences.new(oldStorage, context).data.skipTransparent,
+        "repeating a preference after a transient write failure retries persistence")
+    local corruptEditorFile = "damaged editor preference document"
+    files[editorFiles.saved] = corruptEditorFile
+    local recoveryLog
+    local recoveredEditor = EditorPreferences.new(oldStorage, context, function(message) recoveryLog = message end)
+    check(recoveryLog and recoveryLog:find("backup") and recoveredEditor.data.onboardingCompleted,
+        "an invalid editor document can start from its validated previous backup")
+    local _, corruptPreferenceMessage, corruptPreferenceDurable = recoveredEditor:setPreference("smartSelection", true)
+    check(not corruptPreferenceDurable and corruptPreferenceMessage:find("preserved") and files[editorFiles.saved] == corruptEditorFile
+        and files[Storage.FILES.saved] == hudRaw, "a damaged preference file is preserved and isolated from the HUD save")
+    local invalidEditorDocument = Config.emptyEditorPreferences()
+    invalidEditorDocument.scopes[Config.editorScope(context)] = {wrong = {descriptor = recreated, ignored = true}}
+    check(not Config.validateEditorPreferences(invalidEditorDocument) and not oldStorage:saveEditorPreferences(invalidEditorDocument),
+        "editor preferences validate descriptor keys before any write")
+    local inMemory = EditorPreferences.new(memoryStorage, context)
+    local acceptedTutorial, tutorialFallback, durableTutorial = inMemory:setPreference("onboardingCompleted", true)
+    check(acceptedTutorial and not durableTutorial and tutorialFallback:find("session only") and inMemory.data.onboardingCompleted
+        and not EditorPreferences.new(memoryStorage, context).data.onboardingCompleted, "onboarding remains complete in memory when file APIs are absent")
+    local yieldingPreferences = EditorPreferences.new({saveEditorPreferences = function()
+        coroutine.yield("waiting for preference write")
+        return true
+    end}, context)
+    local worker = coroutine.create(function() return yieldingPreferences:setPreference("smartSelection", false) end)
+    local started, held = coroutine.resume(worker)
+    check(started and held == "waiting for preference write" and not yieldingPreferences:setPreference("skipTransparent", false)
+        and yieldingPreferences.data.skipTransparent, "a yielding editor write cannot overlap a second preference mutation")
+    local complete, acceptedYield, _, durableYield = coroutine.resume(worker)
+    check(complete and acceptedYield and durableYield and not yieldingPreferences.data.smartSelection,
+        "the in-flight editor preference write finishes with the intended settings")
+    local unpublishedEditor = EditorPreferences.new(oldStorage, {experience = "0", place = "0"})
+    local acceptedUnpublished, unpublishedMessage, durableUnpublished = unpublishedEditor:setElementFlag("locked", recreated, true)
+    local _, lockedUnpublished = unpublishedEditor:elementFlags(recreated)
+    check(acceptedUnpublished and not durableUnpublished and unpublishedMessage:find("no stable identifier") and lockedUnpublished,
+        "unpublished contexts can use session rules without leaking identity preferences to other games")
+end
+checkEditorPreferences()
 
 local previousApp, previousWarn, previousGetgenv = package.loaded.App, warn, getgenv
 local opened, warnings, notice = 0, {}, nil

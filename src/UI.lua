@@ -4,6 +4,7 @@ local Geometry = require("Geometry")
 local Coordinates = require("Coordinates")
 local Layout = require("UILayout")
 local Notifications = require("Notifications")
+local Onboarding = require("Onboarding")
 local UI = {}
 UI.__index = UI
 
@@ -96,7 +97,7 @@ function UI:button(parent, text, callback, width, x, color, dynamic)
     if callback then
         self:connect(b.Activated, function(...)
             local input = self.app.input
-            if self.disabled[b] or (input and input.isBusy and input:isBusy()) then return end
+            if self.onboardingOpen or self.disabled[b] or (input and input.isBusy and input:isBusy()) then return end
             callback(...)
         end, dynamic)
     end
@@ -119,7 +120,7 @@ function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
     local stroke = outline(b)
     self:connect(b.Focused, function()
         local input = self.app.input
-        if input and input.isBusy and input:isBusy() then b:ReleaseFocus(); return end
+        if self.onboardingOpen or (input and input.isBusy and input:isBusy()) then b:ReleaseFocus(); return end
         stroke.Color, stroke.Transparency = C.cyan, .05
     end, dynamic)
     self:connect(b.FocusLost, function() stroke.Color, stroke.Transparency = C.border, .35 end, dynamic)
@@ -127,7 +128,7 @@ function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
         self.presentedText[b] = b.Text
         self:connect(b.FocusLost, function(enter)
             local input = self.app.input
-            if b.TextEditable ~= false and b.Text ~= self.presentedText[b]
+            if not self.onboardingOpen and b.TextEditable ~= false and b.Text ~= self.presentedText[b]
                 and not (input and input.isBusy and input:isBusy()) then callback(b.Text, enter) end
         end, dynamic)
     end
@@ -157,23 +158,51 @@ function UI:row(parent, buttons)
     return r
 end
 
-function UI:toggle(parent, title, key, default)
-    local b
-    b = self:button(parent, "", function()
-        local value = self.app.preferences[key]
-        if value == nil then value = default or false end
-        self.app:setPreference(key, not value)
+local function preferenceValue(app, key, default, smart)
+    local prefs = smart and (app.smartPreferences or {}) or app.preferences
+    local value = prefs[key]
+    if value == nil then value = default end
+    return value == true
+end
+
+function UI:toggle(parent, title, key, default, style)
+    local smart = style == "smart"
+    local button = self:button(parent, "", function()
+        local value = not preferenceValue(self.app, key, default, smart)
+        if smart then
+            if self.app.setSmartPreference then self.app:setSmartPreference(key, value) end
+        else self.app:setPreference(key, value) end
     end)
-    table.insert(self.toggles, {button = b, title = title, key = key, default = default})
-    return b
+    button.Name = title:gsub("[^%w]", "")
+    local entry = {button = button, title = title, key = key, default = default, smart = smart}
+    if style ~= "compact" then
+        local caption = label(button, title, 44, 13)
+        caption.Position, caption.Size = UDim2.fromOffset(11, 0), UDim2.new(1, -65, 0, 44)
+        truncate(caption)
+        local track = make("Frame", {Name = "Switch", AnchorPoint = Vector2.new(1, .5), BorderSizePixel = 0,
+            Position = UDim2.new(1, -11, .5, 0), Size = UDim2.fromOffset(34, 19)}, button)
+        corners(track, 10)
+        local thumb = make("Frame", {Name = "Thumb", BorderSizePixel = 0, Size = UDim2.fromOffset(13, 13)}, track)
+        corners(thumb, 7)
+        entry.caption, entry.track, entry.thumb = caption, track, thumb
+    end
+    table.insert(self.toggles, entry)
+    return button
 end
 
 function UI:refreshToggles()
     for _, entry in ipairs(self.toggles) do
-        local value = self.app.preferences[entry.key]
-        if value == nil then value = entry.default or false end
-        entry.button.Text = entry.title .. (value and "  On" or "  Off")
-        entry.button.TextColor3 = self.disabled[entry.button] and C.quiet or (value and C.cyan or C.muted)
+        local on = preferenceValue(self.app, entry.key, entry.default, entry.smart)
+        local disabled = self.disabled[entry.button]
+        if entry.track then
+            entry.track.BackgroundColor3 = on and C.cyan or C.border
+            entry.thumb.BackgroundColor3 = on and C.ink or C.text
+            entry.thumb.Position = UDim2.fromOffset(on and 18 or 3, 3)
+            entry.caption.TextColor3 = disabled and C.quiet or C.text
+        else
+            entry.button.Text = entry.title .. (on and " on" or " off")
+            entry.button.TextColor3 = disabled and C.quiet or (on and C.cyan or C.muted)
+        end
     end
 end
 
@@ -243,13 +272,13 @@ function UI:dialog(title, message, text, actions)
         if entry.primary then b.TextColor3 = C.ink end
     end
     self:layoutDialog()
-    return box
+    return box, body
 end
 
 function UI:layoutDialog()
     if not self.dialogCard or not self.layoutPlan then return end
     local area = self.layoutPlan.area
-    local w, h = math.min(area.w, 490), math.min(area.h, self.dialogHasText and 364 or 172)
+    local w, h = math.min(area.w, 490), math.min(area.h, self.dialogMaxHeight or (self.dialogHasText and 364 or 172))
     local headingVisible = h >= 118
     local bodyTop = headingVisible and 36 or 7
     self.dialogHeading.Visible = headingVisible
@@ -277,9 +306,9 @@ end
 
 function UI:closeModal()
     for _, c in ipairs(self.modalConnections or {}) do c:Disconnect() end
-    self.modalConnections, self.modalOpen = {}, false
+    self.modalConnections, self.modalOpen, self.pickerRows = {}, false, nil
     if self.modalGui then self.modalGui:Destroy(); self.modalGui = nil end
-    self.dialogCard, self.dialogHeading, self.dialogScroller = nil, nil, nil
+    self.dialogCard, self.dialogHeading, self.dialogScroller, self.dialogMaxHeight = nil, nil, nil, nil
 end
 
 function UI:chooseElement(key)
@@ -287,16 +316,86 @@ function UI:chooseElement(key)
     if not self.app.preferences.multiSelect then self:setWorkspace(false) end
 end
 
+local layerFilters = {"Visible", "All accessible", "Editable", "Selected", "Ignored", "Locked"}
+
+local function displayName(record)
+    return record.displayName or record.object.Name
+end
+
+local function elementPath(record)
+    local path = {}
+    for _, segment in ipairs(record.descriptor.path or {}) do path[#path + 1] = segment.name end
+    return table.concat(path, " / ")
+end
+
+local function hasOperation(record, operation)
+    local info = record.capabilities and record.capabilities[operation]
+    if info ~= nil then return info.supported == true end
+    return record.editable == true
+end
+
+function UI:layerState(record)
+    if self.app.layerState then return self.app:layerState(record.key) end
+    return {ignored = record.ignored == true, locked = record.locked == true}
+end
+
+function UI:contextMenu(title, description, entries)
+    local _, body = self:dialog(title, description or "", nil, {{label = "Close"}})
+    self.dialogMaxHeight = math.min(330, 130 + #entries * 50)
+    for _, entry in ipairs(entries) do
+        self:button(body, entry[1], function()
+            self:closeModal()
+            entry[2]()
+        end, nil, nil, nil, self.modalConnections)
+    end
+    self:layoutDialog()
+end
+
+function UI:setLayerFilter(filter)
+    self.layerFilter = filter
+    self.elementPage, self.elementSignature = 1, nil
+    self.childParent = nil
+    self:setTab("Elements")
+end
+
+function UI:chooseLayerFilter()
+    local entries = {}
+    for _, filter in ipairs(layerFilters) do
+        local value = filter
+        entries[#entries + 1] = {(self.layerFilter == value and "Current: " or "") .. value,
+            function() self:setLayerFilter(value) end}
+    end
+    self:contextMenu("Show layers", "Filter the browser. Canvas selection stays as configured.", entries)
+end
+
+function UI:armSelectThrough()
+    self:setWorkspace(false)
+    if self.app.armSelectThrough then
+        self.app:armSelectThrough()
+    elseif self.overlapKeys and #self.overlapKeys > 0 then
+        self:openSelectThrough()
+    else
+        self.app:status("Long-press a control to see the layers under it.")
+    end
+end
+
 function UI:makeElements()
     local body = self.pageBodies.Elements
-    self.search = self:textbox(body, "Search elements", "")
+    self:section(body, "Smart Layers")
+    self.search = self:textbox(body, "Search names, types or paths", "")
+    self.search.TextXAlignment = Enum.TextXAlignment.Left
+    make("UIPadding", {PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 10)}, self.search)
     self:connect(self.search:GetPropertyChangedSignal("Text"), function()
         self.elementPage, self.elementSignature = 1, nil
         self:refreshElements()
     end)
+    local selectionTools = frame(body, 44)
+    self.compatibleFilter = self:button(selectionTools, "Show: Visible", function() self:chooseLayerFilter() end, .5, 0)
+    local through = self:button(selectionTools, "Select through", function() self:armSelectThrough() end, .5, .5, C.selected)
+    through.Size = UDim2.new(.5, 0, 0, 44)
     local builtins = frame(body, 44)
     self.builtinButtons = {}
-    for i, entry in ipairs({{"JumpButton", "Jump"}, {"ThumbstickFrame", "Classic stick"}, {"DynamicThumbstickFrame", "Dynamic stick"}}) do
+    for i, entry in ipairs({{"JumpButton", "Jump"}, {"ThumbstickFrame", "Classic joystick"}, {"DynamicThumbstickFrame", "Dynamic joystick"}}) do
         local kind = entry[1]
         local button = self:button(builtins, entry[2], function()
             if self.builtinKeys[kind] then self:chooseElement(self.builtinKeys[kind]) end
@@ -304,24 +403,26 @@ function UI:makeElements()
         if i == 3 then button.Size = UDim2.new(1 / 3, 0, 0, 44) end
         self.builtinButtons[kind] = button
     end
+    self.builtinRow = builtins
     self.elementPath = label(body, "", 24, 12)
     self.elementPath.TextColor3 = C.muted
     truncate(self.elementPath)
-    self:row(body, {{"Parent", function() self:selectParent() end}, {"Children", function() self:showChildren() end},
-        {"Clear", function()
-            self.childParent = nil
-            self.app:clearSelection()
-            self:refreshElements()
-        end}})
-    self.overlapList = make("Frame", {Name = "OverlapCandidates", BackgroundTransparency = 1,
-        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Visible = false, ZIndex = 23}, body)
-    flow(self.overlapList, 5)
-    self.compatibleFilter = self:button(body, "All visible elements", function()
-        self.onlyEditable = not self.onlyEditable
-        self.compatibleFilter.Text = self.onlyEditable and "Editable elements only" or "All visible elements"
-        self.elementPage, self.elementSignature = 1, nil
+    local hierarchy = frame(body, 44)
+    self.layerParent = self:button(hierarchy, "Parent", function() self:selectParent() end, .25, 0)
+    self.layerChildren = self:button(hierarchy, "Children", function() self:showChildren() end, .25, .25)
+    self.layerSiblings = self:button(hierarchy, "Siblings", function() self:selectSiblings() end, .25, .5)
+    local clear = self:button(hierarchy, "Clear", function()
+        self.childParent = nil
+        self.app:clearSelection()
         self:refreshElements()
-    end)
+    end, .25, .75)
+    clear.Size = UDim2.new(.25, 0, 0, 44)
+    self.layerClear = clear
+    self.layerActions = self:button(body, "Layer actions", function() self:openLayerActions() end)
+    self.layerActions.Visible = false
+    self.overlapList = self:button(body, "Inspect layers under last tap", function() self:openSelectThrough() end)
+    self.overlapList.Visible = false
+    self.elementSummary = self:section(body, "Layers")
     self.elementList = make("Frame", {Name = "Matches", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
     flow(self.elementList, 5)
@@ -338,19 +439,95 @@ function UI:makeElements()
     self.pagerCaption = label(self.pager, "", 44, 12)
     self.pagerCaption.Position, self.pagerCaption.Size = UDim2.new(.33, 0, 0, 0), UDim2.new(.34, 0, 0, 44)
     self.pagerCaption.TextXAlignment = Enum.TextXAlignment.Center
-    self.remapLabel = label(body, "Choose a missing saved element, select its replacement, then remap.", 44, 12)
+    self.remapLabel = label(body, "Choose a missing saved layer and its replacement, then remap.", 44, 12)
     self.remapLabel.TextColor3 = C.muted
     self.missingList = make("Frame", {Name = "MissingElements", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
     flow(self.missingList, 5)
     self.remapButton = self:button(body, "Remap to selection", function()
         if self.remapKey and #self.app.selection == 1 then
-            self:confirm("Remap saved element", "Use the selected element in place of the missing element?", function()
+            self:confirm("Remap saved layer", "Use the selected layer in place of the missing layer?", function()
                 self.app:remap(self.remapKey, self.app.selection[1])
                 self.remapKey = nil
                 self:refreshElements()
             end)
-        else self.app:status("Choose a missing element and exactly one replacement.") end
+        else self.app:status("Choose a missing layer and one replacement.") end
+    end)
+end
+
+function UI:showLayerDetails(record)
+    record = record or self.app.discovery:get(self.app.selection[1])
+    if not record then return end
+    local state = self:layerState(record)
+    local lines = {
+        "Instance: " .. record.object.Name,
+        "Type: " .. record.object.ClassName,
+        "Hierarchy: " .. elementPath(record),
+        "Presentation: " .. (record.visibility or "visible"),
+        "Selection: " .. (state.ignored and "ignored" or "included") .. ", " .. (state.locked and "locked" or "unlocked"),
+    }
+    if record.layoutController then lines[#lines + 1] = "Layout: " .. record.layoutController.ClassName end
+    for _, operation in ipairs({{"move", "Move"}, {"resize", "Resize"}, {"visual", "Visual edits"},
+        {"groupMove", "Move in a group"}, {"groupResize", "Resize in a group"}}) do
+        local info = record.capabilities and record.capabilities[operation[1]]
+        local support = hasOperation(record, operation[1]) and "Available" or "Unavailable"
+        lines[#lines + 1] = operation[2] .. ": " .. support .. (info and info.reason and (" — " .. info.reason) or "")
+    end
+    local parent = record.parentKey and self.app.discovery:get(record.parentKey)
+    if parent then lines[#lines + 1] = "Container: " .. displayName(parent) end
+    local groups = self.app.groupMembers and self.app:groupMembers(record.key) or {}
+    if #groups > 0 then lines[#lines + 1] = "Groups: " .. table.concat(groups, ", ") end
+    local rect = Coordinates.rect(record.object)
+    if rect then
+        lines[#lines + 1] = "Geometry: " .. numberText(rect.w) .. " × " .. numberText(rect.h) ..
+            " px at " .. numberText(rect.x) .. ", " .. numberText(rect.y)
+    end
+    if record.reason then lines[#lines + 1] = record.reason end
+    local failure = self.app.transform and self.app.transform.failureFor and self.app.transform:failureFor(record.key)
+    if failure then lines[#lines + 1] = "Last adjustment: " .. tostring(failure) end
+    local text = self.app.layerDetails and self.app:layerDetails(record.key) or table.concat(lines, "\n")
+    self:modal(displayName(record), "Layer details", text, "Copy", function(value)
+        if self.app.storage then return self.app.storage:copy(value) end
+        return false, "Copy this report from the text field."
+    end)
+end
+
+function UI:changeLayerState(field)
+    local record = self.app.discovery:get(self.app.selection[1])
+    if not record or #self.app.selection ~= 1 or not self.app.setLayerState then return end
+    local state = self:layerState(record)
+    self.app:setLayerState(record.key, field, not state[field])
+end
+
+function UI:openLayerActions()
+    local record = self.app.discovery:get(self.app.selection[1])
+    if not record or #self.app.selection ~= 1 then return end
+    local state = self:layerState(record)
+    self:contextMenu(displayName(record), "Layer actions only affect selection and editing.", {
+        {state.ignored and "Unignore" or "Ignore on canvas", function() self:changeLayerState("ignored") end},
+        {state.locked and "Unlock" or "Lock edits", function() self:changeLayerState("locked") end},
+        {"Details", function() self:showLayerDetails(record) end},
+    })
+end
+
+function UI:selectContainer()
+    local caps = self.selectionCapabilities or {}
+    if not caps.parentKey then return self:selectParent() end
+    self.app:selectMany({caps.parentKey})
+    self:setWorkspace(false)
+end
+
+function UI:selectSiblings()
+    local keys = self.app.siblingKeys and self.app:siblingKeys(self.app.selection[1]) or {}
+    if not keys or #keys == 0 then return self.app:status("No related layers were found.") end
+    local names = {}
+    for i, key in ipairs(keys) do
+        if i > 8 then names[#names + 1] = "and " .. (#keys - 8) .. " more"; break end
+        local record = self.app.discovery:get(key)
+        if record then names[#names + 1] = displayName(record) end
+    end
+    self:confirm("Select related layers?", table.concat(names, ", "), function()
+        self.app:selectMany(keys)
     end)
 end
 
@@ -362,6 +539,11 @@ function UI:makeAdvanced()
     self.selectionDetail = label(body, "", 42, 12)
     self.selectionDetail.TextColor3 = C.muted
     self.selectionDetail.AutomaticSize = Enum.AutomaticSize.Y
+    local context = frame(body, 44)
+    self.selectionContainer = self:button(context, "Select container", function() self:selectContainer() end, .55, 0, C.selected)
+    self.selectionActions = self:button(context, "Layer actions", function() self:openLayerActions() end, .45, .55)
+    self.selectionActions.Size = UDim2.new(.45, 0, 0, 44)
+    self.selectionTools = context
     self.precisionHeading = self:section(body, "Position and size (px)")
     local names = {"X", "Y", "W", "H"}
     local fieldRow = frame(body, 66)
@@ -378,7 +560,7 @@ function UI:makeAdvanced()
                 self:updateSelection()
                 return
             end
-            local bounds = self.app:currentBounds(true)
+            local bounds = self.app:currentBounds(true, (name == "X" or name == "Y") and "move" or "resize")
             if not bounds then return end
             if name == "X" or name == "Y" then
                 self.app:geometry("position", {x = name == "X" and n or bounds.x, y = name == "Y" and n or bounds.y})
@@ -396,11 +578,14 @@ function UI:makeAdvanced()
         field.Position = UDim2.new((i - 1) / 4, 0, 0, 20)
         self.fields[name] = field
     end
-    self:row(body, {{"Left", function() self.app:move(-(self.app.preferences.step or 1), 0) end},
+    self.positionActions = self:row(body, {{"Left", function() self.app:move(-(self.app.preferences.step or 1), 0) end},
         {"Up", function() self.app:move(0, -(self.app.preferences.step or 1)) end},
         {"Down", function() self.app:move(0, self.app.preferences.step or 1) end},
         {"Right", function() self.app:move(self.app.preferences.step or 1, 0) end}})
-    self:row(body, {{"Reset selection", function() self.app:reset() end}, {"Bring into view", function() self.app:recover() end}})
+    local recoveryRow = frame(body, 44)
+    self.resetAdvanced = self:button(recoveryRow, "Reset selection", function() self.app:reset() end, .5, 0)
+    self.recoverAdvanced = self:button(recoveryRow, "Bring into view", function() self.app:recover() end, .5, .5)
+    self.recoverAdvanced.Size = UDim2.new(.5, 0, 0, 44)
     self:section(body, "Group transformations")
     self:toggle(body, "Scale from center", "centerScale", false)
     self:toggle(body, "Adjust each member's size", "equalSize", false)
@@ -438,7 +623,8 @@ function UI:selectParent()
     local record = self.app.discovery:get(self.app.selection[1])
     if not record then return end
     local parent = record.object.Parent
-    local candidate = self.app.discovery.byObject and self.app.discovery.byObject[parent]
+    local candidate = record.parentKey and self.app.discovery:get(record.parentKey)
+        or self.app.discovery.byObject and self.app.discovery.byObject[parent]
     if candidate then
         self.childParent = nil
         if self.app.selectMany then self.app:selectMany({candidate.key}) else self.app:select(candidate.key, false) end
@@ -462,10 +648,29 @@ end
 
 function UI:makeGroups()
     local body = self.pageBodies.Groups
-    self:section(body, "REUSABLE NAMED GROUPS")
-    label(body, "Groups store element identities. Missing members stay saved; deleting a group leaves its elements intact.", 60, 12)
-    self.groupName = self:textbox(body, "Group name", "")
-    self:row(body, {{"Create from selection", function() self.app:group("create", self.groupName.Text) end}, {"Rename selected", function()
+    self:section(body, "Current selection")
+    self.groupSummary = label(body, "", 35, 13)
+    self.groupSummary.TextColor3 = C.muted
+    local groupActions = frame(body, 44)
+    self.temporaryGroup = self:button(groupActions, "Quick group", function()
+        if self.app.quickGroup then self.app:quickGroup() end
+    end, .5, 0, C.selected)
+    self.leaveGroup = self:button(groupActions, "Ungroup", function()
+        local focus = self.app.groupFocus
+        if not focus or not self.app.ungroup then return end
+        if focus.member and self.app.returnToGroup then return self.app:returnToGroup() end
+        if focus.name then
+            self:confirm("Remove this saved group?", "The controls will keep their current positions and sizes.",
+                function() self.app:ungroup(true) end)
+        else self.app:ungroup() end
+    end, .5, .5)
+    self.leaveGroup.Size = UDim2.new(.5, 0, 0, 44)
+    self.groupMemberList = make("Frame", {Name = "GroupMembers", BackgroundTransparency = 1,
+        Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Visible = false}, body)
+    flow(self.groupMemberList, 5)
+    self:section(body, "Saved groups")
+    self.groupName = self:textbox(body, "Name this group", "")
+    self:row(body, {{"Save as named group", function() self.app:group("create", self.groupName.Text) end}, {"Rename selected", function()
         self.app:group("rename", self.chosenGroup, self.groupName.Text)
     end}})
     self:row(body, {{"Add selected", function() self.app:group("add", self.chosenGroup) end}, {"Remove selected", function()
@@ -474,7 +679,7 @@ function UI:makeGroups()
     self:row(body, {{"Select group", function() self.app:group("select", self.chosenGroup) end}, {"Delete group", function()
         if self.chosenGroup then self:confirm("Delete group", "Delete “" .. self.chosenGroup .. "”? GUI elements will remain.", function() self.app:group("delete", self.chosenGroup) end) end
     end}})
-    self:row(body, {{"Reset members", function() self.app:group("select", self.chosenGroup); self.app:reset() end}, {"Elements tab", function() self:setTab("Elements") end}})
+    self:row(body, {{"Reset members", function() self.app:group("select", self.chosenGroup); self.app:reset() end}, {"Open Layers", function() self:setTab("Elements") end}})
     self.groupList = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
     flow(self.groupList)
     self:toggle(body, "Adjust each member's size", "equalSize", false)
@@ -552,21 +757,32 @@ end
 
 function UI:makeSettings()
     local body = self.pageBodies.Settings
-    self:section(body, "EDITING PREFERENCES")
-    self:toggle(body, "Editing grid", "grid", true)
-    self:toggle(body, "Snap to grid & guides", "snapping", false)
-    self:toggle(body, "Multi-select taps", "multiSelect", false)
+    self:section(body, "Editing")
+    self:toggle(body, "Snap to grid and guides", "snapping", false)
+    self:toggle(body, "Keep width and height in proportion", "aspectLock", true)
     self:toggle(body, "Box selection", "boxSelect", false)
     self.preferenceFields = {}
+    self.preferenceFields.step = self:textbox(body, "Movement step in pixels", tostring(self.app.preferences.step or 1), function(v)
+        local n = tonumber(v); if n and n >= 1 and n <= 64 then self.app:setPreference("step", n) else self.app:status("Choose a step from 1 to 64 px.") end
+    end)
+    self:section(body, "Smart Layers")
+    self:toggle(body, "Prioritize meaningful controls", "smartSelection", true, "smart")
+    self:toggle(body, "Skip transparent overlays on tap", "skipTransparent", true, "smart")
+    self:row(body, {{"Review ignored", function() self:setLayerFilter("Ignored") end},
+        {"Review locked", function() self:setLayerFilter("Locked") end}})
+    self:row(body, {{"Clear ignores", function() self:confirm("Clear ignored layers?", "Layers can be selected on the canvas again. This applies to this place.",
+        function() if self.app.clearLayerStates then self.app:clearLayerStates("ignored") end end) end},
+        {"Clear locks", function() self:confirm("Clear layer locks?", "Locked editing protections for this place will be removed.",
+        function() if self.app.clearLayerStates then self.app:clearLayerStates("locked") end end) end}})
+    self:section(body, "Appearance")
+    self:toggle(body, "Canvas grid", "grid", true)
     self.preferenceFields.gridSize = self:textbox(body, "Grid spacing (4–128 pixels)", tostring(self.app.preferences.gridSize or 24), function(v)
         local n = tonumber(v); if n and n >= 4 and n <= 128 then self.app:setPreference("gridSize", n) else self.app:status("Grid spacing must be 4–128 pixels.") end
     end)
     self.preferenceFields.snapThreshold = self:textbox(body, "Guide threshold (1–32 pixels)", tostring(self.app.preferences.snapThreshold or 6), function(v)
         local n = tonumber(v); if n and n >= 1 and n <= 32 then self.app:setPreference("snapThreshold", n) else self.app:status("Guide threshold must be 1–32 pixels.") end
     end)
-    self.preferenceFields.step = self:textbox(body, "Fine adjustment step (1–64)", tostring(self.app.preferences.step or 1), function(v)
-        local n = tonumber(v); if n and n >= 1 and n <= 64 then self.app:setPreference("step", n) else self.app:status("Step must be 1–64 pixels.") end
-    end)
+    self:section(body, "Behavior")
     self.preferenceFields.shortcut = self:textbox(body, "Reopen key (for example F8)", self.app.preferences.shortcut or "F8", function(v)
         local ok, key = pcall(function() return Enum.KeyCode[v] end)
         if ok and key and key ~= Enum.KeyCode.Unknown then self.app:setPreference("shortcut", v) else self.app:status("Enter a valid Roblox KeyCode name.") end
@@ -575,7 +791,9 @@ function UI:makeSettings()
         self.app:setPreference("launcherHidden", false); self.app:setPreference("launcherX", .02); self.app:setPreference("launcherY", .35)
     end}})
     label(body, "Reopen with the keyboard shortcut or rerun the release on a phone. The Heavenly Axis API also supports Open and SafeMode.", 54, 12)
-    self:section(body, "RECOVERY & CAPABILITIES")
+    self:section(body, "Help and recovery")
+    self:button(body, "Open Help", function() self:setTab("Help") end)
+    self:button(body, "Replay the tutorial", function() self:startTutorial() end)
     self:button(body, "SAFE MODE · originals, profiles preserved", function() self.app:safeMode() end)
     self:button(body, "Verify automatic startup", function()
         if self.app.VerifyStartup then
@@ -615,6 +833,31 @@ function UI:makeSettings()
     label(body, "Touch-control visuals are editable only when accessible. Functional joystick / jump hit regions and complete gameplay-input isolation remain unverified until tested on your device.", 92, 11).TextColor3 = C.warning
 end
 
+function UI:makeHelp()
+    local body = self.pageBodies.Help
+    self:section(body, "Learn the editor")
+    self:button(body, "Practice with the interactive tutorial", function() self:startTutorial() end, nil, nil, C.selected)
+    self:section(body, "Move and resize")
+    label(body, "Tap a control to select it. Drag to move. Pinch, drag a resize handle, or enter a size in Quick Edit.", 50, 13)
+    self:section(body, "Find the right layer")
+    label(body, "Long-press on touch or right-click on desktop to look through overlapping layers. You can also use Select through in Layers.", 56, 13)
+    label(body, "Ignore skips a layer when tapping. Lock keeps the layer visible but protects it from editing.", 50, 13)
+    self:section(body, "Edit controls together")
+    label(body, "Turn on Multi-select, tap the controls, then choose Quick group. You can save a name or edit an individual member later.", 54, 13)
+    self:section(body, "Save and recover")
+    label(body, "Save makes a checkpoint. Done returns to the game. Open Profiles to restore your saved layout, export it, or restore the original controls.", 60, 13)
+    self:row(body, {{"Profiles", function() self:setTab("Profiles") end}, {"Recovery and diagnostics", function() self:setTab("Settings") end}})
+end
+
+function UI:startTutorial()
+    if not self.visible or not self.onboarding then return end
+    self:closeModal()
+    if self.app.input then self.app.input:cancel() end
+    self:setWorkspace(false)
+    self.onboarding:layout(self.layoutPlan.area)
+    return self.onboarding:start()
+end
+
 local function brand(parent, zIndex)
     local mark = make("Frame", {Name = "AxisMark", BackgroundTransparency = 1, Size = UDim2.fromOffset(24, 24),
         ZIndex = zIndex}, parent)
@@ -652,7 +895,15 @@ function UI:makeToolbar()
         {"Undo", function() self.app:undo() end, 44},
         {"Redo", function() self.app:redo() end, 44},
         {"Tools", function()
-            if self.workspaceOpen then self:setWorkspace(false)
+            if not self.saveButton.Visible then
+                local actions = {{"Save layout", function() self.app:save() end},
+                    {"Edit tools", function() self:setTab("Advanced") end},
+                    {"Groups", function() self:setTab("Groups") end},
+                    {"Profiles", function() self:setTab("Profiles") end},
+                    {"Settings", function() self:setTab("Settings") end},
+                    {"Help", function() self:setTab("Help") end}}
+                self:contextMenu("Editor tools", "", actions)
+            elseif self.workspaceOpen then self:setWorkspace(false)
             elseif self.inspectorUnavailable and #self.app.selection > 0 then self:setTab("Advanced")
             else self:setTab(self.tab == "Elements" and "Settings" or self.tab) end
         end, 45},
@@ -676,12 +927,16 @@ function UI:makeToolbar()
     self.saveIndicator = make("Frame", {Name = "Unsaved", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
         Position = UDim2.new(1, -9, 0, 8), Size = UDim2.fromOffset(4, 4), ZIndex = 36, Visible = false}, self.saveButton)
     corners(self.saveIndicator, 2)
+    self.toolsSaveIndicator = make("Frame", {Name = "Unsaved", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+        Position = UDim2.new(1, -9, 0, 8), Size = UDim2.fromOffset(4, 4), ZIndex = 36, Visible = false}, self.toolsButton)
+    corners(self.toolsSaveIndicator, 2)
 
     self.canvasHint = make("Frame", {Name = "SelectionHint", Active = false, BackgroundColor3 = C.surface,
         BackgroundTransparency = .1, BorderSizePixel = 0, ZIndex = 20, Visible = false}, self.root)
     corners(self.canvasHint, 9)
     outline(self.canvasHint)
-    local text = label(self.canvasHint, "Tap a HUD control to edit", 30, 12)
+    local text = label(self.canvasHint, "Tap a control to edit", 30, 12)
+    self.canvasHintText = text
     text.Position, text.Size, text.TextColor3 = UDim2.fromOffset(11, 0), UDim2.new(1, -22, 1, 0), C.muted
     truncate(text)
 end
@@ -781,15 +1036,32 @@ function UI:makeQuickEdit()
     truncate(self.quickSize)
     local actions = frame(body, 44)
     actions.Position, actions.ZIndex = UDim2.fromOffset(0, 96), 26
-    self.quickLock = self:toggle(actions, "Aspect", "aspectLock", true)
+    self.quickLock = self:toggle(actions, "Aspect", "aspectLock", true, "compact")
     self.quickLock.Size = UDim2.new(.34, -4, 0, 44)
     self.quickReset = self:button(actions, "Reset", function() self.app:reset() end, .30, .34)
-    local advanced = self:button(actions, "Advanced", function() self:setTab("Advanced") end, .36, .64)
-    advanced.Size = UDim2.new(.36, 0, 0, 44)
-    advanced.BackgroundColor3, advanced.TextColor3 = C.selected, C.cyan
-    self.quickEdits = {minus, plus, self.quickLock, self.quickReset}
+    self.quickMore = self:button(actions, "Edit tools", function() self:openQuickAction() end, .36, .64, C.selected)
+    self.quickMore.Size = UDim2.new(.36, 0, 0, 44)
+    self.quickMore.TextColor3 = C.cyan
+    self.quickEdits = {minus, plus, self.quickLock}
+    self.quickValues, self.quickActions = values, actions
     self.sliderEnabled = false
 end
+
+function UI:openQuickAction()
+    local caps, focus = self.selectionCapabilities or {}, self.app.groupFocus
+    if self.selectionLayerState and self.selectionLayerState.locked then return self:changeLayerState("locked") end
+    if caps.parentKey and not caps.move then return self:selectContainer() end
+    if focus and focus.member and self.app.returnToGroup then return self.app:returnToGroup() end
+    if #self.app.selection > 1 and self.app.quickGroup then
+        if not focus then self.app:quickGroup()
+        else self:setTab("Groups") end
+        return
+    end
+    self:setTab("Advanced")
+end
+
+local destinations = {{"Elements", "Layers", 61}, {"Advanced", "Edit tools", 70}, {"Groups", "Groups", 61},
+    {"Profiles", "Profiles", 63}, {"Settings", "Settings", 66}, {"Help", "Help", 48}}
 
 function UI:makeWorkspace()
     self.workspace = make("Frame", {Name = "Workspace", BackgroundColor3 = C.surface, BorderSizePixel = 0,
@@ -800,9 +1072,18 @@ function UI:makeWorkspace()
     local back = self:button(header, "Canvas", function() self:setWorkspace(false) end)
     back.Size = UDim2.fromOffset(68, 44)
     back.BackgroundTransparency, back.TextColor3 = 1, C.cyan
-    local title = label(header, "Editor tools", 44, 16)
-    title.Position, title.Size, title.ZIndex = UDim2.fromOffset(75, 0), UDim2.new(1, -75, 0, 44), 42
-    title.Font = Enum.Font.GothamBold
+    self.workspaceHeading = label(header, "Heavenly Axis", 44, 16)
+    self.workspaceHeading.Position, self.workspaceHeading.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -75, 0, 44)
+    self.workspaceHeading.Font = Enum.Font.GothamBold
+    self.workspaceMenu = self:button(header, "Choose section", function()
+        local entries = {}
+        for _, destination in ipairs(destinations) do
+            entries[#entries + 1] = {destination[2], function() self:setTab(destination[1]) end}
+        end
+        self:contextMenu("Editor sections", "", entries)
+    end)
+    self.workspaceMenu.Position, self.workspaceMenu.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -75, 0, 44)
+    self.workspaceMenu.Visible = false
     self.tabs = make("ScrollingFrame", {Name = "ToolsNavigation", BackgroundTransparency = 1, BorderSizePixel = 0,
         ScrollBarThickness = 2, ScrollBarImageColor3 = C.cyan, ScrollingDirection = Enum.ScrollingDirection.X,
         Active = true, ClipsDescendants = true,
@@ -810,9 +1091,11 @@ function UI:makeWorkspace()
         CanvasSize = UDim2.fromOffset(330, 0), ZIndex = 41}, self.workspace)
     self.tabButtons, self.pages, self.pageBodies = {}, {}, {}
     local navX = 0
-    for _, name in ipairs({"Elements", "Advanced", "Groups", "Profiles", "Settings"}) do
-        local width = name == "Advanced" and 68 or 62
-        local button = self:button(self.tabs, name, function() self:setTab(name) end)
+    self.tabPositions = {}
+    for _, destination in ipairs(destinations) do
+        local name, caption, width = destination[1], destination[2], destination[3]
+        local button = self:button(self.tabs, caption, function() self:setTab(name) end)
+        self.tabPositions[name] = navX
         button.Position, button.Size = UDim2.fromOffset(navX, 0), UDim2.fromOffset(width, 44)
         self.tabButtons[name] = button
         navX = navX + width + 3
@@ -828,7 +1111,7 @@ function UI:makeWorkspace()
         self.pages[name], self.pageBodies[name] = page, body
     end
     self.tabs.CanvasSize = UDim2.fromOffset(navX - 3, 0)
-    self:makeElements(); self:makeAdvanced(); self:makeGroups(); self:makeProfiles(); self:makeSettings()
+    self:makeElements(); self:makeAdvanced(); self:makeGroups(); self:makeProfiles(); self:makeSettings(); self:makeHelp()
 end
 
 local anchors = {
@@ -842,15 +1125,19 @@ function UI:makeCanvas()
     self.overlay = make("Frame", {Name = "SelectionOverlay", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 5, Visible = false}, self.root)
     self.selectionBounds = make("Frame", {Name = "SelectionBounds", BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 6, Visible = false}, self.overlay)
     self.selectionStroke = outline(self.selectionBounds, C.cyan, 2)
+    self.handleBounds = make("Frame", {Name = "ResizeBounds", BackgroundTransparency = 1, BorderSizePixel = 0,
+        ZIndex = 7, Visible = false}, self.overlay)
+    self.handleStroke = outline(self.handleBounds, C.cyan)
+    self.handleStroke.Enabled = false
     self.touchHandleLink = make("Frame", {Name = "TouchHandleLink", BackgroundColor3 = C.cyan, BackgroundTransparency = .25,
-        AnchorPoint = Vector2.new(.5, .5), BorderSizePixel = 0, Visible = false, ZIndex = 9}, self.selectionBounds)
+        AnchorPoint = Vector2.new(.5, .5), BorderSizePixel = 0, Visible = false, ZIndex = 9}, self.handleBounds)
     self.individual = {}
     self.box = make("Frame", {Name = "BoxSelection", BackgroundColor3 = C.cyan, BackgroundTransparency = .9,
         BorderSizePixel = 0, ZIndex = 6, Visible = false}, self.overlay)
     outline(self.box, C.cyan)
     for _, handle in ipairs({"nw", "n", "ne", "e", "se", "s", "sw", "w"}) do
         local b = make("TextButton", {Name = "Resize_" .. handle, Text = "", BackgroundTransparency = 1,
-            AnchorPoint = Vector2.new(.5, .5), AutoButtonColor = false, ZIndex = 10, Visible = false}, self.selectionBounds)
+            AnchorPoint = Vector2.new(.5, .5), AutoButtonColor = false, ZIndex = 10, Visible = false}, self.handleBounds)
         local marker = make("Frame", {BackgroundColor3 = C.cyan, BorderSizePixel = 0, AnchorPoint = Vector2.new(.5, .5),
             Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(14, 14), ZIndex = 11}, b)
         corners(marker, 5); outline(marker, C.ink)
@@ -862,10 +1149,11 @@ end
 
 function UI.new(app, playerGui, services)
     local self = setmetatable({app = app, services = services, connections = {}, elementConnections = {}, groupConnections = {},
-        profileConnections = {}, missingConnections = {}, selectionConnections = {}, overlapConnections = {}, toggles = {},
+        profileConnections = {}, missingConnections = {}, selectionConnections = {}, groupMemberConnections = {}, toggles = {},
         handles = {}, guideObjects = {}, gridObjects = {}, disabled = setmetatable({}, {__mode = "k"}),
         presentedText = setmetatable({}, {__mode = "k"}),
-        visible = false, tab = "Elements", collapsed = false, elementPage = 1, builtinKeys = {}}, UI)
+        visible = false, tab = "Elements", collapsed = false, elementPage = 1, builtinKeys = {},
+        layerFilter = "Visible", collapsedLayers = {}}, UI)
     local ok, result = pcall(function()
         self.gui = make("ScreenGui", {Name = "HeavenlyAxis", ResetOnSpawn = false, IgnoreGuiInset = true,
             DisplayOrder = 10000, ZIndexBehavior = Enum.ZIndexBehavior.Global}, playerGui)
@@ -881,6 +1169,14 @@ function UI.new(app, playerGui, services)
         self:makeWorkspace()
 
         self.notifications = Notifications.new(self.root, self.services)
+        self.onboarding = Onboarding.new(self.root, self.services, {
+            finished = function() if self.app.markTutorialSeen then self.app:markTutorialSeen() end end,
+            changed = function()
+                if self.dead then return end
+                self.onboardingOpen = self.onboarding and self.onboarding:isActive() or false
+                self:layoutNotifications()
+            end,
+        })
 
         self.launcher = make("TextButton", {Name = "HeavenlyAxisLauncher", Text = "", BackgroundColor3 = C.surface,
             BorderSizePixel = 0, Size = UDim2.fromOffset(48, 48), ZIndex = 50, AutoButtonColor = true}, self.root)
@@ -937,6 +1233,12 @@ function UI:setTab(name)
     if self.tab ~= name and self.app.input then self.app.input:cancel() end
     if self.tab ~= name and name == "Elements" then self.elementRevision = nil end
     self.tab = name
+    local tabPosition = self.tabs.CanvasPosition
+    local tabX, tabW, viewW = self.tabPositions[name], self.tabButtons[name].AbsoluteSize.X, self.tabs.AbsoluteSize.X
+    local offset = tabPosition and tabPosition.X or 0
+    if tabX < offset or tabX + tabW > offset + viewW then
+        self.tabs.CanvasPosition = Vector2.new(math.max(0, tabX + tabW - viewW), 0)
+    end
     for key, page in pairs(self.pages) do page.Visible = key == name end
     for key, button in pairs(self.tabButtons) do
         button.TextColor3 = key == name and C.cyan or C.muted
@@ -955,9 +1257,26 @@ end
 function UI:showSurfaces()
     self.toolbar.Visible = self.visible and self.layoutPlan and self.layoutPlan.toolbarVisible or false
     self.workspace.Visible = self.visible and self.workspaceOpen == true
-    self.panel.Visible = self.visible and not self.workspaceOpen and not self.collapsed and #self.app.selection > 0
-    self.canvasHint.Visible = self.toolbar.Visible and not self.workspaceOpen and #self.app.selection == 0
+    self.panel.Visible = self.visible and not self.workspaceOpen and not self.collapsed and not self.selectThroughArmed
+        and #self.app.selection > 0
+    self.canvasHint.Visible = self.toolbar.Visible and not self.workspaceOpen and (#self.app.selection == 0 or self.selectThroughArmed == true)
     self.launcher.Visible = not self.visible and self.app.preferences.launcherHidden ~= true
+end
+
+function UI:setSelectThroughArmed(armed)
+    self.selectThroughArmed = armed == true
+    self.canvasHintText.Text = self.selectThroughArmed and "Tap a spot to inspect its layers" or "Tap a control to edit"
+    self:placeCanvasHint()
+    self:showSurfaces()
+    self:layoutNotifications()
+end
+
+function UI:placeCanvasHint()
+    local plan = self.layoutPlan
+    if not plan then return end
+    local width = self.selectThroughArmed and 220 or 184
+    self.hintRect = {x = plan.toolbar.x, y = plan.content.y, w = math.min(width, plan.area.w), h = math.min(30, plan.content.h)}
+    localRect(self.canvasHint, self.hintRect)
 end
 
 function UI:layoutToolbar(plan)
@@ -983,8 +1302,9 @@ end
 function UI:placeInspector()
     local plan = self.layoutPlan
     local panel = Layout.panelForSelection(plan, self.selectionDockBounds, self.manualPanel)
-    if self.inspectorUnavailable then
-        local height = math.min(56, panel.h)
+    local maxHeight = self.quickMode == "actions" and 106 or (self.quickMode == "inspect" and 56 or 202)
+    if panel.h > maxHeight then
+        local height = maxHeight
         local y = plan.portrait and not self.manualPanel and panel.y + panel.h - height or panel.y
         panel = Layout.place({w = panel.w, h = height}, plan.content, panel.x, y)
     end
@@ -999,7 +1319,15 @@ function UI:layoutNotifications()
     if self.canvasHint.Visible then avoid[#avoid + 1] = self.hintRect end
     if self.panel.Visible then avoid[#avoid + 1] = self.panelRect end
     if self.workspace.Visible then avoid[#avoid + 1] = self.layoutPlan.workspace end
-    if self.visible and self.selectionBounds.Visible then avoid[#avoid + 1] = self.selectionOverlayRect end
+    if self.visible and self.selectionBounds.Visible then
+        avoid[#avoid + 1] = self.selectionOverlayRect
+        for _, handle in ipairs(self.handles) do
+            if handle.gui.Visible then avoid[#avoid + 1] = Coordinates.rect(handle.gui) end
+        end
+    end
+    if self.onboarding and self.onboardingOpen then
+        for _, rect in ipairs(self.onboarding:protectedRects()) do avoid[#avoid + 1] = rect end
+    end
     if self.launcher.Visible then avoid[#avoid + 1] = Coordinates.rect(self.launcher) end
     self.notifications:layout(self.layoutPlan.area, avoid)
 end
@@ -1020,11 +1348,11 @@ function UI:layout()
     self.layoutPlan = plan
     localRect(self.toolbar, plan.toolbar)
     self:layoutToolbar(plan)
-    self.hintRect = {x = plan.toolbar.x, y = plan.content.y, w = math.min(184, plan.area.w), h = math.min(30, plan.content.h)}
-    localRect(self.canvasHint, self.hintRect)
+    self:placeCanvasHint()
     self:placeInspector()
     localRect(self.workspace, plan.workspace)
-    self.tabs.Visible = plan.workspace.h >= 142
+    self.tabs.Visible = plan.workspace.h >= 132
+    self.workspaceHeading.Visible, self.workspaceMenu.Visible = self.tabs.Visible, not self.tabs.Visible
     local bodyTop = self.tabs.Visible and 100 or 49
     for _, page in pairs(self.pages) do
         page.Position, page.Size = UDim2.fromOffset(10, bodyTop), UDim2.new(1, -20, 0, math.max(1, plan.workspace.h - bodyTop - 8))
@@ -1035,6 +1363,7 @@ function UI:layout()
     self:drawGrid()
     self:updateSelection()
     self:layoutKeyboard((keyboardHeight or 0) > 0)
+    if self.onboarding then self.onboarding:layout(plan.area) end
     self:layoutNotifications()
 end
 
@@ -1169,7 +1498,7 @@ function UI:drawGrid()
 end
 
 function UI:pointInPanel(x, y)
-    return self.modalOpen or inside(self.toolbar, x, y) or inside(self.panel, x, y)
+    return self.onboardingOpen or self.modalOpen or inside(self.toolbar, x, y) or inside(self.panel, x, y)
         or inside(self.workspace, x, y) or inside(self.launcher, x, y)
 end
 
@@ -1266,50 +1595,71 @@ end
 
 function UI:updateSelection()
     if self.dead or not self.visible then return end
-    local rects, keys = self.app:getRects(true)
-    local bounds = Geometry.bounds(rects or {})
-    local displayedBounds = bounds
+    local caps = self.selectionCapabilities or {}
+    local rects = self.app:getRects()
+    local displayedBounds = Geometry.bounds(rects or {})
+    local resizeRects, resizeKeys = {}, {}
+    if caps.resize then resizeRects, resizeKeys = self.app:getRects(true, "resize") end
+    local resizeBounds = Geometry.bounds(resizeRects or {})
     local record = #self.app.selection == 1 and self.app.discovery:get(self.app.selection[1]) or nil
     if not displayedBounds and record then displayedBounds = Coordinates.rect(record.object) end
     local suspended = self.app.profiles and self.app.profiles.suspended
     local checking = self.app.finishingGesture or self.app.saving
     local writable = not self.app.previewState and not checking and not suspended
-    local gestureReady = bounds ~= nil and writable
-    local hint = "Drag element to move"
-    if not bounds then hint = "View details in Tools"
-    elseif self.app.previewState then hint = "Profile preview"
+    local resizeReady = resizeBounds ~= nil and writable
+    local info = resizeBounds and self.app.sizeInfo and self.app:sizeInfo(resizeBounds, resizeRects, resizeKeys) or nil
+    local focus = self.app.groupFocus
+    local group = #self.app.selection > 1
+    local directLock = self.selectionLayerState and self.selectionLayerState.locked
+    local hint = group and "Drag the group to move" or "Drag on the canvas to move"
+    if self.app.previewState then hint = "Profile preview"
     elseif suspended then hint = "Profiles suspended"
     elseif checking then hint = "Checking layout"
-    elseif #self.app.selection > 1 then hint = "Drag selection to move" end
+    elseif directLock then hint = "Locked in the editor"
+    elseif caps.locked and group then hint = "Some group members are locked"
+    elseif caps.locked then hint = "Contains a locked layer"
+    elseif caps.parentKey and not caps.move then hint = caps.layout and "Layout sets the position" or "Try its container"
+    elseif not caps.move and caps.resize then hint = "Size can be edited"
+    elseif not caps.move then hint = "View details in Tools"
+    elseif not caps.resize then hint = "Drag to move. Size is fixed." end
     if self.quickHint.Text ~= hint then self.quickHint.Text = hint end
-    local unavailable = not bounds and #self.app.selection > 0
-    if self.dockSelection or self.inspectorUnavailable ~= unavailable then
+
+    local mode = info and "size" or ((caps.move or caps.parentKey or caps.locked or focus) and "actions" or "inspect")
+    if self.dockSelection or self.quickMode ~= mode then
         if self.dockSelection then self.selectionDockBounds = displayedBounds end
-        self.dockSelection, self.inspectorUnavailable = false, unavailable
+        self.dockSelection, self.quickMode = false, mode
         self:placeInspector()
     end
+    self.inspectorUnavailable = not (caps.move or caps.resize)
     self.selectionBounds.Visible = displayedBounds ~= nil
     self.selectionOverlayRect = displayedBounds
     if displayedBounds then localRect(self.selectionBounds, displayedBounds) end
     local rotation = 0
-    if not bounds and record then
+    if record and not (caps.move or caps.resize) then
         pcall(function() rotation = record.object.AbsoluteRotation or record.object.Rotation or 0 end)
     end
     self.selectionBounds.Rotation = rotation
-    self.selectionStroke.Color = bounds and C.cyan or C.warning
-    self.selectionAccent.BackgroundColor3 = gestureReady and C.cyan or C.quiet
+    self.selectionStroke.Color = (caps.move or caps.resize) and C.cyan or C.warning
+    self.selectionAccent.BackgroundColor3 = writable and (caps.move or caps.resize) and C.cyan or C.quiet
     self.touchHandleLink.Visible = false
+    self.handleBounds.Visible = resizeReady
+    if resizeBounds then
+        localRect(self.handleBounds, resizeBounds)
+        local full = displayedBounds
+        self.handleStroke.Enabled = full ~= nil and (full.x ~= resizeBounds.x or full.y ~= resizeBounds.y
+            or full.w ~= resizeBounds.w or full.h ~= resizeBounds.h)
+    end
     for _, entry in ipairs(self.handles) do
-        local g = entry.gui
-        g.Visible = gestureReady and not self.mobile
-        if g.Visible then
-            g.Position = UDim2.fromScale(entry.anchor[1], entry.anchor[2])
-            g.Size = UDim2.fromOffset(16, 16)
+        local handle = entry.gui
+        handle.Visible = resizeReady and not self.mobile
+        if handle.Visible then
+            handle.Position = UDim2.fromScale(entry.anchor[1], entry.anchor[2])
+            handle.Size = UDim2.fromOffset(16, 16)
             entry.marker.Position = UDim2.fromScale(.5, .5)
         end
     end
     self.touchHandle.handle = "se"
-    if self.mobile and gestureReady then self:placeTouchHandle(bounds) end
+    if self.mobile and resizeReady then self:placeTouchHandle(resizeBounds) end
     for i, rect in ipairs(rects or {}) do
         local object = self.individual[i]
         if not object and #rects > 1 then
@@ -1323,10 +1673,24 @@ function UI:updateSelection()
         end
     end
     for i = #(rects or {}) + 1, #self.individual do self.individual[i].Visible = false end
-    if not self.slider then return end
-    local info = bounds and self.app.sizeInfo and self.app:sizeInfo(bounds, rects, keys) or nil
+
     self.sliderEnabled = info ~= nil and writable
-    self.quickBody.Visible = info ~= nil
+    self.quickBody.Visible = mode ~= "inspect"
+    self.slider.Visible, self.quickValues.Visible = info ~= nil, info ~= nil
+    self.quickActions.Position = UDim2.fromOffset(0, info and 96 or 0)
+    self.quickBody.CanvasSize = UDim2.fromOffset(0, info and 142 or 44)
+    self.quickLock.Visible = info ~= nil
+    local canReset = writable and caps.reset == true
+    self.quickReset.Visible = canReset
+    self.quickMore.Position = UDim2.new(info and .64 or (canReset and .34 or 0), 0, 0, 0)
+    self.quickMore.Size = UDim2.new(info and .36 or (canReset and .66 or 1), 0, 0, 44)
+    self.quickReset.Position = UDim2.new(info and .34 or 0, 0, 0, 0)
+    local more = "Edit tools"
+    if directLock then more = "Unlock"
+    elseif caps.parentKey and not caps.move then more = "Select container"
+    elseif focus and focus.member then more = "Back to group"
+    elseif group and self.app.quickGroup then more = focus and "Group tools" or "Quick group" end
+    self.quickMore.Text = more
     if self.quickEditable ~= self.sliderEnabled then
         self.quickEditable = self.sliderEnabled
         self.sliderThumb.BackgroundColor3 = self.sliderEnabled and C.cyan or C.quiet
@@ -1344,51 +1708,84 @@ function UI:updateSelection()
         local fraction = math.max(0, math.min(1, (info.scale - minimum) / math.max(.001, maximum - minimum)))
         self.sliderFill.Size = UDim2.fromScale(fraction, 1)
         self.sliderThumb.Position = UDim2.fromScale(fraction, .5)
-        local group = #rects > 1
-        local sizeLabel = group and self.app.preferences.equalSize and "Member size" or (group and "Group size" or "Size")
-        self.sliderTitle.Text = sizeLabel
+        self.sliderTitle.Text = group and self.app.preferences.equalSize and "Member size" or (group and "Group size" or "Size")
         self.sliderReference.Text = info.original and "100% original" or "100% starting size"
         self:syncTextBox(self.percent, numberText(info.scale) .. "%")
-        self.quickSize.Text = numberText(bounds.w) .. " × " .. numberText(bounds.h)
+        self.quickSize.Text = numberText(resizeBounds.w) .. " × " .. numberText(resizeBounds.h)
     else self:syncTextBox(self.percent, "") end
     if self.workspaceOpen and self.tab == "Advanced" then
-        local size = info and info.size or bounds
-        local map = bounds and {X = bounds.x, Y = bounds.y, W = size.w, H = size.h}
-        self.precisionHeading.Text = #rects > 1 and self.app.preferences.equalSize
+        local position = caps.move and self.app:currentBounds(true, "move") or displayedBounds
+        local size = info and info.size or displayedBounds
+        local map = displayedBounds and {X = position.x, Y = position.y, W = size.w, H = size.h}
+        self.precisionHeading.Text = group and self.app.preferences.equalSize
             and "Group position / largest member size (px)" or "Position and size (px)"
         for name, box in pairs(self.fields) do
+            local positionAxis = name == "X" or name == "Y"
             self:syncTextBox(box, map and numberText(map[name]) or "")
-            box.TextEditable = bounds ~= nil and writable
+            box.TextEditable = writable and ((positionAxis and caps.move) or (not positionAxis and caps.resize)) == true
         end
+        self.positionActions.Visible = caps.move == true
+        self:enable(self.resetAdvanced, canReset)
+        self:enable(self.recoverAdvanced, writable and caps.move == true)
     end
 end
 
 function UI:describeSelection()
     local selectedCount = #self.app.selection
     local record = selectedCount == 1 and self.app.discovery:get(self.app.selection[1]) or nil
-    local editable = record and record.editable
+    local caps
+    if self.app.capabilitiesForSelection then caps = self.app:capabilitiesForSelection()
+    else
+        local editable = #self.app:getRects(true) > 0
+        caps = {move = editable, resize = editable, reset = editable, visual = record and record.editable == true}
+    end
+    self.selectionCapabilities = caps
+    self.selectionLayerState = record and self:layerState(record) or nil
+    local focus = self.app.groupFocus
+    self.selectionTools.Visible = selectedCount == 1 or caps.parentKey ~= nil
+    self.selectionContainer.Visible = caps.parentKey ~= nil
+    self.selectionActions.Visible = selectedCount == 1
+    self.selectionActions.Position = UDim2.new(caps.parentKey and .55 or 0, 0, 0, 0)
+    self.selectionActions.Size = UDim2.new(caps.parentKey and .45 or 1, 0, 0, 44)
     if record then
-        local path = {}
-        for _, segment in ipairs(record.descriptor.path or {}) do path[#path + 1] = segment.name end
-        self.selectionName.Text, self.quickName.Text = record.object.Name, record.object.Name
-        self.selectionDetail.Text = table.concat(path, " / ")
-        if record.reason then self.selectionDetail.Text = self.selectionDetail.Text .. "\n" .. record.reason end
+        self.selectionName.Text, self.quickName.Text = displayName(record), displayName(record)
+        local description
+        if self.selectionLayerState.locked then description = "Unlock this layer to change it."
+        elseif caps.locked then description = "A locked layer depends on this one. Unlock it before changing the arrangement."
+        elseif caps.parentKey and not caps.move then description = caps.layout
+            and "The layout sets this control's position. Select its container to move the arrangement."
+            or "This layer has limited editing. Its container may support movement."
+        elseif caps.move and caps.resize then description = "Move and resize are available."
+        elseif caps.resize then description = "Resize is available. The current position is fixed."
+        elseif caps.move then description = "Move is available. The current size is fixed."
+        elseif caps.visual then description = "Appearance can be edited in Visual properties."
+        else description = "This layer is available for inspection." end
+        self.selectionDetail.Text = description
         self:syncTextBox(self.rotation, numberText(record.object.Rotation))
         self:syncTextBox(self.transparency, numberText(record.object.BackgroundTransparency))
     elseif selectedCount > 1 then
-        self.selectionName.Text = tostring(selectedCount) .. " selected"
+        self.selectionName.Text = focus and focus.name or (tostring(selectedCount) .. (focus and " in group" or " selected"))
         self.quickName.Text = self.selectionName.Text
-        self.selectionDetail.Text = "Drag the selection to move the group."
+        self.selectionDetail.Text = caps.reason or (caps.move and "Drag the selection to move the group." or "This arrangement is controlled by its layout.")
     else
-        self.selectionName.Text = "Select an element"
+        self.selectionName.Text = "Select a control"
         self.quickName.Text = self.selectionName.Text
-        self.selectionDetail.Text = ""
+        self.selectionDetail.Text = "Tap a control on the canvas or choose one in Layers."
     end
-    self.selectionDetail.TextColor3 = record and not editable and C.warning or C.muted
-    self.rotation.Visible, self.transparency.Visible = editable == true, editable == true
-    self.rotation.TextEditable, self.transparency.TextEditable = editable == true, editable == true
-    self.visualHint.Text = editable and "Rotation in degrees. Transparency from 0 to 1." or "Select one editable element."
-    self.experimental.Visible = record ~= nil and record.experimental == true and not record.experimentalApproved
+    self.selectionDetail.TextColor3 = selectedCount > 0 and not (caps.move or caps.resize) and C.warning or C.muted
+    local visual = record ~= nil and caps.visual == true
+    local rotate = visual and (caps.rotation == nil or caps.rotation)
+    local transparent = visual and (caps.transparency == nil or caps.transparency)
+    local writable = not (self.app.previewState or self.app.finishingGesture or self.app.saving
+        or self.app.profiles and self.app.profiles.suspended)
+    self.rotation.Visible, self.transparency.Visible = rotate, transparent
+    self.rotation.TextEditable, self.transparency.TextEditable = rotate and writable, transparent and writable
+    self.visualHint.Text = rotate and (transparent and "Rotation in degrees. Transparency from 0 to 1." or "Rotation in degrees.")
+        or (transparent and "Background transparency from 0 to 1." or "Choose one layer with editable appearance.")
+    local experimental = record and record.experimental == true
+        and (not record.capabilities or (record.capabilities.move and record.capabilities.move.experimental)
+            or (record.capabilities.resize and record.capabilities.resize.experimental))
+    self.experimental.Visible = experimental and not record.experimentalApproved or false
     self.revoke.Visible = record ~= nil and record.experimentalApproved == true
 end
 
@@ -1439,7 +1836,10 @@ function UI:selectionChanged()
     self:updateSelection()
     self:refreshToolbar()
     if changed then self:layoutNotifications() end
-    if self.workspaceOpen and self.tab == "Elements" then self:updateElementSelection() end
+    if self.workspaceOpen and self.tab == "Elements" then
+        if self.layerFilter == "Selected" then self:refreshElements()
+        else self:updateElementSelection() end
+    end
 end
 
 function UI:clearDynamic(container, connections)
@@ -1450,61 +1850,153 @@ function UI:clearDynamic(container, connections)
     orders[container] = 0
 end
 
-local function elementPath(record)
-    local path = {}
-    for _, segment in ipairs(record.descriptor.path or {}) do path[#path + 1] = segment.name end
-    return table.concat(path, " / ")
+local displayStates = {hidden = "Hidden", clipped = "Clipped", transparent = "Transparent", container = "Container"}
+
+function UI:layerMeta(record)
+    local state = self:layerState(record)
+    local move, resize = hasOperation(record, "move"), hasOperation(record, "resize")
+    local mode = move and (resize and "Move and resize" or "Move only") or (resize and "Resize only" or "Inspect")
+    local tags = {}
+    if state.ignored then tags[#tags + 1] = "Ignored" end
+    if state.locked then tags[#tags + 1] = "Locked" end
+    if displayStates[record.visibility] then tags[#tags + 1] = displayStates[record.visibility] end
+    if self.app.groupMembers then
+        local groups = self.app:groupMembers(record.key)
+        if groups and groups[1] then tags[#tags + 1] = groups[1] end
+    end
+    tags[#tags + 1] = mode
+    return table.concat(tags, "  /  "), state.locked or state.ignored
 end
 
-function UI:elementRow(parent, record, connections)
+local function layerGlyph(parent, class, x)
+    local tile = make("Frame", {Name = "LayerType", BackgroundColor3 = C.field, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(x, 12), Size = UDim2.fromOffset(28, 28)}, parent)
+    corners(tile, 8)
+    local glyph = make("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(7, 7), Size = UDim2.fromOffset(14, 14)}, tile)
+    if class:find("Text") and not class:find("Button") then
+        for y = 2, 12, 5 do
+            make("Frame", {BackgroundColor3 = C.cyan, BorderSizePixel = 0, Position = UDim2.fromOffset(0, y),
+                Size = UDim2.fromOffset(y == 12 and 8 or 14, 1)}, glyph)
+        end
+    else
+        corners(glyph, class:find("Button") and 4 or 2)
+        outline(glyph, C.cyan)
+        if class:find("Image") then
+            local dot = make("Frame", {BackgroundColor3 = C.cyan, BorderSizePixel = 0, Position = UDim2.fromOffset(3, 3),
+                Size = UDim2.fromOffset(4, 4)}, glyph)
+            corners(dot, 2)
+        end
+    end
+end
+
+function UI:configureLayerRow(row, record)
+    local active = selected(self.app.selection, record.key)
+    row.button.BackgroundColor3 = active and C.selected or C.raised
+    row.title.TextColor3 = active and C.cyan or C.text
+end
+
+function UI:elementRow(parent, record, connections, picker)
     local key = record.key
-    local title = record.object.Name .. (record.editable and "" or "  /  Inspect")
-    local row = self:button(parent, title, function() self:chooseElement(key) end, nil, nil, nil, connections)
-    row.TextXAlignment = Enum.TextXAlignment.Left
-    row.TextSize = 13
-    truncate(row)
-    make("UIPadding", {PaddingLeft = UDim.new(0, 9), PaddingRight = UDim.new(0, 7)}, row)
-    return row
+    local depth = picker and 0 or math.max(0, math.min(3, (record.depth or 0) - 1))
+    local hasChildren = record.childKeys and #record.childKeys > 0
+    local right = picker and 57 or (hasChildren and 44 or 0)
+    local row = frame(parent, 52)
+    row.Name = "LayerRow"
+    local button = self:button(row, "", function()
+        if self.app.preferences.multiSelect then
+            self.app:select(key, true)
+            if picker then self:refreshPickerHighlights() end
+        elseif picker then self:closeModal(); self:chooseElement(key)
+        else self:chooseElement(key) end
+    end, nil, nil, nil, connections)
+    button.Name, button.Size = "SelectLayer", UDim2.new(1, -right, 1, 0)
+    local iconX = 8 + 10 * depth
+    layerGlyph(button, record.object.ClassName, iconX)
+    local x = iconX + 36
+    local title = label(button, displayName(record), 20, 13)
+    title.Position, title.Size, title.Font = UDim2.fromOffset(x, 6), UDim2.new(1, -x - 8, 0, 20), Enum.Font.GothamBold
+    truncate(title)
+    local summary, marked = self:layerMeta(record)
+    local subtitle = label(button, summary, 16, 11)
+    subtitle.Position, subtitle.Size, subtitle.TextColor3 = UDim2.fromOffset(x, 27), UDim2.new(1, -x - 8, 0, 16), marked and C.warning or C.muted
+    truncate(subtitle)
+    if picker or hasChildren then
+        local action = self:button(row, picker and "Details" or (self.collapsedLayers[key] and "Show" or "Hide"), function()
+            if picker then self:showLayerDetails(record)
+            else
+                self.collapsedLayers[key] = not self.collapsedLayers[key] or nil
+                self.elementSignature, self.elementFilter = nil, nil
+                self:refreshElements()
+            end
+        end, nil, nil, nil, connections)
+        action.Position, action.Size = UDim2.new(1, -right + 4, 0, 4), UDim2.fromOffset(right - 4, 44)
+    end
+    local result = {root = row, button = button, title = title, record = record}
+    self:configureLayerRow(result, record)
+    return result
 end
 
 function UI:updateElementSelection()
     local record = self.app.discovery:get(self.app.selection[1])
     self.elementPath.Text = self.childParent and ("Children of " .. self.childParent.Name)
-        or (record and elementPath(record) or "HUD elements")
-    for key, row in pairs(self.elementRows) do
-        local active = selected(self.app.selection, key)
-        row.TextColor3, row.BackgroundColor3 = active and C.cyan or C.text, active and C.selected or C.raised
-    end
+        or (record and elementPath(record) or "Tap a layer below to edit it.")
+    self:enable(self.layerParent, record ~= nil and (record.parentKey ~= nil
+        or (self.app.discovery.byObject and self.app.discovery.byObject[record.object.Parent] ~= nil)) == true)
+    self:enable(self.layerChildren, self.childParent ~= nil or (record ~= nil and (#(record.childKeys or {}) > 0 or record.childKeys == nil)))
+    self.layerChildren.Text = self.childParent and "All layers" or "Children"
+    self:enable(self.layerSiblings, record ~= nil and self.app.siblingKeys ~= nil)
+    self:enable(self.layerClear, #self.app.selection > 0)
+    self.layerActions.Visible = record ~= nil and #self.app.selection == 1
+    for _, row in pairs(self.elementRows) do self:configureLayerRow(row, row.record) end
 end
 
 function UI:setOverlaps(records)
     local keys = {}
     for i, record in ipairs(records or {}) do
-        if i > 12 then break end
+        if i > 24 then break end
         keys[#keys + 1] = record.key
     end
-    local signature = table.concat(keys, "\n")
-    if signature == self.overlapSignature then return end
-    self.overlapSignature, self.overlapKeys = signature, keys
-    self:refreshToolbar()
+    self.overlapKeys = keys
     if self.workspaceOpen and self.tab == "Elements" then self:refreshOverlaps() end
 end
 
 function UI:refreshOverlaps()
-    local revision = self.app.discovery.revision
-    if self.shownOverlaps == self.overlapSignature and self.overlapRevision == revision then return end
-    self.shownOverlaps, self.overlapRevision = self.overlapSignature, revision
-    self:clearDynamic(self.overlapList, self.overlapConnections)
-    self.overlapConnections = {}
-    local records = {}
+    local count = 0
     for _, key in ipairs(self.overlapKeys or {}) do
-        local record = self.app.discovery:get(key)
-        if record then records[#records + 1] = record end
+        if self.app.discovery:get(key) then count = count + 1 end
     end
-    self.overlapList.Visible = #records > 1
-    if not self.overlapList.Visible then return end
-    self:section(self.overlapList, "At your last tap")
-    for _, record in ipairs(records) do self:elementRow(self.overlapList, record, self.overlapConnections) end
+    self.overlapList.Visible = count > 1
+end
+
+function UI:refreshPickerHighlights()
+    for _, row in ipairs(self.pickerRows or {}) do self:configureLayerRow(row, row.record) end
+end
+
+function UI:openSelectThrough(records)
+    if not records then
+        records = {}
+        for _, key in ipairs(self.overlapKeys or {}) do
+            local record = self.app.discovery:get(key)
+            if record then records[#records + 1] = record end
+        end
+    end
+    if #records == 0 then
+        self.app:status("There are no accessible layers at this point.")
+        return false
+    end
+    self:setOverlaps(records)
+    local _, body = self:dialog("Select through", "Pick a layer at this point. Other layers stay where they are.", nil, {{label = "Close"}})
+    self.dialogMaxHeight = math.min(382, 130 + #records * 56)
+    self.pickerRows = {}
+    for i, record in ipairs(records) do
+        if i > 24 then break end
+        self.pickerRows[#self.pickerRows + 1] = self:elementRow(body, record, self.modalConnections, true)
+    end
+    if #records > 24 then
+        label(body, "More nearby layers are available in the Layers browser.", 34, 12).TextColor3 = C.muted
+    end
+    self:layoutDialog()
+    return true
 end
 
 function UI:refreshMissing()
@@ -1534,28 +2026,60 @@ function UI:refreshMissing()
     self:enable(self.remapButton, self.remapKey ~= nil and #self.app.selection == 1)
 end
 
+local function passesFilter(ui, record)
+    local filter = ui.layerFilter
+    if filter == "All accessible" then return true end
+    if filter == "Selected" then return selected(ui.app.selection, record.key) end
+    local state = ui:layerState(record)
+    if filter == "Ignored" then return state.ignored end
+    if filter == "Locked" then return state.locked end
+    if filter == "Editable" then
+        return not state.locked and (hasOperation(record, "move") or hasOperation(record, "resize") or hasOperation(record, "visual"))
+    end
+    return record.visibility ~= "hidden" and record.visibility ~= "clipped"
+end
+
 function UI:refreshElements()
     local discovery = self.app.discovery
     if self.childParent and not self.childParent.Parent then self.childParent = nil end
-    local fallback = discovery.revision == nil and discovery:list()
+    local fallback = discovery.revision == nil and discovery:list("all")
     local search = self.search.Text:lower():match("^%s*(.-)%s*$")
-    local filter = table.concat({search, tostring(self.onlyEditable), tostring(self.childParent)}, "\n")
-    local revision = discovery.revision or fallback
-    if revision ~= self.elementRevision or filter ~= self.elementFilter then
-        self.elementRevision, self.elementFilter = revision, filter
-        self.builtinKeys, self.elementMatches = {}, {}
-        for _, record in ipairs(fallback or discovery:list()) do
+    local selection = self.layerFilter == "Selected" and table.concat(self.app.selection, "\n") or ""
+    local filter = table.concat({search, self.layerFilter, tostring(self.childParent), selection}, "\n")
+    local revision, policy = discovery.revision or fallback, self.app.layerRevision or 0
+    if revision ~= self.elementRevision or self.elementPolicy ~= policy then
+        self.elementRevision, self.elementPolicy = revision, policy
+        self.layerRecords = fallback or discovery:list("all")
+        self.layerIndex, self.builtinKeys = {}, {}
+        for _, record in ipairs(self.layerRecords) do
+            self.layerIndex[record.key] = record
             local kind = record.builtin
-            if kind and not self.builtinKeys[kind] then self.builtinKeys[kind] = record.key end
-            if (not self.onlyEditable or record.editable) and (not self.childParent or record.object.Parent == self.childParent) then
-                local matches = search == "" or (elementPath(record) .. " " .. record.object.ClassName):lower():find(search, 1, true)
-                if matches then self.elementMatches[#self.elementMatches + 1] = record end
+            if kind and not self.builtinKeys[kind] and record.visibility ~= "hidden" then self.builtinKeys[kind] = record.key end
+        end
+        self.builtinRow.Visible = next(self.builtinKeys) ~= nil
+        for kind, button in pairs(self.builtinButtons) do self:enable(button, self.builtinKeys[kind] ~= nil) end
+        self.elementFilter = nil
+    end
+    if filter ~= self.elementFilter then
+        self.elementFilter, self.elementMatches = filter, {}
+        for _, record in ipairs(self.layerRecords or {}) do
+            local matches = search == "" or (displayName(record) .. " " .. elementPath(record) .. " " .. record.object.ClassName):lower():find(search, 1, true)
+            local ancestor, expanded = record.parentKey, true
+            if search == "" and not self.childParent and self.layerFilter == "Visible" then
+                while ancestor do
+                    if self.collapsedLayers[ancestor] then expanded = false; break end
+                    local parent = self.layerIndex[ancestor]
+                    ancestor = parent and parent.parentKey
+                end
+            end
+            if matches and expanded and passesFilter(self, record)
+                and (not self.childParent or record.object.Parent == self.childParent) then
+                self.elementMatches[#self.elementMatches + 1] = record
             end
         end
-        for kind, button in pairs(self.builtinButtons) do self:enable(button, self.builtinKeys[kind] ~= nil) end
         self.elementSignature = nil
     end
-    local limit = 28
+    local limit = 22
     local pages = math.max(1, math.ceil(#self.elementMatches / limit))
     self.elementPage = math.max(1, math.min(pages, self.elementPage))
     if self.elementSignature ~= self.elementPage then
@@ -1566,8 +2090,12 @@ function UI:refreshElements()
             local record = self.elementMatches[i]
             self.elementRows[record.key] = self:elementRow(self.elementList, record, self.elementConnections)
         end
-        if #self.elementMatches == 0 then label(self.elementList, "No matching elements", 35, 12).TextColor3 = C.muted end
+        if #self.elementMatches == 0 then
+            label(self.elementList, "No layers match this view. Try a different filter or search.", 44, 12).TextColor3 = C.muted
+        end
     end
+    self.elementSummary.Text = tostring(#self.elementMatches) .. (#self.elementMatches == 1 and " layer" or " layers")
+    self.compatibleFilter.Text = "Show: " .. self.layerFilter
     self.pager.Visible = pages > 1
     self.pagerCaption.Text = tostring(self.elementPage) .. " / " .. tostring(pages)
     self:enable(self.pagerBack, self.elementPage > 1)
@@ -1578,6 +2106,34 @@ function UI:refreshElements()
 end
 
 function UI:refreshGroups()
+    local focus = self.app.groupFocus
+    local members = focus and focus.keys or {}
+    local count = #self.app.selection
+    self.groupSummary.Text = focus and ((focus.name or "Quick group") .. "  /  " .. #members .. " members")
+        or (count > 1 and (count .. " selected. You can edit them together.") or "Select two or more controls to group them.")
+    self:enable(self.temporaryGroup, count > 1 and focus == nil and self.app.quickGroup ~= nil)
+    self:enable(self.leaveGroup, focus ~= nil and self.app.ungroup ~= nil)
+    self.leaveGroup.Text = focus and focus.member and "Back to group" or "Ungroup"
+    self.groupMemberList.Visible = #members > 0
+    local memberSignature = table.concat(members, "\n") .. tostring(focus and focus.member)
+    if memberSignature ~= self.groupMemberSignature then
+        self.groupMemberSignature = memberSignature
+        self:clearDynamic(self.groupMemberList, self.groupMemberConnections)
+        self.groupMemberConnections = {}
+        if #members > 0 then self:section(self.groupMemberList, "Edit one member") end
+        for i, key in ipairs(members) do
+            if i > 20 then break end
+            local record = self.app.discovery:get(key)
+            if record then
+                self:button(self.groupMemberList, displayName(record), function()
+                    if self.app.enterGroupMember then
+                        self.app:enterGroupMember(key)
+                        self:setWorkspace(false)
+                    end
+                end, nil, nil, nil, self.groupMemberConnections)
+            end
+        end
+    end
     local names, parts = {}, {}
     for name, members in pairs(self.app.groups or {}) do table.insert(names, name); table.insert(parts, name .. ":" .. tostring(#members)) end
     table.sort(names); table.sort(parts)
@@ -1636,10 +2192,10 @@ function UI:refreshToolbar()
         button.TextColor3 = active and C.cyan or C.text
         button.BackgroundColor3, button.BackgroundTransparency = C.selected, active and 0 or 1
     end
-    self.elementsButton.Text = #(self.overlapKeys or {}) > 1 and "Elements+" or "Elements"
-    self.elementsButton.TextSize = #(self.overlapKeys or {}) > 1 and 11 or 12
+    self.elementsButton.Text = "Layers"
     self.doneButton.BackgroundColor3, self.doneButton.TextColor3 = C.cyan, C.ink
     self.saveIndicator.Visible = self.app.dirty and not self.disabled[self.saveButton] or false
+    self.toolsSaveIndicator.Visible = self.saveIndicator.Visible and not self.saveButton.Visible
     if self.saveIndicator.Visible then self.saveButton.TextColor3 = C.cyan end
 end
 
@@ -1688,12 +2244,18 @@ function UI:setVisible(visible)
     if not self.visible then
         self.workspaceOpen, self.collapsed = false, false
         self.notifications:close()
+        if self.onboarding then self.onboarding:close() end
         self:closeModal()
         self:setGuides()
         self:setBox()
     end
     self:layout()
     self:refresh()
+    if self.visible and not self.tutorialOffered and self.app.hasSeenTutorial and not self.app:hasSeenTutorial()
+        and not (self.app.options and self.app.options.SafeMode) and not (self.app.profiles and self.app.profiles.suspended) then
+        self.tutorialOffered = true
+        self:startTutorial()
+    end
 end
 
 function UI:destroy()
@@ -1701,8 +2263,9 @@ function UI:destroy()
     self.dead = true
     self:closeModal()
     if self.notifications then self.notifications:destroy() end
+    if self.onboarding then self.onboarding:destroy() end
     for _, list in ipairs({self.connections, self.elementConnections, self.profileConnections, self.groupConnections,
-        self.missingConnections, self.selectionConnections, self.overlapConnections}) do
+        self.missingConnections, self.selectionConnections, self.groupMemberConnections}) do
         for _, connection in ipairs(list) do connection:Disconnect() end
     end
     if self.gui then self.gui:Destroy() end

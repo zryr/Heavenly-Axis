@@ -458,6 +458,56 @@ check(app.editing and app.ui.visible and app.profiles:active().id == "first",
     "SafeMode startup opens recovery while retaining saved profile definitions")
 app:Destroy()
 
+do
+    local editor = setup()
+    local first = editor.discovery:get(key)
+    local function extra(name, x)
+        local identity = Util.copy(descriptor)
+        identity.path[#identity.path].name = name
+        local id = Identity.key(identity)
+        local value = entry(x)
+        value.descriptor = identity
+        local record = {key = id, descriptor = identity, editable = true, object = {Parent = first.object.Parent}}
+        editor.discovery.records[id], editor.transform.live[id] = record, value
+        return record
+    end
+    local parent, neighbor = extra("Control bar", 32), extra("Sibling", 63)
+    local controller = {ClassName = "UIListLayout"}
+    first.parentKey, first.layoutController, neighbor.layoutController = parent.key, controller, controller
+    parent.childKeys = {key, neighbor.key}
+    neighbor.parentKey = parent.key
+    check(editor:setLayerState(key, "ignored", true) and editor:layerState(key).ignored and not editor.dirty,
+        "ignore affects the selection policy without changing a layout checkpoint")
+    editor:move(2, 0)
+    check(x(editor) == 12, "explicitly selected ignored controls can still be edited")
+    check(editor:setLayerState(key, "locked", true) and not editor:capability(key, "move").supported,
+        "a locked control remains inspectable and direct movement is refused")
+    editor:move(11, 0)
+    check(x(editor) == 12, "an attempted direct edit leaves a locked control unchanged")
+    check(not editor:capability(parent.key, "move").supported and not editor:capability(parent.key, "rotation").supported
+        and editor:capability(parent.key, "transparency").supported,
+        "parent movement and rotation protect a locked descendant while background appearance remains available")
+    check(not editor:capability(neighbor.key, "resize").supported,
+        "reflow cannot resize a sibling when the row contains a locked member")
+    check(editor:clearLayerStates("locked") and editor:capability(parent.key, "move").supported
+        and editor:capability(neighbor.key, "resize").supported and editor:layerState(key).ignored,
+        "clearing locks restores available actions while preserving ignore rules")
+    editor:selectMany({key, neighbor.key})
+    local beforeGroup = #editor.history.past
+    check(editor:quickGroup() and #editor.groupFocus.keys == 2 and #editor.history.past == beforeGroup,
+        "temporary grouping preserves layout history")
+    check(editor:enterGroupMember(neighbor.key) and #editor.selection == 1 and editor.groupFocus.member == neighbor.key,
+        "a group member can be edited without losing group context")
+    editor:group("create", "HUD controls")
+    check(editor.groupFocus.name == "HUD controls" and #editor.groups["HUD controls"] == 2,
+        "naming a quick group while editing a member retains both members")
+    check(editor:returnToGroup() and #editor.selection == 2 and editor:ungroup(true)
+        and not editor.groups["HUD controls"] and x(editor) == 12,
+        "ungrouping a named group changes membership without repositioning controls")
+    check(editor:markTutorialSeen() and editor:hasSeenTutorial() and not editor:getState().preferences.onboardingCompleted,
+        "onboarding progress is separate from HUD checkpoint data")
+end
+
 -- Exercise the release entry separately with a yielding constructor and delayed player.
 local actualApp = package.loaded.App
 local bootstrap = assert(loadfile("src/Bootstrap.lua"))

@@ -21,7 +21,7 @@ local function signal()
         end,
     }
 end
-Enum = {UserInputType = {Touch = "touch", MouseButton1 = "mouse1", MouseMovement = "mouseMove", Keyboard = "keyboard"},
+Enum = {UserInputType = {Touch = "touch", MouseButton1 = "mouse1", MouseButton2 = "mouse2", MouseMovement = "mouseMove", Keyboard = "keyboard"},
     UserInputState = {Cancel = "cancel", End = "end"}, KeyCode = {}}
 for _, name in ipairs({"F8", "F9", "Z", "Y", "S", "B", "Escape", "Left", "Right", "Up", "Down",
     "LeftShift", "RightShift", "LeftControl", "RightControl", "LeftAlt", "RightAlt", "Unknown"}) do Enum.KeyCode[name] = name end
@@ -464,5 +464,261 @@ check(ui.lastBox.x == -5 and ui.lastBox.w == 109, "touch box selection preserves
 uis.InputEnded:Fire(finger)
 check(app.selection[1] == "a" and app.starts == 0 and ui.lastBox == nil, "touch box selects a contained element without transform history")
 controller:destroy()
+
+local function elapsedHold()
+    local pending = {}
+    task = {
+        delay = function(seconds, callback)
+            assert(seconds >= 0.35 and seconds <= 0.65)
+            local token = {callback = callback, active = true}
+            pending[#pending + 1] = token
+            return token
+        end,
+        cancel = function(token) token.active = false end,
+    }
+    return function()
+        local count = 0
+        local ready = pending
+        pending = {}
+        for _, token in ipairs(ready) do
+            if token.active then count = count + 1; token.callback() end
+        end
+        return count
+    end
+end
+
+local function setupThrough()
+    local elapsed = elapsedHold()
+    local app, ui, uis, input = setup()
+    local ordinary = app.discovery:get("a")
+    local deeper = {key = "ignored-layer", editable = true}
+    function app:canvasHits(x, y, explicit)
+        if explicit then return {ordinary, deeper}, ordinary end
+        return self.discovery:hit(x, y)
+    end
+    function app:openSelectThrough(hits, point)
+        self.throughCount = (self.throughCount or 0) + 1
+        self.through = {hits = hits, point = point}
+    end
+    function ui:setSelectThroughArmed(armed) self.throughArmed = armed end
+    return app, ui, uis, input, elapsed
+end
+
+local elapsed
+app, ui, uis, controller, elapsed = setupThrough()
+app.selection = {}
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and elapsed() == 0 and not app.through,
+    "ordinary release selects immediately and cancels its hold timer")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+app.selection = {}
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 23, Y = 22}
+uis.InputChanged:Fire(finger)
+check(elapsed() == 1 and app.through.hits[2].key == "ignored-layer" and app.through.point.x == 23,
+    "long press queries current explicit hits at the relaxed finger point")
+finger.UserInputState = Enum.UserInputState.End
+uis.InputEnded:Fire(finger)
+ui.canvas.InputBegan:Fire(finger)
+check(app.throughCount == 1 and elapsed() == 0 and #app.selection == 0 and app.starts == 0,
+    "long press hands off once without tapping, resizing, or adding history")
+controller:cancel()
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 45, Y = 60}
+uis.InputChanged:Fire(finger)
+check(elapsed() == 0 and not app.through and app.rects.a.x == 25,
+    "movement cancels a pending long press and still moves immediately")
+ui.modalOpen = true
+uis.InputEnded:Fire(finger)
+check(app.cancels == 1 and app.ends == 0 and app.rects.a.x == 0 and not controller:isBusy(),
+    "a modal opening during a drag rolls back even if release reaches the original owner")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+other = pointer("touch", 255, 220)
+ui.canvas.InputBegan:Fire(other)
+uis.InputEnded:Fire(other)
+check(elapsed() == 1 and app.throughCount == 1 and app.starts == 0,
+    "a second finger outside the selection cannot steal the pending hold")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+finger, second = pointer("touch", 20, 20), pointer("touch", 65, 65)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+check(elapsed() == 0 and not app.through, "a second finger admitted to pinch cancels the hold timer")
+other = pointer("touch", 47, 47)
+ui.canvas.InputBegan:Fire(other)
+other.Position = {X = 90, Y = 90}
+uis.InputChanged:Fire(other)
+uis.InputEnded:Fire(other)
+check(app.starts == 0 and controller:isBusy(), "a third touch cannot move or end a pinch")
+second.Position = {X = 85, Y = 85}
+uis.InputChanged:Fire(second)
+uis.InputEnded:Fire(finger)
+local width = app.rects.a.w
+second.Position = {X = 100, Y = 100}
+uis.InputChanged:Fire(second)
+uis.InputEnded:Fire(second)
+check(app.starts == 1 and app.ends == 1 and width > 100 and app.rects.a.w == width,
+    "releasing the first pinch finger commits and suppresses movement from the second")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+check(controller:armSelectThrough() and ui.throughArmed, "explicit Select Through can arm itself for one canvas tap")
+finger = pointer("touch", 350, 510)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(controller:isSelectThroughArmed() and not app.through, "inspector taps do not consume the armed canvas action")
+finger = pointer("touch", 129, 129)
+ui.handles[1].gui.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(not controller:isSelectThroughArmed() and not ui.throughArmed and app.through.point.x == 129 and app.starts == 0,
+    "the armed tap opens the picker once even over a resize handle without transforming it")
+check(controller:armSelectThrough(), "the picker can be armed again")
+finger = pointer("touch", 30, 30)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 90, Y = 95}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(not controller:isSelectThroughArmed() and app.throughCount == 1 and app.starts == 0,
+    "a swipe cancels the explicit tap instead of opening or moving unexpectedly")
+controller:armSelectThrough()
+uis.WindowFocusReleased:Fire()
+check(not controller:isSelectThroughArmed(), "focus loss disarms the explicit tool")
+ui.onboardingOpen = true
+check(not controller:armSelectThrough(), "onboarding shields the real editor from new gestures")
+ui.canvas.InputBegan:Fire(pointer("touch", 20, 20))
+check(not controller:isBusy() and elapsed() == 0, "touches on tutorial surfaces cannot arm an editor hold")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+mouse = pointer("mouse2", 20, 20)
+ui.canvas.InputBegan:Fire(mouse)
+uis.InputEnded:Fire(pointer("mouse1", 20, 20))
+check(controller:isBusy() and not app.through, "left mouse release cannot complete a right-click picker")
+uis.InputEnded:Fire(mouse)
+check(app.throughCount == 1 and app.starts == 0, "right click opens Select Through without altering selection or history")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+controller:cancel()
+check(elapsed() == 0 and not app.through and finger.StateChanged:Count() == 0,
+    "viewport-style cancellation clears pending hold and input watcher")
+uis.InputEnded:Fire(finger)
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 65, Y = 70}
+uis.InputChanged:Fire(finger)
+controller:selectionChanged()
+check(app.cancels == 1 and not controller:isBusy() and app.ends == 0,
+    "external selection change cancels the existing pointer transaction")
+controller:destroy()
+
+app, ui, uis, controller, elapsed = setupThrough()
+app.selection = {}
+local selectTarget = app.select
+function app:select(key, additive)
+    selectTarget(self, key, additive)
+    controller:selectionChanged()
+end
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 65, Y = 70}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.ends == 1 and app.cancels == 0,
+    "a drag that selects its own target keeps the gesture owner through the App selection callback")
+for _ = 1, 30 do
+    finger = pointer("touch", 20, 20)
+    ui.canvas.InputBegan:Fire(finger)
+    uis.InputEnded:Fire(finger)
+end
+check(elapsed() == 0 and not controller:isBusy() and finger.StateChanged:Count() == 0,
+    "repeated short touches leave no pending timers or state watchers")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 60, Y = 60}
+uis.InputChanged:Fire(finger)
+local record = app.discovery:get("a")
+record.object = {AbsolutePosition = {X = 0, Y = 0}, AbsoluteSize = {X = 100, Y = 100}}
+app.discovery.revision = 2
+uis.InputEnded:Fire(finger)
+check(app.cancels == 1 and app.ends == 0 and not controller:isBusy(),
+    "identity-key recreation during a drag cannot commit edits against a replacement instance")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+function app:capability(_, operation)
+    return {supported = operation == "resize", reason = "Layout controls this position."}
+end
+function app:getRects(_, operation)
+    if operation == "move" then return {}, {}, 1 end
+    if #self.selection == 0 then return {}, {} end
+    return {self.rects.a}, {"a"}
+end
+local updateGesture = app.updateGesture
+function app:updateGesture(rects, keys, operation)
+    self.lastOperation = operation
+    updateGesture(self, rects, keys)
+end
+function app:status(reason) self.lastStatus = reason end
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 31, Y = 32}
+uis.InputChanged:Fire(finger)
+check(app.starts == 0 and app.lastStatus == "Layout controls this position.",
+    "attempting to drag a layout-position-owned element leaves geometry intact and explains why")
+second = pointer("touch", 70, 70)
+ui.canvas.InputBegan:Fire(second)
+second.Position = {X = 85, Y = 85}
+uis.InputChanged:Fire(second)
+uis.InputEnded:Fire(second)
+check(app.starts == 1 and app.ends == 1 and app.lastOperation == "resize" and app.rects.a.w > 100,
+    "size-only compatibility still accepts pinch after a no-op move")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.selection = {"a", "b"}
+app.rects.b = {x = 115, y = 15, w = 50, h = 50}
+function app:getRects(_, operation)
+    if operation == "groupResize" then return {self.rects.a}, {"a"}, 1 end
+    return {self.rects.a, self.rects.b}, {"a", "b"}
+end
+updateGesture = app.updateGesture
+function app:updateGesture(rects, keys, operation)
+    self.lastOperation = operation
+    updateGesture(self, rects, keys)
+end
+finger, second = pointer("touch", 30, 30), pointer("touch", 70, 70)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 50, Y = 60}
+uis.InputChanged:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+second.Position = {X = 95, Y = 95}
+uis.InputChanged:Fire(second)
+uis.InputEnded:Fire(second)
+check(controller:isBusy() and app.lastOperation == "groupMove" and app.rects.b.x == 135 and app.rects.a.w == 100,
+    "a moved group retains drag ownership if its eligible resize roots differ")
+uis.InputEnded:Fire(finger)
+check(app.starts == 1 and app.ends == 1 and not controller:isBusy(), "mixed compatibility group drag commits once")
+controller:destroy()
+task = nil
 
 return checks

@@ -1,8 +1,9 @@
 -- Portable data only. Imports are JSON; no profile is ever evaluated as source code.
 local Util = require("Util")
 local Identity = require("Identity")
-local Config = { VERSION = 3 }
+local Config = { VERSION = 3, EDITOR_VERSION = 1 }
 local MAX_PROFILES, MAX_LAYOUT, MAX_GROUPS, MAX_MEMBERS = 64, 512, 64, 128
+local MAX_EDITOR_SCOPES, MAX_LAYER_RULES = 128, 256
 local scopes = { global = true, experience = true, place = true, device = true, orientation = true }
 local priorities = { global = 1, experience = 2, place = 3, device = 4, orientation = 5 }
 local optionalProperties = { rotation = true, transparency = true, experimental = true, viewport = true }
@@ -63,6 +64,47 @@ function Config.validateDescriptor(descriptor)
     if descriptor.path[#descriptor.path].class ~= descriptor.class then return false, "Descriptor class mismatch" end
     if descriptor.ambiguous ~= nil and type(descriptor.ambiguous) ~= "boolean" then return false, "Invalid ambiguity flag" end
     if descriptor.builtin ~= nil and not validBuiltin(descriptor) then return false, "Invalid built-in control identity" end
+    return true
+end
+
+local function id(value) return text(value, 32) and value:match("^%d+$") ~= nil end
+
+function Config.editorScope(context)
+    if type(context) ~= "table" or not id(context.experience) or not id(context.place)
+        or context.experience:match("^0%d") or context.place:match("^0%d")
+        or (context.experience == "0" and context.place == "0") then return nil end
+    return context.experience .. ":" .. context.place
+end
+
+function Config.emptyEditorPreferences()
+    return {version = Config.EDITOR_VERSION, smartSelection = true, skipTransparent = true, onboardingCompleted = false, scopes = {}}
+end
+
+function Config.validateLayerRules(rules)
+    if not mapCount(rules, MAX_LAYER_RULES) then return false, "Too many layer preferences for this place." end
+    for key, rule in pairs(rules) do
+        if not fields(rule, { descriptor = true, ignored = true, locked = true })
+            or (rule.ignored ~= nil and rule.ignored ~= true) or (rule.locked ~= nil and rule.locked ~= true)
+            or (rule.ignored == nil and rule.locked == nil) then return false, "Invalid layer preference." end
+        local valid = Config.validateDescriptor(rule.descriptor)
+        if not valid or rule.descriptor.ambiguous or key ~= Identity.key(rule.descriptor) then
+            return false, "Layer preferences require an unambiguous matching hierarchy."
+        end
+    end
+    return true
+end
+
+function Config.validateEditorPreferences(data)
+    if not fields(data, {version = true, smartSelection = true, skipTransparent = true, onboardingCompleted = true, scopes = true})
+        or data.version ~= Config.EDITOR_VERSION or type(data.smartSelection) ~= "boolean"
+        or type(data.skipTransparent) ~= "boolean" or type(data.onboardingCompleted) ~= "boolean"
+        or not mapCount(data.scopes, MAX_EDITOR_SCOPES) then return false, "Invalid or unsupported editor preferences." end
+    for scope, rules in pairs(data.scopes) do
+        local experience, place = scope:match("^(%d+):(%d+)$")
+        if not Config.editorScope({experience = experience, place = place}) then return false, "Invalid layer preference scope." end
+        local valid, reason = Config.validateLayerRules(rules)
+        if not valid then return false, reason end
+    end
     return true
 end
 
@@ -147,7 +189,6 @@ function Config.scopeKey(profile)
     return profile.scope .. ":" .. (profile.scopeId or "*") .. ":" .. (profile.device or "*") .. ":" .. (profile.orientation or "*")
 end
 
-local function id(value) return text(value, 32) and value:match("^%d+$") ~= nil end
 function Config.validateProfile(profile)
     if not fields(profile, { id = true, name = true, scope = true, scopeId = true, device = true,
         orientation = true, layout = true, groups = true, preferences = true }) then return false, "Invalid profile fields" end
