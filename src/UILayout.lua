@@ -5,11 +5,12 @@ local function clamp(value, minimum, maximum)
 end
 
 function Layout.place(rect, area, x, y)
+    local w, h = math.min(rect.w, area.w), math.min(rect.h, area.h)
     return {
-        x = clamp(x, area.x, area.x + area.w - rect.w),
-        y = clamp(y, area.y, area.y + area.h - rect.h),
-        w = rect.w,
-        h = rect.h,
+        x = clamp(x, area.x, area.x + area.w - w),
+        y = clamp(y, area.y, area.y + area.h - h),
+        w = w,
+        h = h,
     }
 end
 

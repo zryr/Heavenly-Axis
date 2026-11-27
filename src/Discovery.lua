@@ -6,6 +6,11 @@ local Util = require("Util")
 
 local Discovery = {}
 Discovery.__index = Discovery
+local EMPTY = {}
+local MODIFIER_KIND = {
+    UIScale = "scale", UIAspectRatioConstraint = "constraint", UISizeConstraint = "constraint",
+    UIGridLayout = "layout", UIListLayout = "layout", UIPageLayout = "layout", UITableLayout = "layout",
+}
 
 local function isA(object, class)
     local ok, result = pcall(function() return object:IsA(class) end)
@@ -31,6 +36,10 @@ local function enumIs(value, name)
     return tostring(value):match("[^%.]+$") == name
 end
 
+local function siblingName(object)
+    return object.ClassName .. ":" .. object.Name
+end
+
 function Discovery.serialize(object)
     local ok, result = pcall(function()
         local position, size = object.Position, object.Size
@@ -48,7 +57,7 @@ end
 function Discovery.new(playerGui, excludedGui, log, guiService)
     return setmetatable({
         root = playerGui, excluded = excludedGui, guiService = guiService,
-        records = {}, ordered = {}, byObject = {}, metadata = {}, siblingOrder = {},
+        records = {}, ordered = {}, byObject = {}, metadata = {}, siblingOrder = {}, containerNames = {}, containerSiblings = {},
         connections = {}, objectConnections = {}, approved = {}, log = log or function() end,
         destroyed = false, queued = false, revision = 0, classificationRevision = 0,
         stats = {scans = 0, indexed = 0, lastScanMs = 0},
@@ -111,12 +120,14 @@ function Discovery:_metadata(object, childCache)
     for _, child in ipairs(list) do
         if isA(child, "GuiObject") then
             result.hasGuiChild = true
-        elseif isA(child, "UIScale") then
-            result.scales[#result.scales + 1] = child
-        elseif isA(child, "UIAspectRatioConstraint") or isA(child, "UISizeConstraint") then
-            result.constraint = true
-        elseif isA(child, "UIGridStyleLayout") then
-            result.layout = true
+        else
+            local kind = MODIFIER_KIND[child.ClassName]
+            if kind then
+                result.modifiers = result.modifiers or {}
+                result.modifiers[child] = kind
+                if kind == "scale" then result.scales[#result.scales + 1] = child
+                else result[kind] = true end
+            end
         end
     end
     self.metadata[object] = result
@@ -222,7 +233,7 @@ function Discovery:_presentation(reclassify)
     if task and task.delay then task.delay(0.04, run) else run() end
 end
 
-function Discovery:_watch(object, childCache)
+function Discovery:_watch(object, childCache, modifier)
     local connections = self.objectConnections[object]
     local new = not connections
     if new then
@@ -233,17 +244,29 @@ function Discovery:_watch(object, childCache)
         local ok, signal = pcall(function() return object:GetPropertyChangedSignal(name) end)
         if ok and signal then connections[#connections + 1] = signal:Connect(callback) end
     end
-    local gui = isA(object, "GuiObject")
-    if new then
-        if isA(object, "UIScale") then
+    if modifier then
+        if not new then return end
+        connections.modifierParent = object.Parent
+        watch("Parent", function()
+            -- Reparenting inside PlayerGui can change the modifier without a root descendant event.
+            local previous, parent = connections.modifierParent, object.Parent
+            if previous then self.metadata[previous] = nil end
+            if parent then self.metadata[parent] = nil end
+            connections.modifierParent = parent
+            self:_presentation(true)
+        end)
+        if modifier == "scale" then
             local valid = Util.finite(object.Scale) and object.Scale > 0
             watch("Scale", function()
                 local changed = Util.finite(object.Scale) and object.Scale > 0
                 if changed ~= valid then self:_presentation(true) end
                 valid = changed
             end)
-            return
         end
+        return
+    end
+    local gui = isA(object, "GuiObject")
+    if new then
         watch("Name", function() self:_schedule() end)
         if isA(object, "ScreenGui") then
             watch("Enabled", function() self:_presentation() end)
@@ -262,6 +285,7 @@ function Discovery:_watch(object, childCache)
             wasRotated = isRotated
         end)
     end
+    return gui or object.ClassName == "ScreenGui"
 end
 
 local function enclosingScreen(object, root)
@@ -280,7 +304,7 @@ function Discovery:refresh()
     local ok, descendants = pcall(function() return self.root:GetDescendants() end)
     if not ok then self.log("PlayerGui discovery unavailable") return end
     local old, indexed, byObject, ordered, watched = self.byObject, {}, {}, {}, {}
-    local childCache, siblingCache = {}, {}
+    local childCache, siblingCache, containerNames, containerSiblings = {}, {}, {}, {}
     self.metadata = {}
     self.classificationRevision = self.classificationRevision + 1
     for _, object in ipairs(descendants) do
@@ -312,10 +336,14 @@ function Discovery:refresh()
                     local current = object
                     while current and current ~= self.root and not watched[current] do
                         watched[current] = true
-                        self:_watch(current, childCache)
-                        for _, scale in ipairs(self:_metadata(current, childCache).scales) do
-                            watched[scale] = true
-                            self:_watch(scale)
+                        if not self:_watch(current, childCache) then
+                            local names = containerNames[current.Parent] or {}
+                            names[siblingName(current)] = true
+                            containerNames[current.Parent] = names
+                        end
+                        for modifier, kind in pairs(self:_metadata(current, childCache).modifiers or EMPTY) do
+                            watched[modifier] = true
+                            self:_watch(modifier, nil, kind)
                         end
                         current = current.Parent
                     end
@@ -329,8 +357,14 @@ function Discovery:refresh()
             self.objectConnections[object] = nil
         end
     end
+    for parent, names in pairs(containerNames) do
+        for sibling in pairs(siblingCache[parent] or EMPTY) do
+            if names[siblingName(sibling)] then containerSiblings[sibling] = true end
+        end
+    end
     table.sort(ordered, function(a, b) return a.key < b.key end)
     self.records, self.byObject, self.ordered, self.siblingOrder = indexed, byObject, ordered, siblingCache
+    self.containerNames, self.containerSiblings = containerNames, containerSiblings
     self.stats.scans = self.stats.scans + 1
     self.stats.indexed, self.stats.lastScanMs = #ordered, (os.clock() - startedAt) * 1000
     self:_notify("structure")
@@ -340,23 +374,34 @@ function Discovery:start(onChanged)
     if self.started or self.destroyed then return end
     self.started, self.onChanged = true, onChanged
     self.connections[#self.connections + 1] = self.root.DescendantAdded:Connect(function(object)
-        if self:_excluded(object) then return end
+        local modifier = MODIFIER_KIND[object.ClassName]
         local parent = object.Parent
+        local container = self.containerNames[parent]
+        local identityMayChange = object.ClassName == "ScreenGui" or container and container[siblingName(object)]
+        if not identityMayChange and (not modifier and not isA(object, "GuiObject") or not enclosingScreen(object, self.root)) then return end
+        if self:_excluded(object) then return end
         if parent then self.metadata[parent] = nil end
-        self:_schedule()
+        if modifier then
+            self:_watch(object, nil, modifier)
+            self:_presentation(true)
+        else self:_schedule() end
     end)
     self.connections[#self.connections + 1] = self.root.DescendantRemoving:Connect(function(object)
-        if self:_excluded(object) then return end
+        local modifier = MODIFIER_KIND[object.ClassName]
+        local connections = self.objectConnections[object]
+        local record = self.byObject[object]
+        if not connections and not record and not self.containerSiblings[object] and object.ClassName ~= "ScreenGui" then return end
+        if not connections and self:_excluded(object) then return end
         local parent = object.Parent
         if parent then self.metadata[parent] = nil end
-        local record = self.byObject[object]
+        if modifier and connections and connections.modifierParent then self.metadata[connections.modifierParent] = nil end
         if record then
             if self.records[record.key] == record then self.records[record.key] = nil end
             self.byObject[object] = nil
         end
-        disconnectAll(self.objectConnections[object])
+        disconnectAll(connections)
         self.objectConnections[object] = nil
-        self:_schedule()
+        if modifier then self:_presentation(true) else self:_schedule() end
     end)
     self.log("Discovery limited to accessible on-screen PlayerGui objects")
     self:refresh()
@@ -496,7 +541,7 @@ local function frontmost(a, b)
 end
 
 function Discovery:hit(x, y)
-    if not Util.finite(x) or not Util.finite(y) then return {} end
+    if not Util.finite(x) or not Util.finite(y) then return {}, false end
     local hitX, hitY = Coordinates.hitPoint(x, y)
     local ok, objects = pcall(function() return self.root:GetGuiObjectsAtPosition(hitX, hitY) end)
     local native = ok and type(objects) == "table"
@@ -511,7 +556,7 @@ function Discovery:hit(x, y)
         if not native and not containsRotated(bounds, angle, x, y) then return end
         if not self:_attached(record) or not self:_visible(record, bounds) then return end
         local clipped = self:_clip(record, visualBounds(bounds, angle), deviceArea)
-        if not clipped or not native and not Coordinates.contains(clipped, x, y) then return end
+        if not Coordinates.contains(clipped, native and hitX or x, native and hitY or y) then return end
         self:_classify(record)
         local area = screenBounds[record.screen]
         if not area then
@@ -520,15 +565,17 @@ function Discovery:hit(x, y)
         end
         local metadata = self:_metadata(record.object)
         local broad = structural(record, clipped, area, metadata)
+        local passive = record.builtin == "DynamicThumbstickFrame"
+            or broad and record.object.BackgroundTransparency >= 0.95
         local priority
-        if record.builtin and (record.builtin ~= "DynamicThumbstickFrame" or not broad) then priority = 1
+        if record.builtin == "DynamicThumbstickFrame" then priority = 5
+        elseif record.builtin then priority = 1
         elseif record.interactive and not metadata.hasGuiChild then priority = 2
         elseif record.interactive then priority = 3
         elseif not broad then priority = 4
-        elseif record.builtin then priority = 5
         else priority = 6 end
         if not record.editable then priority = priority + 6 end
-        candidates[#candidates + 1] = {record = record, priority = priority, nativeIndex = index,
+        candidates[#candidates + 1] = {record = record, priority = priority, nativeIndex = index, passive = passive,
             drawPath = not native and self:_drawPath(record) or nil}
     end
     if native then
@@ -541,9 +588,13 @@ function Discovery:hit(x, y)
         if native then return a.nativeIndex < b.nativeIndex end
         return frontmost(a, b)
     end)
-    local result = {}
-    for index, candidate in ipairs(candidates) do result[index] = candidate.record end
-    return result
+    local result, primary = {}, false
+    for index, candidate in ipairs(candidates) do
+        result[index] = candidate.record
+        if not primary and not candidate.passive then primary = candidate.record end
+    end
+    -- Transparent gameplay containers remain available through explicit overlap selection.
+    return result, primary
 end
 
 function Discovery:alignmentRects(keys, focusBounds, limit)
@@ -599,7 +650,7 @@ function Discovery:destroy()
     disconnectAll(self.connections)
     for _, connections in pairs(self.objectConnections) do disconnectAll(connections) end
     self.connections, self.objectConnections, self.records, self.byObject = {}, {}, {}, {}
-    self.ordered, self.metadata, self.siblingOrder = {}, {}, {}
+    self.ordered, self.metadata, self.siblingOrder, self.containerNames, self.containerSiblings = {}, {}, {}, {}, {}
     self.onChanged = nil
 end
 

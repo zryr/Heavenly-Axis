@@ -22,7 +22,7 @@ local function signal()
     }
 end
 Enum = {UserInputType = {Touch = "touch", MouseButton1 = "mouse1", MouseMovement = "mouseMove", Keyboard = "keyboard"},
-    UserInputState = {Cancel = "cancel"}, KeyCode = {}}
+    UserInputState = {Cancel = "cancel", End = "end"}, KeyCode = {}}
 for _, name in ipairs({"F8", "F9", "Z", "Y", "S", "B", "Escape", "Left", "Right", "Up", "Down",
     "LeftShift", "RightShift", "LeftControl", "RightControl", "LeftAlt", "RightAlt", "Unknown"}) do Enum.KeyCode[name] = name end
 UDim2 = {fromOffset = function(x, y) return {x = x, y = y} end}
@@ -73,7 +73,8 @@ local function setup()
         local bounds = self:currentBounds()
         if bounds then return {minimum = 50, maximum = 200, scale = bounds.w, bounds = bounds} end
     end
-    function app:sizeRects(rects, w, h, center)
+    function app:sizeRects(rects, w, h, center, _, axis)
+        self.sliderAxis = axis
         local bounds = Geometry.bounds(rects)
         return Geometry.scale(rects, {x = bounds.x, y = bounds.y, w = w, h = h}, center)
     end
@@ -129,6 +130,14 @@ controller:destroy()
 
 app, ui, uis, controller = setup()
 finger = pointer("touch", 20, 20)
+finger.UserInputState = Enum.UserInputState.End
+uis.InputEnded:Fire(finger)
+ui.canvas.InputBegan:Fire(finger)
+check(not controller:isBusy(), "a delayed GUI begin for an already-ended pointer cannot strand ownership")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger = pointer("touch", 20, 20)
 ui.canvas.InputBegan:Fire(finger)
 finger.Position = {X = 35, Y = 38}
 uis.InputEnded:Fire(finger)
@@ -144,6 +153,9 @@ ui.canvas.InputBegan:Fire(second)
 second.Position = {X = 170, Y = 170}
 uis.InputChanged:Fire(second)
 check(close(app.rects.a.w, 200) and close(app.rects.a.x, -10), "pinch scales about initial finger midpoint")
+second.Position = {X = 380, Y = 380}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 200), "pinch growth stays within the viewport-aware sizing range established at gesture start")
 uis.InputEnded:Fire(second)
 finger.Position = {X = 50, Y = 50}
 uis.InputChanged:Fire(finger)
@@ -185,7 +197,8 @@ check(app.rects.a.w == 100 and app.starts == 0, "slider press does not jump befo
 uis.InputChanged:Fire(pointer("mouseMove", 400, 510))
 uis.InputChanged:Fire(pointer("mouseMove", 450, 510))
 uis.InputEnded:Fire(pointer("mouse1", 450, 510))
-check(close(app.rects.a.w, 162.5) and app.starts == 1 and app.ends == 1, "relative slider drag creates one action")
+check(close(app.rects.a.w, 162.5) and app.starts == 1 and app.ends == 1 and app.sliderAxis == "x",
+    "relative slider drag requests the width axis and creates one action")
 controller:destroy()
 
 app, ui, uis, controller = setup()
@@ -228,6 +241,32 @@ check(app.rects.a.x == 0 and app.ends == 0, "refused transaction cannot mutate o
 controller:destroy()
 
 app, ui, uis, controller = setup()
+local beginGesture, endGesture = app.beginGesture, app.endGesture
+function app:beginGesture(...)
+    if self.settling then return false end
+    return beginGesture(self, ...)
+end
+function app:endGesture()
+    endGesture(self)
+    self.settling = true
+end
+local function quickDrag(from, to)
+    local input = pointer("touch", from, 20)
+    ui.canvas.InputBegan:Fire(input)
+    input.Position = {X = to, Y = 20}
+    uis.InputChanged:Fire(input)
+    uis.InputEnded:Fire(input)
+end
+quickDrag(20, 35)
+quickDrag(40, 55)
+check(app.rects.a.x == 15 and app.starts == 1 and app.ends == 1 and app.cancels == 0 and not controller:isBusy(),
+    "a rapid follow-up while the prior transaction is verifying neither alters nor rolls back that transaction")
+app.settling = false
+quickDrag(40, 55)
+check(app.rects.a.x == 30 and app.starts == 2 and app.ends == 2, "a fresh pointer succeeds once verification releases the transaction")
+controller:destroy()
+
+app, ui, uis, controller = setup()
 app.preferences.centerScale = true
 finger = pointer("touch", 10, 10)
 second = pointer("touch", 90, 90)
@@ -239,6 +278,21 @@ check(close(app.rects.a.x, -10), "pinch midpoint remains attached even with cent
 second.Position = {X = 10.1, Y = 10.1}
 uis.InputChanged:Fire(second)
 check(app.rects.a.w >= 16 and app.rects.a.h >= 16, "pinch cannot produce impractical dimensions")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.preferences.equalSize = true
+app.selection = {"a", "b"}
+app.rects.b = {x = 560, y = 0, w = 60, h = 160}
+function app:sizeInfo() return {minimum = 50, maximum = 200, scale = 100, size = {w = 100, h = 160}} end
+finger, second = pointer("touch", 10, 10), pointer("touch", 50, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+second.Position = {X = 70, Y = 70}
+uis.InputChanged:Fire(second)
+uis.InputEnded:Fire(second)
+check(close(app.rects.a.w, 150) and close(app.rects.b.w, 110) and close(app.rects.b.w / app.rects.b.h, 60 / 160),
+    "independent group pinch applies equal width changes and keeps each member's aspect ratio")
 controller:destroy()
 
 app, ui, uis, controller = setup()
@@ -257,6 +311,20 @@ finger.Position = {X = 14, Y = 14}
 uis.InputChanged:Fire(finger)
 uis.InputEnded:Fire(finger)
 check(app.selection[1] == "a" and app.starts == 0 and #ui.overlaps == 1, "tap latches selection and overlap choices without history")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+function app.discovery:hit() return {self:get("a")}, false end
+finger = pointer("touch", 30, 25)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(#app.selection == 0 and #ui.overlaps == 1 and app.starts == 0,
+    "tapping transparent structure clears selection and retains the explicit overlap candidate")
+uis.modifiers.LeftAlt = true
+mouse = pointer("mouse1", 30, 25)
+ui.canvas.InputBegan:Fire(mouse)
+uis.InputEnded:Fire(mouse)
+check(app.selection[1] == "a", "desktop Alt can explicitly select a transparent structural candidate")
 controller:destroy()
 
 app, ui, uis, controller = setup()

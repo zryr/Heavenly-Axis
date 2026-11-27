@@ -115,6 +115,14 @@ test("Locked individual width adjustments preserve each ratio and center", funct
         near(rect.y + rect.h / 2, source[i].y + source[i].h / 2)
     end
 end)
+test("Width-based group size controls can preserve their requested width delta", function()
+    local source = { { x = 0, y = 0, w = 30, h = 20 }, { x = 80, y = 0, w = 50, h = 35 } }
+    local bounds = Geometry.bounds(source)
+    local changed = Geometry.adjustMembers(source, bounds, {x = 0, y = 0, w = 140, h = 70}, false, true, "x")
+    near(changed[1].w, 40)
+    near(changed[2].w, 60)
+    near(changed[1].w / changed[1].h, source[1].w / source[1].h)
+end)
 test("Empty bounds do not fabricate a selection", function() assert(Geometry.bounds({}) == nil) end)
 test("Alignment uses selection extent", function()
     local result = Geometry.align({ { x = 10, y = 20, w = 20, h = 20 }, { x = 40, y = 50, w = 30, h = 40 } }, "right")

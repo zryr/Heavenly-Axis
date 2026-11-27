@@ -13,7 +13,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.1.0"
+App.VERSION = "3.1.1"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -153,7 +153,11 @@ function App:_currentEditContext()
     return self.editContext or self.context
 end
 function App:_loadDraft(context)
+    self.draftLoadRevision = (self.draftLoadRevision or 0) + 1
+    local revision = self.draftLoadRevision
+    context = Util.copy(context)
     local draft, reason, blocked = self.storage:loadDraft(context)
+    if not self.alive or revision ~= self.draftLoadRevision or not sameContext(context, self:_currentEditContext()) then return end
     self.draft, self.recoveredDraft, self.draftBlocked = nil, nil, nil
     if reason then self:log(reason) end
     if blocked then self.draftBlocked = reason; return end
@@ -247,12 +251,20 @@ function App:_writeDraft()
     state.reference = self.profiles:draftReference(context)
     return self.storage:draft(state, context)
 end
-function App:_draftLater()
-    if self.previewState or self.profiles.suspended or self.draftBlocked or (self.draft and not self.recoveredDraft) then return end
+function App:_invalidateDraftTimer()
     self.draftGeneration = (self.draftGeneration or 0) + 1
+    if self.draftTimer and task.cancel then pcall(task.cancel, self.draftTimer) end
+    self.draftTimer = nil
+end
+function App:_draftLater()
+    if self.capabilities.storage.status == "Unsupported" or self.previewState or self.profiles.suspended
+        or self.draftBlocked or (self.draft and not self.recoveredDraft) then return end
+    self:_invalidateDraftTimer()
     local generation = self.draftGeneration
-    task.delay(1, function()
-        if not self.alive or generation ~= self.draftGeneration or self.gesture or self.finishingGesture or not self.dirty then return end
+    self.draftTimer = task.delay(1, function()
+        if generation ~= self.draftGeneration then return end
+        self.draftTimer = nil
+        if not self.alive or self.saving or self.saveWaiting or self.gesture or self.finishingGesture or not self.dirty then return end
         if self.previewState or self.profiles.suspended or self.draftBlocked or (self.draft and not self.recoveredDraft) then return end
         local ok, message = self:_writeDraft()
         if not ok and self.capabilities.storage.status ~= "Unsupported" then self:log(message) end
@@ -282,19 +294,21 @@ function App:select(key, toggle)
         end
         selected[#selected + 1] = key
         self.selection = selected
+    elseif #self.selection == 1 and self.selection[1] == key then return
     else self.selection = {key} end
     if not record.editable then self:status(record.reason or "Unsupported element.") end
     self:_selectionChanged()
 end
 function App:selectMany(keys)
-    self.selection = {}
-    local seen = {}
+    local selection, seen = {}, {}
     for _, key in ipairs(keys) do
-        if not seen[key] and self.discovery:get(key) then self.selection[#self.selection + 1] = key; seen[key] = true end
+        if not seen[key] and self.discovery:get(key) then selection[#selection + 1] = key; seen[key] = true end
     end
+    if Util.equal(selection, self.selection) then return end
+    self.selection = selection
     self:_selectionChanged()
 end
-function App:clearSelection() self.selection = {}; self:_selectionChanged() end
+function App:clearSelection() self:selectMany({}) end
 function App:getRects(editableOnly) return self.transform:selectionRects(self.selection, editableOnly) end
 function App:currentBounds(editableOnly)
     local rects = self:getRects(editableOnly)
@@ -315,7 +329,9 @@ function App:updateGesture(rects, keys)
     if not self.gesture then return false end
     local ok, reason = self.transform:setRects(keys or self.selection, rects)
     if not ok then self:status(reason or "Transformation is unsupported."); return false end
-    if self.ui then self.ui:updateSelection() end
+    if self.ui then
+        if self.ui.requestSelectionUpdate then self.ui:requestSelectionUpdate() else self.ui:updateSelection() end
+    end
     return true
 end
 function App:_afterInteraction(ok, reason)
@@ -400,18 +416,19 @@ local function resizeBasis(rects, bounds, individual)
     return {w = width, h = height}
 end
 
-function App:sizeRects(rects, width, height, center, basis)
+function App:sizeRects(rects, width, height, center, basis, aspectAxis)
     local bounds = Geometry.bounds(rects)
     if not bounds then return {} end
     local individual = self.preferences.equalSize and #rects > 1
     basis = basis or resizeBasis(rects, bounds, individual)
     if self.preferences.aspectLock then
         local fx, fy = width / basis.w, height / basis.h
-        local factor = math.abs(fx - 1) >= math.abs(fy - 1) and fx or fy
+        aspectAxis = aspectAxis or (math.abs(fx - 1) >= math.abs(fy - 1) and "x" or "y")
+        local factor = aspectAxis == "x" and fx or fy
         width, height = basis.w * factor, basis.h * factor
     end
     local target = {x = bounds.x, y = bounds.y, w = bounds.w + (width - basis.w), h = bounds.h + (height - basis.h)}
-    if individual then return Geometry.adjustMembers(rects, bounds, target, center, self.preferences.aspectLock) end
+    if individual then return Geometry.adjustMembers(rects, bounds, target, center, self.preferences.aspectLock, aspectAxis) end
     return Geometry.scale(rects, target, center)
 end
 
@@ -450,22 +467,26 @@ function App:setSizePercent(percent)
     if not info then return self:status("Select an editable element first.") end
     if not Util.finite(percent) or percent < 1 or percent > 10000 then return self:status("Enter a size from 1% to 10000%.") end
     local factor = math.max(percent, info.minimum) / info.scale
-    return self:resize(info.size.w * factor, info.size.h * factor, false)
+    return self:resize(info.size.w * factor, info.size.h * factor, false, "x")
 end
 
 function App:stepSize(delta)
     local info = self:sizeInfo()
-    if info and Util.finite(delta) then return self:setSizePercent(math.max(1, info.minimum, info.scale + delta)) end
+    if not info or not Util.finite(delta) or delta == 0 then return end
+    -- Small controls need at least one layout unit before Roblox can visibly round the change.
+    local amount = math.max(math.abs(delta), info.scale / info.size.w)
+    local nextScale = info.scale + (delta > 0 and amount or -amount)
+    return self:setSizePercent(math.max(1, info.minimum, nextScale))
 end
 
-function App:resize(width, height, center)
+function App:resize(width, height, center, aspectAxis)
     if not Util.finite(width) or not Util.finite(height) or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE
         or width > 100000 or height > 100000 then
         return self:status("Enter width and height between 16 and 100000 pixels.")
     end
     if center == nil then center = self.preferences.centerScale end
     self:_rectAction("Resize", function(rects)
-        return self:sizeRects(rects, width, height, center)
+        return self:sizeRects(rects, width, height, center, nil, aspectAxis)
     end)
 end
 function App:scale(factor)
@@ -549,9 +570,22 @@ function App:undo() self:_replay("undo") end
 function App:redo() self:_replay("redo") end
 function App:_clearCurrentDraft(context)
     if not self.draftBlocked and (not self.draft or self.recoveredDraft) then
-        local cleared, reason = self.storage:clearDraft(context)
-        if cleared or self.capabilities.storage.status == "Unsupported" then self.draft, self.recoveredDraft = nil, nil
-        elseif reason then self:log(reason) end
+        local function clear()
+            local cleared, reason, busy = self.storage:clearDraft(context)
+            if cleared or self.capabilities.storage.status == "Unsupported" then
+                if sameContext(self:_currentEditContext(), context) then self.draft, self.recoveredDraft = nil, nil end
+            elseif reason then self:log(reason) end
+            return busy
+        end
+        if clear() then
+            local generation = self.draftGeneration
+            task.delay(0.25, function()
+                if self.alive and generation == self.draftGeneration and not self.dirty then
+                    clear()
+                    if self.ui then self.ui:refresh() end
+                end
+            end)
+        end
     end
 end
 function App:save(onComplete)
@@ -577,6 +611,7 @@ function App:save(onComplete)
                 or not Util.equal(requested, self:getState()) then
                 local reason = "Layout changed during the stability check. Review it and save again."
                 self:status(reason)
+                if self.dirty then self:_draftLater() end
                 if onComplete then onComplete(false, reason) end
             else self:save(onComplete) end
         end)
@@ -586,19 +621,19 @@ function App:save(onComplete)
     local context = Util.copy(self:_currentEditContext())
     self.saving = true
     local ok, message, accepted = self.profiles:save(state.layout, state.groups, state.preferences, self.editBaseline, context)
-    self.saving = nil
-    if not self.alive then return ok, message, accepted end
-    if ok or accepted then
+    if self.alive and (ok or accepted) then
         self.history:checkpoint(state)
         self.profileChanged = false
         self.savedProfilesData = Util.copy(self.profiles.data)
         self.savedState = Util.copy(state)
         self.savedEditTarget = self.profiles:editTargetId(context)
         self.editBaseline = Util.copy(state)
-        self.draftGeneration = (self.draftGeneration or 0) + 1
+        self:_invalidateDraftTimer()
         self:_clearCurrentDraft(context)
-        if self.editContext then self:_adoptContext() end
+        if self.alive and self.editContext then self:_adoptContext() end
     end
+    self.saving = nil
+    if not self.alive then return ok, message, accepted end
     self:status(message or (ok and "Profile persisted." or "Save failed; draft retained."))
     self:changed()
     if onComplete then onComplete(ok, message, accepted) end
@@ -615,7 +650,6 @@ function App:cancel(onComplete)
     local result
     local function complete(ok, reason, skipped)
         if self.finishingGesture ~= job then return end
-        self.finishingGesture = nil
         if not self.alive then return end
         result = ok
         if ok then
@@ -625,13 +659,15 @@ function App:cancel(onComplete)
             self.profileChanged = false
             self:_setState(state)
             self.editBaseline = Util.copy(self.savedState)
-            self.draftGeneration = (self.draftGeneration or 0) + 1
+            self:_invalidateDraftTimer()
             self:_clearCurrentDraft(context)
+            if not self.alive or self.finishingGesture ~= job then return end
             if self.editContext then self:_adoptContext() end
             local note = "Returned to the latest Save checkpoint."
             if (skipped or 0) > 0 then note = note .. " " .. skipped .. " missing elements skipped." end
             self:status(note)
         else self:status(reason or "The checkpoint could not be restored. Use Safe Mode to recover originals.") end
+        self.finishingGesture = nil
         self:_afterInteraction(ok, reason)
         if onComplete then onComplete(ok) end
     end
@@ -641,7 +677,10 @@ function App:cancel(onComplete)
     return result
 end
 function App:Done()
-    if self.previewState then return self:status("Apply or cancel the preview before returning to gameplay.") end
+    if self.previewState then
+        if self.ui and self.ui.setTab then self.ui:setTab("Profiles") end
+        return self:status("Apply or cancel the preview before returning to gameplay.")
+    end
     if self.saving or self.saveWaiting then return self:status("The save is still in progress.") end
     if self.input then self.input:cancel() else self:cancelGesture() end
     if self.finishingGesture then self.doneWaiting = true; return end
@@ -691,6 +730,7 @@ end
 function App:setLauncherPosition(x, y)
     if self.previewState or self.profiles.suspended or self.saving or self.finishingGesture then return end
     if not Util.finite(x) or not Util.finite(y) or x < 0 or x > 1 or y < 0 or y > 1 then return end
+    if self.preferences.launcherX == x and self.preferences.launcherY == y then return end
     self.launcherOverrides = self.launcherOverrides or {}
     self.launcherOverrides.launcherX, self.launcherOverrides.launcherY = x, y
     self.preferences.launcherX, self.preferences.launcherY = x, y
@@ -932,23 +972,31 @@ function App:remap(oldKey, newKey)
     local old, target = self.layout[oldKey], self.discovery:get(newKey)
     if not old or not target then return self:status("Select an unmatched entry and an accessible replacement first.") end
     if not target.editable then return self:status(target.reason or "The selected replacement is unavailable for editing.") end
-    if self.layout[newKey] and oldKey ~= newKey then return self:status("Replacement already has saved settings. Reset or choose another element.") end
+    if self.layout[newKey] then return self:status("Replacement already has saved settings. Choose another element.") end
     local before = self:getState()
     local state = Util.copy(before)
     local entry = Util.copy(old)
     entry.descriptor, entry.experimental = Util.copy(target.descriptor), false
     state.layout[oldKey], state.layout[newKey] = nil, entry
-    for _, members in pairs(state.groups) do
-        for index, descriptor in ipairs(members) do
-            if Identity.key(descriptor) == oldKey then members[index] = Util.copy(target.descriptor) end
+    for name, members in pairs(state.groups) do
+        local remapped, seen = {}, {}
+        for _, descriptor in ipairs(members) do
+            local memberKey = Identity.key(descriptor)
+            if memberKey == oldKey then descriptor, memberKey = Util.copy(target.descriptor), newKey end
+            if not seen[memberKey] then
+                remapped[#remapped + 1], seen[memberKey] = descriptor, true
+            end
         end
+        state.groups[name] = remapped
     end
     self:_commitLayoutEdit(state, before, "Remap missing element", "Remapped to the selected element. Save to persist.")
 end
 function App:setEditing(enabled)
+    enabled = enabled == true
+    if self.editing == enabled then return end
     if self.input then self.input:cancel() elseif self.gesture then self:cancelGesture() end
-    self.editing = enabled == true
-    if self.ui then self.ui:setVisible(self.editing); self.ui:refresh() end
+    self.editing = enabled
+    if self.ui then self.ui:setVisible(enabled) end
 end
 function App:Open()
     if not self.alive then return end
@@ -963,11 +1011,9 @@ function App:Open()
         if not ok then
             if self.input then self.input:destroy(); self.input = nil end
             if self.ui then self.ui:destroy(); self.ui = nil end
-            for _, child in ipairs(self.playerGui:GetChildren()) do
-                if child.Name == "HeavenlyAxis" and child:IsA("ScreenGui") then child:Destroy() end
-            end
+            self.discovery.excluded = nil
             self:log("Editor initialization failed: " .. tostring(result):sub(1, 160))
-            warn("Heavenly Axis: editor could not open. Use __HEAVENLY_AXIS_V3.SafeMode() or Destroy().")
+            warn("Heavenly Axis could not open. Use the session's :SafeMode() or :Destroy() method.")
             return false
         end
     end
@@ -1033,7 +1079,9 @@ function App:Destroy(restore)
         self.finishingGesture, self.gestureSave, self.doneWaiting = nil, nil, nil
         self.transform:cancelTransaction()
     end
-    if self.dirty and not self.previewState and not self.draftBlocked and (not self.draft or self.recoveredDraft) then
+    self:_invalidateDraftTimer()
+    if self.dirty and self.capabilities.storage.status ~= "Unsupported" and not self.saving
+        and not self.previewState and not self.draftBlocked and (not self.draft or self.recoveredDraft) then
         self:_writeDraft()
     end
     self.alive = false

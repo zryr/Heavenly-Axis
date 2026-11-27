@@ -43,7 +43,8 @@ local function validateState(state)
 end
 
 function Storage.new(capabilities, httpService, log, context)
-    return setmetatable({capabilities = capabilities, http = httpService, log = log or function() end, blocked = false, context = context}, Storage)
+    return setmetatable({capabilities = capabilities, http = httpService, log = log or function() end,
+        blocked = false, context = context, draftOperations = {}}, Storage)
 end
 
 function Storage:_draftPath(context)
@@ -124,10 +125,14 @@ end
 function Storage:load()
     if not self:_available() then return nil, "Persistent storage unavailable; profiles stay in memory until exported." end
     local raw, err = self:_read(self.FILES.saved)
-    if not raw and err == "missing" then return nil, "No saved V3 configuration." end
+    if not raw and err == "missing" then
+        self.blocked, self.partialFirstWrite = false, nil
+        return nil, "No saved V3 configuration."
+    end
     local data, reason
     if raw then data, reason = self:import(raw) else reason = err end
     if data then
+        self.blocked, self.partialFirstWrite = false, nil
         self.capabilities.storage.status = "Available but unverified"
         self.capabilities.storage.detail = "Saved JSON read and validated; next Save verifies writes."
         return data
@@ -151,23 +156,41 @@ function Storage:save(data)
     local raw, err = self:export(data)
     if not raw then return false, err end
     if not self:_available() then return false, "Checkpoint is in memory only. Export JSON for a durable copy.", true end
-    if self.blocked then return self:_fail("Save blocked. Existing configuration needs manual repair. Your edits are still open.") end
     -- Validate every existing primary before any overwrite, including saves before load.
     local previous, readError = self:_read(self.FILES.saved)
     if not previous and readError ~= "missing" then return self:_fail(readError) end
+    local retryingFirstWrite = previous ~= nil and previous == self.partialFirstWrite
+    if not retryingFirstWrite then self.partialFirstWrite = nil end
     if previous then
         local valid = self:import(previous)
         if not valid then
-            self.blocked = true
-            return self:_fail("Save blocked. Existing configuration is invalid and has been preserved.")
+            if not retryingFirstWrite then
+                self.blocked = true
+                return self:_fail("Save blocked. Existing configuration is invalid and has been preserved.")
+            end
+            previous = nil
         end
     end
+    self.blocked = false
     if not self:_verifiedWrite(self.FILES.pending, raw) then return self:_fail("Save failed while staging configuration; previous save preserved.") end
     if previous and not self:_verifiedWrite(self.FILES.backup, previous) then return self:_fail("Save failed while preserving backup; previous save preserved.") end
     if not self:_verifiedWrite(self.FILES.saved, raw) then
-        if previous then pcall(self.capabilities._functions.writefile, self.FILES.saved, previous) end
-        return self:_fail("Save failed during final write. Previous backup and staged data remain available.")
+        if previous then
+            if self:_verifiedWrite(self.FILES.saved, previous) then
+                return self:_fail("Save failed during final write. The previous configuration was restored and verified.")
+            end
+            return self:_fail("Save failed during final write. Previous backup and staged data remain available.")
+        end
+        local incomplete = self:_read(self.FILES.saved)
+        if incomplete and #incomplete < #raw and raw:sub(1, #incomplete) == incomplete then
+            -- A verified staged copy exists. Retry can replace only this exact incomplete first write.
+            self.partialFirstWrite = incomplete
+        else
+            self.partialFirstWrite = nil
+        end
+        return self:_fail("First save could not be verified. Staged data remains available.")
     end
+    self.partialFirstWrite = nil
     local remove = self.capabilities._functions.delfile
     if type(remove) == "function" then pcall(remove, self.FILES.pending) end
     self.capabilities.storage.status = "Supported and verified"
@@ -187,6 +210,19 @@ function Storage:draft(state, context)
     local valid, reason = validateState(state)
     if not valid then return false, "Invalid draft: " .. tostring(reason) end
     if not self:_available() then return false, "Draft recovery unavailable without local storage." end
+    return self:_mutateDraft(path, self._writeDraft, state)
+end
+
+function Storage:_mutateDraft(path, operation, value)
+    if self.draftOperations[path] then return false, "Draft storage is busy. Try again after the current write.", true end
+    self.draftOperations[path] = true
+    local ran, ok, message = pcall(operation, self, path, value)
+    self.draftOperations[path] = nil
+    if not ran then return false, "Draft storage operation could not complete." end
+    return ok, message
+end
+
+function Storage:_writeDraft(path, state)
     local raw, err = self:_encode({version = Config.VERSION, draft = true, state = state})
     if not raw then return false, err end
     -- A corrupt draft is also user data; keep it until explicitly cleared.
@@ -209,6 +245,7 @@ function Storage:loadDraft(context)
     context = Util.copy(context or self.context)
     local path = self:_draftPath(context)
     if context and path == self.FILES.draft then return nil, "Invalid draft context." end
+    if self.draftOperations[path] then return nil, "Draft update in progress." end
     local raw, err, unreadable = self:_read(path)
     if not raw then return nil, err, unreadable end
     local value, reason = self:_decode(raw)
@@ -227,6 +264,10 @@ function Storage:clearDraft(context)
     context = Util.copy(context or self.context)
     local path = self:_draftPath(context)
     if context and path == self.FILES.draft then return false, "Invalid draft context." end
+    return self:_mutateDraft(path, self._clearDraft, context)
+end
+
+function Storage:_clearDraft(path, context)
     local exists, err = self:_exists(path)
     if exists == nil then return false, err end
     if not exists then return true, "No draft to clear." end
@@ -253,7 +294,8 @@ end
 function Storage:copy(text)
     if type(text) ~= "string" or #text > self.MAX_BYTES then return false, "Invalid clipboard content." end
     if type(self.capabilities._clipboard) ~= "function" then return false, "Clipboard unavailable; manually copy the JSON field." end
-    local ok = pcall(self.capabilities._clipboard, text)
+    local called, accepted = pcall(self.capabilities._clipboard, text)
+    local ok = called and accepted ~= false
     self.capabilities.clipboard.status = ok and "Supported and verified" or "Failed"
     self.capabilities.clipboard.detail = ok and "Clipboard API accepted the export; paste to verify destination." or "Clipboard call failed; manually copy the JSON field."
     return ok, self.capabilities.clipboard.detail

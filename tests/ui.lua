@@ -1,151 +1,14 @@
 -- Structural Roblox GUI mocks. These checks exercise UI state and sizing only;
 -- they do not establish Roblox rendering, touch interception or device support.
-local checks, activeConnections, destroyed = 0, 0, 0
+local checks = 0
 local function check(value, message) checks = checks + 1; assert(value, message) end
-local function signal()
-    local listeners = {}
-    local s = {}
-    function s:Connect(callback)
-        local entry = {callback = callback, connected = true}
-        listeners[#listeners + 1] = entry; activeConnections = activeConnections + 1
-        return {Disconnect = function()
-            if entry.connected then entry.connected = false; activeConnections = activeConnections - 1 end
-        end}
-    end
-    function s:Fire(...)
-        local snapshot = {}; for i, entry in ipairs(listeners) do snapshot[i] = entry end
-        for _, entry in ipairs(snapshot) do if entry.connected then entry.callback(...) end end
-    end
-    function s:Destroy()
-        for _, entry in ipairs(listeners) do
-            if entry.connected then entry.connected = false; activeConnections = activeConnections - 1 end
-        end
-    end
-    return s
-end
-local function vec(x, y) return {X = x or 0, Y = y or 0} end
-Vector2 = {new = vec}
-Color3 = {new = function(r, g, b) return {R = r, G = g, B = b} end,
-    fromRGB = function(r, g, b) return {R = r / 255, G = g / 255, B = b / 255} end}
-UDim = {new = function(scale, offset) return {Scale = scale or 0, Offset = offset or 0} end}
-UDim2 = {new = function(xs, xo, ys, yo) return {X = UDim.new(xs, xo), Y = UDim.new(ys, yo)} end}
-UDim2.fromOffset = function(x, y) return UDim2.new(0, x, 0, y) end
-UDim2.fromScale = function(x, y) return UDim2.new(x, 0, y, 0) end
-Enum = setmetatable({}, {__index = function(t, name)
-    local group = setmetatable({}, {__index = function(g, key) rawset(g, key, name .. "." .. key); return rawget(g, key) end})
-    rawset(t, name, group); return group
-end})
-local view, screenOrigin = vec(800, 600), vec(-9, -23)
-local methods = {}
-local eventNames = {Activated = true, FocusLost = true, InputBegan = true, InputEnded = true}
-local guiClasses = {Frame = true, TextButton = true, TextLabel = true, TextBox = true, ScrollingFrame = true, ImageLabel = true}
-local function absSize(object)
-    if object.ClassName == "ScreenGui" or object.ClassName == "PlayerGui" then return view end
-    local parentSize = object.Parent and object.Parent.AbsoluteSize or view
-    local size = object.Size
-    local result = vec(parentSize.X * size.X.Scale + size.X.Offset, parentSize.Y * size.Y.Scale + size.Y.Offset)
-    for _, child in ipairs(object:GetChildren()) do
-        if child.ClassName == "UISizeConstraint" then
-            if child.MinSize then result.X, result.Y = math.max(result.X, child.MinSize.X), math.max(result.Y, child.MinSize.Y) end
-            if child.MaxSize then result.X, result.Y = math.min(result.X, child.MaxSize.X), math.min(result.Y, child.MaxSize.Y) end
-        end
-    end
-    return result
-end
-local mt = {}
-function mt:__index(key)
-    if methods[key] then return methods[key] end
-    if key == "AbsoluteSize" then return absSize(self) end
-    if key == "AbsoluteContentSize" and self.ClassName == "UIListLayout" then
-        local width, height, count = 0, 0, 0
-        for _, child in ipairs(self.Parent:GetChildren()) do
-            if child:IsA("GuiObject") and child.Visible then
-                local size = child.AbsoluteSize
-                width, height, count = math.max(width, size.X), height + size.Y, count + 1
-            end
-        end
-        return vec(width, height + math.max(0, count - 1) * self.Padding.Offset)
-    end
-    if key == "AbsolutePosition" then
-        if self.ClassName == "ScreenGui" then return screenOrigin end
-        if self.ClassName == "PlayerGui" then return vec() end
-        local parentSize = self.Parent and self.Parent.AbsoluteSize or view
-        local origin = self.Parent and self.Parent.AbsolutePosition or vec()
-        local pos, size = self.Position, self.AbsoluteSize
-        local anchor = self.AnchorPoint
-        return vec(origin.X + parentSize.X * pos.X.Scale + pos.X.Offset - size.X * anchor.X,
-            origin.Y + parentSize.Y * pos.Y.Scale + pos.Y.Offset - size.Y * anchor.Y)
-    end
-    if eventNames[key] then
-        local events = rawget(self, "_events")
-        events[key] = events[key] or signal(); return events[key]
-    end
-    return rawget(self, "_props")[key]
-end
-function mt:__newindex(key, value)
-    local props = rawget(self, "_props")
-    if key == "Parent" then
-        local previous = props.Parent
-        if previous then
-            local children = rawget(previous, "_children")
-            for i, child in ipairs(children) do if child == self then table.remove(children, i); break end end
-        end
-        props.Parent = value
-        if value then table.insert(rawget(value, "_children"), self) end
-        return
-    end
-    if props[key] == value then return end
-    props[key] = value
-    local changed = rawget(self, "_changes")[key]
-    if changed then changed:Fire() end
-end
-function methods:GetChildren()
-    local result = {}; for i, child in ipairs(rawget(self, "_children")) do result[i] = child end
-    return result
-end
-function methods:GetDescendants()
-    local result = {}
-    local function append(object)
-        for _, child in ipairs(object:GetChildren()) do result[#result + 1] = child; append(child) end
-    end
-    append(self); return result
-end
-function methods:GetPropertyChangedSignal(key)
-    local changes = rawget(self, "_changes")
-    changes[key] = changes[key] or signal(); return changes[key]
-end
-function methods:IsA(class) return class == self.ClassName or class == "GuiObject" and guiClasses[self.ClassName] or class == "Instance" end
-function methods:IsFocused() return self.Focused == true end
-function methods:CaptureFocus() self.Focused = true end
-function methods:ReleaseFocus() self.Focused = false end
-function methods:Destroy()
-    if self.Destroyed then return end
-    self.Destroyed = true; destroyed = destroyed + 1
-    for _, child in ipairs(self:GetChildren()) do child:Destroy() end
-    for _, collection in ipairs({rawget(self, "_changes"), rawget(self, "_events")}) do
-        for _, s in pairs(collection) do s:Destroy() end
-    end
-    self.Parent = nil
-end
-Instance = {new = function(class)
-    return setmetatable({_props = {ClassName = class, Name = class, Size = UDim2.new(), Position = UDim2.new(),
-        AnchorPoint = vec(), CanvasPosition = vec(), Visible = true, ZIndex = 1, Text = "", BackgroundTransparency = 0, Rotation = 0},
-        _children = {}, _changes = {}, _events = {}}, mt)
-end}
+local mock = require("support/Roblox").new()
+local view, vec, signal = mock.view, mock.vec, mock.signal
+local playerGui, services = mock.playerGui, mock.services
 local Geometry = require("Geometry")
 local UI = require("UI")
 local Coordinates = require("Coordinates")
 local Layout = require("UILayout")
-local playerGui = Instance.new("PlayerGui")
-local camera = {ViewportSize = view, changed = signal()}
-function camera:GetPropertyChangedSignal() return self.changed end
-local safeLeft, safeRight, safeTop, safeBottom = 12, 16, 23, 10
-local function insetArea(_, inset)
-    return {Min = vec(safeLeft, inset == Enum.ScreenInsets.DeviceSafeInsets and -safeTop or 0),
-        Max = vec(view.X - safeRight, view.Y - safeTop - safeBottom)}
-end
-local services = {UserInputService = {TouchEnabled = true}, Workspace = {CurrentCamera = camera},
-    GuiService = {GetGuiInset = function() return vec(0, safeTop), vec(0, safeBottom) end, GetInsetArea = insetArea}}
 local target = Instance.new("TextButton")
 target.Name = "Jump Mock"; target.Size = UDim2.fromOffset(100, 100); target.Position = UDim2.fromOffset(50, 162); target.Parent = playerGui
 local second = Instance.new("TextButton")
@@ -226,6 +89,23 @@ check(ui.selectionBounds.Position.X.Offset == 59 and ui.selectionBounds.Position
 check(visibleHandles(ui) == 1, "touch layout exposes one resize handle")
 local grip = Coordinates.rect(ui.touchHandle.gui)
 check(grip.w == 44 and not Layout.intersects(grip, Coordinates.rect(target)), "touch handle has a 44-unit region outside the movement target")
+local targetSize, targetPosition = target.Size, target.Position
+target.Size = UDim2.fromOffset(ui.safeArea.w, ui.safeArea.h)
+target.Position = UDim2.fromOffset(ui.safeArea.x, ui.safeArea.y)
+ui:updateSelection()
+local largeGrip = Coordinates.rect(ui.touchHandle.gui)
+check(visibleHandles(ui) == 1 and Layout.intersects(largeGrip, Coordinates.rect(target)) and largeGrip.w == 44,
+    "large controls use an interior corner handle when no exterior handle fits")
+target.Size, target.Position = targetSize, targetPosition
+ui:updateSelection()
+local deferred, existingTask = {}, task
+task = {defer = function(callback) deferred[#deferred + 1] = callback end}
+ui:requestSelectionUpdate()
+target:GetPropertyChangedSignal("AbsolutePosition"):Fire()
+target:GetPropertyChangedSignal("AbsoluteSize"):Fire()
+check(#deferred == 1, "input and selected geometry events share one deferred redraw")
+deferred[1]()
+task = existingTask
 check(ui:pointInPanel(ui.panel.AbsolutePosition.X + 1, ui.panel.AbsolutePosition.Y + 1), "inspector blocks canvas under it")
 check(not ui:pointInPanel(760, 490), "canvas outside editor controls remains available")
 local oldX, oldY = ui:inspectorPosition()
@@ -267,6 +147,13 @@ services.UserInputService.PreferredInput = Enum.PreferredInput.Touch
 ui:layout()
 check(visibleHandles(ui) == 1, "hybrid touch input restores exterior handle")
 
+local originalSize = target.Size
+target.Size = UDim2.fromOffset(100.34, 100)
+ui:updateSelection()
+ui.percent:CaptureFocus(); ui.percent:ReleaseFocus(); ui.percent.FocusLost:Fire(false)
+check(app.lastPercent == nil, "blurring an untouched rounded percentage does not start a resize")
+target.Size = originalSize
+ui:updateSelection()
 ui.percent.Text = "124%"
 ui.percent.FocusLost:Fire(false)
 check(app.lastPercent == 124, "quick size commits the numeric percentage")
@@ -279,6 +166,8 @@ check(ui.toolbar.Visible and ui.quickBody.CanvasPosition.Y == 0, "closing the ke
 
 ui:setTab("Advanced")
 check(ui.fields.X.Text == "50" and ui.fields.Y.Text == "162" and ui.fields.W.Text == "100", "advanced inspector reads canonical selection geometry")
+ui.fields.W:CaptureFocus(); ui.fields.W:ReleaseFocus(); ui.fields.W.FocusLost:Fire(false)
+check(app.lastResize == nil, "blurring the unchanged advanced width does not start a transform")
 ui.fields.X.Text = "120"; ui.fields.X.FocusLost:Fire(false)
 check(app.lastGeometry and app.lastGeometry.mode == "position" and app.lastGeometry.value.x == 120, "numeric position uses the app operation")
 ui.fields.W.Text = "125"; ui.fields.W.FocusLost:Fire(false)
@@ -310,14 +199,15 @@ local contentLayout
 for _, child in ipairs(elementsBody:GetChildren()) do if child:IsA("UIListLayout") then contentLayout = child end end
 contentLayout:GetPropertyChangedSignal("AbsoluteContentSize"):Fire()
 check(ui.pages.Elements.CanvasSize.Y.Offset > 175, "list layout drives the native scrollable viewport")
-local rows, connections = listCalls, activeConnections
+local rows, connections = listCalls, mock.activeConnections
 ui:refreshElements(); ui:refreshElements()
-check(listCalls == rows and activeConnections == connections, "unchanged element revision avoids enumeration and callback churn")
+check(listCalls == rows and mock.activeConnections == connections, "unchanged element revision avoids enumeration and callback churn")
 ui:setOverlaps({record, record2})
 check(ui.overlapList.Visible and #ui.overlapConnections == 2, "touch overlap chooses from explicit candidates")
 
 records = {}; app.discovery.revision = 2; ui:refreshElements()
-check(#ui.elementConnections == 0, "removed browser rows disconnect completely")
+check(#ui.elementConnections == 0 and not ui.overlapList.Visible and #ui.overlapConnections == 0,
+    "removed browser and overlap rows disconnect completely")
 records = {record, record2}
 for i = 1, 70 do
     local copy = {key = tostring(i), descriptor = {path = {{name = "Test " .. i}}}, object = second, editable = true}
@@ -333,9 +223,14 @@ check(not ui.selectionBounds.Visible and visibleHandles(ui) == 0, "clearing sele
 record.editable = false
 ui:setWorkspace(false)
 app:select("a")
-check(ui.panel.AbsoluteSize.Y <= 56 and not ui.quickBody.Visible and visibleHandles(ui) == 0,
+check(ui.panel.AbsoluteSize.Y <= 56 and not ui.quickBody.Visible and visibleHandles(ui) == 0 and ui.quickHint.Text == "View details in Tools",
     "unsupported selection remains inspectable without resize affordances")
 record.editable = true
+app.previewState = {}
+ui:updateSelection()
+check(not ui.sliderEnabled and visibleHandles(ui) == 0 and ui.quickHint.Text == "Profile preview",
+    "profile preview disables editing gestures and size inputs")
+app.previewState = nil
 
 local box = ui:modal("Import", "Validate before preview", "{}", "Preview", function(value) return value == "{}" end)
 check(ui.modalOpen and ui:pointInPanel(0, 0), "modal blocks all canvas input")
@@ -352,7 +247,7 @@ ui:confirmDone(function() result = "save" end, function() result = "discard" end
 buttonByText(ui.modalGui, "Discard").Activated:Fire()
 check(not ui.modalOpen and result == "discard", "discard is explicit")
 ui:setTab("Profiles")
-app.draftBlocked = true; ui:refreshProfiles()
+app.draftBlocked = "Recovery draft preserved because its baseline changed."; ui:refreshProfiles()
 check(ui.draftSection.Visible and ui.previewDraft.Interactable == false,
     "recovery exposes discard for a stale draft without offering preview")
 
@@ -365,10 +260,118 @@ ui:moveLauncher(700, 345); ui:finishLauncherMove(false)
 local launcher = Coordinates.rect(ui.launcher)
 check(app.preferences.launcherX == 1 and launcher.x + launcher.w == ui.safeArea.x + ui.safeArea.w - 8, "launcher docks inside the nearest safe edge")
 check(#app.logs == 0, "GUI callbacks completed without swallowed errors")
-local beforeDestroy = destroyed
+-- Exercise UI and Input together using the same GUI fixture as the layout checks.
+local function checkGestureSurfaces()
+    local Input = require("Input")
+    local uis = services.UserInputService
+    for _, name in ipairs({"InputBegan", "InputChanged", "InputEnded", "WindowFocusReleased"}) do uis[name] = signal() end
+    function uis:IsKeyDown() return false end
+    function uis:GetFocusedTextBox() return nil end
+    function app:setEditing(editing) self.editing = editing; ui:setVisible(editing) end
+    function app:Done() self:setEditing(false) end
+    function app.discovery:hit(x, y)
+        local p, s = target.AbsolutePosition, target.AbsoluteSize
+        return x >= p.X and y >= p.Y and x <= p.X + s.X and y <= p.Y + s.Y and {record} or {}
+    end
+    function app:sizeRects(rects, w, h)
+        local r = rects[1]
+        return {{x = r.x, y = r.y, w = w, h = h}}
+    end
+    local started, committed, cancelled = 0, 0, 0
+    function app:beginGesture()
+        self.beforeGesture = {target.Position, target.Size}
+        started = started + 1
+        return true
+    end
+    function app:updateGesture(rects)
+        local rect = rects[1]
+        target.Position, target.Size = UDim2.fromOffset(rect.x, rect.y), UDim2.fromOffset(rect.w, rect.h)
+        ui:updateSelection()
+        return true
+    end
+    function app:endGesture() committed = committed + 1; ui:updateSelection() end
+    function app:cancelGesture()
+        cancelled = cancelled + 1
+        target.Position, target.Size = self.beforeGesture[1], self.beforeGesture[2]
+        ui:updateSelection()
+    end
+
+    local function press(object, x, y)
+        local p, s = object.AbsolutePosition, object.AbsoluteSize
+        local finger = {UserInputType = Enum.UserInputType.Touch, Position = vec(x or p.X + s.X / 2, y or p.Y + s.Y / 2)}
+        object.InputBegan:Fire(finger)
+        return finger
+    end
+    local function move(finger, dx, dy)
+        finger.Position = vec(finger.Position.X + dx, finger.Position.Y + dy)
+        uis.InputChanged:Fire(finger)
+    end
+    local function release(finger) uis.InputEnded:Fire(finger) end
+
+    view.X, view.Y = 960, 440
+    uis.PreferredInput = Enum.PreferredInput.Touch
+    uis.OnScreenKeyboardVisible = false
+    target.Position, target.Size = UDim2.fromOffset(50, 60), UDim2.fromOffset(100, 100)
+    app.selection, app.preferences.launcherHidden, app.preferences.aspectLock = {}, false, false
+    app.input = Input.new(app, ui, services)
+    app:setEditing(false)
+    release(press(ui.launcher))
+    check(app.editing and ui.canvas.Visible and not ui.panel.Visible, "launcher opens a clear mobile editing canvas")
+    release(press(ui.canvas, 100, 110))
+    check(app.selection[1] == record.key and ui.panel.Visible and ui.sliderEnabled and started == 0,
+        "canvas tap selects a target and opens Quick Edit without starting history")
+    local finger = press(ui.canvas, 100, 110)
+    move(finger, 30, 15)
+    ui.toolsButton.Activated:Fire()
+    check(not ui.workspace.Visible and app.input:isBusy(), "unrelated toolbar activation cannot interrupt an owned canvas touch")
+    ui.percent:CaptureFocus(); ui.percent.Focused:Fire()
+    check(not ui.percent:IsFocused() and app.input:isBusy(), "unrelated text focus leaves the owned canvas gesture in place")
+    release(finger)
+    check(target.AbsolutePosition.X == 80 and target.AbsolutePosition.Y == 75 and committed == 1,
+        "canvas drag adjusts the selected target through one transaction")
+
+    view.Y = 236
+    ui:layout()
+    local track = ui:sliderTrackRect()
+    ui.quickBody.ScrollingEnabled = true
+    finger = press(ui.slider, track.x + track.w * 84 / 184, track.y)
+    move(finger, track.w * 32 / 184, 0)
+    check(not ui.quickBody.ScrollingEnabled, "horizontal slider ownership pauses the overflowing native ScrollingFrame")
+    release(finger)
+    check(math.abs(target.AbsoluteSize.X - 132) < 0.001 and target.AbsolutePosition.X == 80 and committed == 2
+        and ui.quickBody.ScrollingEnabled, "relative slider anchors size and restores native scrolling at release")
+
+    view.Y = 440
+    ui:layout()
+    local handle = ui.touchHandle
+    check(handle.gui.Visible, "touch handle remains available outside the selected geometry")
+    finger = press(handle.gui)
+    move(finger, handle.handle:find("e") and 15 or -15, handle.handle:find("s") and 15 or -15)
+    release(finger)
+    check(target.AbsoluteSize.X > 132 and committed == 3, "adaptive external handle resizes through the canvas controller")
+    local prior = ui.panel.AbsolutePosition
+    move(press(ui.inspectorGrip), 0, 36)
+    check(ui.panel.AbsolutePosition.Y ~= prior.Y, "inspector grip repositions Quick Edit")
+    uis.WindowFocusReleased:Fire()
+    check(ui.panel.AbsolutePosition.Y == prior.Y and committed == 3 and cancelled == 0,
+        "focus interruption restores inspector position without changing HUD history")
+    ui:confirm("Gesture check", "Dialog shields the editing canvas", function() end)
+    finger = press(ui.canvas, target.AbsolutePosition.X + 50, target.AbsolutePosition.Y + 50)
+    move(finger, 40, 25)
+    release(finger)
+    check(committed == 3 and not app.input:isBusy(), "modal excludes new canvas gestures")
+    ui:closeModal()
+    ui.doneButton.Activated:Fire()
+    check(not app.editing and not ui.canvas.Visible and ui.launcher.Visible, "Done returns gameplay input while keeping the launcher reachable")
+    app.input:destroy()
+    app.input = nil
+end
+checkGestureSurfaces()
+
+local beforeDestroy = mock.destroyed
 ui:destroy(); ui:destroy()
-check(ui.gui.Destroyed and destroyed > beforeDestroy, "destroy tears down GUI once")
-check(activeConnections == 0, "destroy releases every UI connection")
+check(ui.gui.Destroyed and mock.destroyed > beforeDestroy, "destroy tears down GUI once")
+check(mock.activeConnections == 0, "destroy releases every UI connection")
 target:Destroy()
 second:Destroy()
 

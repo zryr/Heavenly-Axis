@@ -299,7 +299,7 @@ function Transform:_observation(operation)
             or anchor.X ~= reference.anchorX or anchor.Y ~= reference.anchorY then
             return "The parent layout changed during editing.", false, true
         end
-        return "The resulting geometry differed from the requested adjustment."
+        return "The resulting geometry differed from the requested adjustment.", false, false, true
     end
     if operation.checkSize then
         local width, height = effectiveDimensions(object, operation.after.size, self.discovery.root)
@@ -307,29 +307,35 @@ function Transform:_observation(operation)
         if not rect or not Util.finite(width) or not Util.finite(height)
             or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE
             or math.abs(rect.w - width) > MAX_RECT_ERROR or math.abs(rect.h - height) > MAX_RECT_ERROR then
-            return "The layout did not honor the requested dimensions."
+            return "The layout did not honor the requested dimensions.", false, false, true
         end
     end
 end
 
-function Transform:_finish(job, cancellation)
+function Transform:_finish(job, cancellation, early)
     local jobs = self.pendingStabilization
     if not jobs or not jobs[job] then return true end
+    local reason, failures, onlyGeometry = cancellation, {}, true
+    if not reason then
+        for _, operation in ipairs(job.operations) do
+            local ok, problem, overwritten, environmentChanged, awaitingGeometry = pcall(self._observation, self, operation)
+            if not ok then problem = "The resulting GUI geometry could not be read." end
+            if problem then
+                reason = reason or problem
+                onlyGeometry = onlyGeometry and awaitingGeometry == true
+                failures[#failures + 1] = {record = operation.record, problem = problem,
+                    overwritten = overwritten, environmentChanged = environmentChanged}
+            end
+        end
+    end
+    if early and reason and onlyGeometry then return nil end
     jobs[job] = nil
     for _, operation in ipairs(job.operations) do self.pendingByObject[operation.record.object] = nil end
     if not next(jobs) then self.pendingStabilization = nil end
     if self.interactivePending == job then self.interactivePending = nil end
-    local reason = cancellation
-    if not reason then
-        for _, operation in ipairs(job.operations) do
-            local ok, problem, overwritten, environmentChanged = pcall(self._observation, self, operation)
-            if not ok then problem = "The resulting GUI geometry could not be read." end
-            if problem then
-                reason = reason or problem
-                if operation.record.object.Parent and not environmentChanged then
-                    self:_failed(operation.record, problem, overwritten)
-                end
-            end
+    for _, failure in ipairs(failures) do
+        if failure.record.object.Parent and not failure.environmentChanged then
+            self:_failed(failure.record, failure.problem, failure.overwritten)
         end
     end
     local rollbacks
@@ -357,18 +363,29 @@ end
 
 function Transform:_schedule()
     if self.stabilizationScheduled or not self.pendingStabilization then return end
+    local early = self.interactivePending
+    if early and early.earlyChecked then early = nil end
+    if early then
+        for _, operation in ipairs(early.operations) do
+            if operation.record.experimental then early = nil; break end
+        end
+    end
     local scheduled = {}
-    for job in pairs(self.pendingStabilization) do scheduled[job] = job.revision end
+    if early then scheduled[early] = early.revision
+    else for job in pairs(self.pendingStabilization) do scheduled[job] = job.revision end end
     local function observe()
         self.stabilizationScheduled = false
         if self.destroyed then return end
         for job, revision in pairs(scheduled) do
-            if job.revision == revision then self:_finish(job) end
+            if job.revision == revision then
+                if job == early then job.earlyChecked = true end
+                self:_finish(job, nil, job == early)
+            end
         end
         self:_schedule()
     end
     self.stabilizationScheduled = true
-    if task and task.delay then task.delay(0.10, observe) else observe() end
+    if task and task.delay then task.delay(early and 0.04 or 0.10, observe) else observe() end
 end
 
 function Transform:_queue(job, deferSchedule)
@@ -387,7 +404,7 @@ end
 
 function Transform:beginTransaction()
     if self.destroyed or self.transaction or self.interactivePending then return false end
-    self.transaction = {initial = {}, operations = {}}
+    self.transaction = {initial = {}, operations = {}, objectsByKey = {}}
     return true
 end
 
@@ -489,6 +506,11 @@ function Transform:setRects(keys, rects)
     for _, key in ipairs(keys) do
         local record = self.discovery:get(key)
         if not record or not record.object.Parent then return false, "An element is missing." end
+        if transaction then
+            local original = transaction.objectsByKey[key]
+            if original and original ~= record.object then return false, "An element was recreated during editing." end
+            transaction.objectsByKey[key] = record.object
+        end
         if selected[record.object] then return false, "Repeated selection." end
         records[#records + 1], selected[record.object] = record, true
     end

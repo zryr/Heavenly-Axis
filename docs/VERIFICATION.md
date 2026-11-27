@@ -1,4 +1,4 @@
-# V3 mobile rescue verification
+# V3.1.1 mobile rescue verification
 
 Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
@@ -6,12 +6,19 @@ Studio rendering and physical Android testing were unavailable in the Debian Lin
 
 | Command | Result |
 | --- | --- |
-| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 301,812 bytes. |
-| `work/test-venv/bin/python tools/test.py` | Passed. Eight suites, 693 checks, 19 Lua syntax checks, zero failures. |
-| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 27 files. |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 314,563 bytes. |
+| `work/test-venv/bin/python tools/test.py` | Passed. Eight suites, 797 checks, 19 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 28 files, including the shared Roblox test fixture. |
 | `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-The test suites cover App orchestration (79), core geometry and history (57), discovery (33), input (46), persistence (116), bundle startup (4), transform and runtime adapters (253), and UI layout and interactions (105). The UI suite instantiates the production UI and input controller in a Lua fixture and exercises the touch editing loop. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
+The test suites cover App orchestration (86), core geometry and history (58), discovery (43), input (53), persistence (132), release integration (31), transform and runtime adapters (271), and UI layout and interactions (123). The UI suite instantiates the production UI and input controller in a Lua fixture. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
+
+## Final touchscreen pass
+
+- Fresh bundle execution covers opening the editor through the LocalScript and shared-environment paths, selecting Jump, dragging, slider resizing, pinching, Save readback, Undo, Done, reopening, and cold restore through `Source`. It also verifies the version notice, original-layout recovery, and teardown.
+- Horizontal slider ownership pauses the inspector scroller and restores it on release or cancellation. Vertical swipes remain available for scrolling. Releasing an unchanged field makes no history entry. Fine steps move a tiny selection by a visible increment. Blank taps ignore passive, transparent structural zones, which remain in the explicit element list.
+- Ordinary settled transforms can verify at the early 40 ms check. Delayed layout gets a bounded retry. An element recreated under the same identity during a drag stays out of that gesture. The selection overlay coalesces redundant redraw requests.
+- Inspected mock geometry previews at 1536 × 695, 960 × 440, 640 × 360 and 393 × 852. These show planned bounds and placement. They omit native fonts, clipping, device rendering and touch dispatch.
 
 ## Acceptance gates
 
@@ -48,10 +55,10 @@ The same headless Roblox mock indexed 240 sibling controls inside a shared paren
 | Descendant scans | 1 | 1 |
 | `GetChildren()` calls | 1,685 | 243 |
 | Entries returned by all `GetChildren()` calls | 173,763 | 242 |
-| Mock `IsA()` checks | 348,974 | 6,023 |
+| Mock `IsA()` checks | 348,974 | 5,781 |
 | Owned property watchers | 964 | 726 |
 
-A second mock applied 120 updates to one selected control during one gesture. Classification calls dropped from 2,160 to 1 and `GetChildren()` enumerations from 6,840 to 1. Both versions made zero full-tree scans and queued zero stabilization timers during those updates. The rescue keeps the gesture reference for successive writes and verifies geometry on completion.
+A second mock applied 120 updates to one selected control during one gesture. Classification calls dropped from 2,160 to 1 and `GetChildren()` enumerations from 6,840 to 1. A four-control group produced 10,080 versus 4 classifications and 31,680 versus 4 child enumerations for the same update count. Both versions made zero full-tree scans and queued zero stabilization timers during the updates. The rescue keeps the gesture reference for successive writes and verifies geometry on completion.
 
 ## Compatibility
 

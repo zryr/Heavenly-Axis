@@ -84,9 +84,10 @@ function Geometry.scale(rects, newBounds, center)
     return result
 end
 
-function Geometry.adjustMembers(rects, oldBounds, newBounds, center, lockAspect)
+function Geometry.adjustMembers(rects, oldBounds, newBounds, center, lockAspect, aspectAxis)
     local dw, dh = newBounds.w - oldBounds.w, newBounds.h - oldBounds.h
-    local lockX = lockAspect and math.abs(dw / oldBounds.w) >= math.abs(dh / oldBounds.h)
+    local lockX = lockAspect and (aspectAxis == "x"
+        or (aspectAxis ~= "y" and math.abs(dw / oldBounds.w) >= math.abs(dh / oldBounds.h)))
     local lockY = lockAspect and not lockX
     local dx, dy = newBounds.x - oldBounds.x, newBounds.y - oldBounds.y
     local anchorX = center and 0.5 or inferredAnchor(dx, dw)

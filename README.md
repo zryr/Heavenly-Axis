@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.1**
+**Roblox HUD & Interface Editor · V3.1.1**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -13,6 +13,8 @@ Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an And
 1. Download [`dist/HeavenlyAxis.lua`](dist/HeavenlyAxis.lua) from a reviewed commit or release in this repository.
 2. Run the complete file as client-side Lua in a compatible environment. In your own Studio test place, paste it into a LocalScript in `StarterPlayerScripts`.
 3. Tap a control, make your adjustment in **Quick Edit**, then choose **Save** or **Done**. If the session can save only to memory, export the checkpoint as JSON for a durable copy.
+
+If an earlier V3 build is already running, save or export its edits and rejoin before starting the new build. Heavenly Axis reports the running version and keeps the existing session intact when you rerun the script.
 
 The legacy [`Source`](Source) path contains the identical generated script. Do not combine modules manually. No network request is required for the core editor. The maintained project URL is **https://github.com/zryr/Heavenly-Axis**.
 

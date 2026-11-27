@@ -46,7 +46,7 @@ def main() -> int:
     except (OSError, RuntimeError) as exc:
         print(f"Luau compiler setup failed: {exc}", file=sys.stderr)
         return 1
-    files = sorted((ROOT / "src").glob("*.lua")) + sorted((ROOT / "tests").glob("*.lua"))
+    files = sorted((ROOT / "src").glob("*.lua")) + sorted((ROOT / "tests").rglob("*.lua"))
     files += sorted((ROOT / "studio").glob("*.lua"))
     files += [ROOT / "Source", ROOT / "dist/HeavenlyAxis.lua"]
     result = subprocess.run([str(executable), "--null", *map(str, files)], cwd=ROOT, capture_output=True, text=True)

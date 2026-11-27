@@ -132,6 +132,14 @@ local unsupportedWorld = create("SurfaceGui", "World", root)
 create("ImageButton", "World button", unsupportedWorld, 875, 450, 82, 82)
 local nestedWorld = create("SurfaceGui", "Nested world", gameGui)
 local worldButton = create("ImageButton", "3D coordinates", nestedWorld, 875, 450, 82, 82)
+local folder = create("Folder", "Nested HUD", root)
+local folderGui = create("ScreenGui", "FolderGui", folder)
+local folderButton = create("TextButton", "Folder button", folderGui, 600, 440, 48, 48)
+local oldOwner = create("Frame", "Old owner", gameGui, 660, 440, 50, 50)
+local newOwner = create("Frame", "New owner", gameGui, 720, 440, 50, 50)
+local oldMember = create("Frame", "Old member", oldOwner, 665, 445, 35, 35)
+local newMember = create("Frame", "New member", newOwner, 725, 445, 35, 35)
+local layout = create("UIListLayout", "Move within PlayerGui", oldOwner)
 local controls = create("Frame", "Large collection", gameGui, 300, 0, 450, 200)
 for index = 1, 500 do
     create("Frame", "Control " .. index, controls, 400 + index % 220, 10 + index % 100, 1, 1)
@@ -158,8 +166,15 @@ local hits = discovery:hit(-10, 285)
 check(hits[1] == record(nearCutout) and not found(hits, wrongClip), "Explicit None ignores device clipping while device-safe content respects it")
 hits = discovery:hit(900, 470)
 check(hits[1] == record(jump) and found(hits, decoration) and found(hits, touchFrame), "Fallback prioritizes Jump while retaining explicit overlaps")
+local emptyHits, primary = discovery:hit(850, 260)
+check(primary == false and found(emptyHits, touchFrame), "Blank-canvas taps can clear selection while retaining explicit parent matches")
+local _, topControl = discovery:hit(900, 470)
+check(topControl == record(jump), "A populated tap recommends Jump")
 hits = discovery:hit(205, 450)
 check(hits[1] == record(actual) and found(hits, dynamic) and not found(hits, hiddenButton), "Interactive leaf beats broad dynamic zone and hidden descendants stay excluded")
+dynamic.BackgroundTransparency = 0.4
+check(discovery:hit(205, 450)[1] == record(actual), "Styling the dynamic-stick input zone does not make it swallow overlapping buttons")
+dynamic.BackgroundTransparency = 1
 check(discovery:hit(100, 470)[1] == record(classic), "Classic joystick wins against the surrounding dynamic zone")
 check(discovery:hit(515, 355)[1] == record(topButton), "Fallback sibling mode respects the top-level branch before child ZIndex")
 gameGui.ZIndexBehavior = "Global"
@@ -174,11 +189,14 @@ local nativeX, nativeY
 function root:GetGuiObjectsAtPosition(queryX, queryY)
     nativeX, nativeY = queryX, queryY
     if queryY < 0 then return {upper} end
+    if queryX < 400 then return {clippedChild, clip} end
     return {own, touchFrame, decoration, jump, jump}
 end
 hits = discovery:hit(900.2, 470.8)
 check(nativeX == 900 and nativeY == 470 and #hits == 3 and hits[1] == record(jump), "Native query keeps canonical position and resolves duplicates and layers")
 check(discovery:hit(pointer.x, pointer.y)[1] == record(upper) and nativeY == -10, "Native query uses the same negative canonical Y without a second inset")
+check(found(discovery:hit(315, 225), clippedChild) and not found(discovery:hit(304, 225), clippedChild),
+    "Native candidates still honor the visible scrolling region")
 check(#discovery:alignmentRects({record(touchFrame).key}, Coordinates.rect(jump), 8) == 8, "Gesture guides use bounded nearby candidates")
 local nearby = discovery:alignmentRects({}, Coordinates.rect(upper), 1)
 check(#nearby == 1 and nearby[1].x == upper.AbsolutePosition.X and nearby[1].y == upper.AbsolutePosition.Y, "Guides prefer nearby targets")
@@ -200,6 +218,35 @@ touchFrame.Rotation = 0
 touchFrame.props.Rotation:Fire()
 flush()
 check(discovery:get(record(jump).key).editable, "Clearing ancestor rotation restores compatibility")
+local revisionsBefore = #revisions
+local style = create("UIStroke", "Style only", folderButton)
+root.DescendantAdded:Fire(style)
+flush()
+check(descendantScans == 1 and #revisions == revisionsBefore, "A visual-only descendant does not rescan the HUD")
+check(discovery:get(record(oldMember).key).experimental and not discovery:get(record(newMember).key).experimental,
+    "The existing layout owns its original direct children")
+table.remove(oldOwner.children, 2)
+newOwner.children[#newOwner.children + 1] = layout
+layout.Parent = newOwner
+layout.props.Parent:Fire()
+flush()
+check(not discovery:get(record(oldMember).key).experimental and discovery:get(record(newMember).key).experimental
+    and descendantScans == 1, "A layout moved within PlayerGui updates both owners without a tree scan")
+table.remove(newOwner.children, 2)
+layout.Parent = nil
+root.DescendantRemoving:Fire(layout)
+flush()
+check(not discovery:get(record(newMember).key).experimental and descendantScans == 1,
+    "Deferred removal invalidates layout metadata even after Parent was cleared")
+local duplicateFolder = create("Folder", folder.Name, root)
+root.DescendantAdded:Fire(duplicateFolder)
+flush()
+check(record(folderButton).descriptor.ambiguous, "An empty same-name folder still invalidates an indexed hierarchy")
+table.remove(root.children)
+duplicateFolder.Parent = nil
+root.DescendantRemoving:Fire(duplicateFolder)
+flush()
+check(not record(folderButton).descriptor.ambiguous, "Removing the duplicate folder restores the indexed hierarchy")
 local oldKey = record(actual).key
 for index, child in ipairs(gameGui.children) do
     if child == actual then table.remove(gameGui.children, index); break end

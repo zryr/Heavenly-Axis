@@ -5,8 +5,11 @@ local function check(value, message)
     assert(value, message or "Assertion failed")
 end
 local function near(a, b, message) check(math.abs(a - b) < 0.001, (message or "Unexpected value") .. ": " .. tostring(a) .. " vs " .. tostring(b)) end
-local pending = {}
-task = {delay = function(_, callback) pending[#pending + 1] = callback end}
+local pending, scheduledDelay = {}, nil
+task = {delay = function(delay, callback)
+    scheduledDelay = delay
+    pending[#pending + 1] = callback
+end}
 local function flush()
     local queue = pending
     pending = {}
@@ -342,6 +345,10 @@ near(deferred.Size.Y.Offset, 150, "Accumulated resize never double-counts previo
 local outcome
 check(transform:endTransaction(function(ok) outcome = ok end), "Completion callback is registered")
 check(outcome == nil and not transform:beginTransaction(), "History can await verified geometry before another edit")
+near(scheduledDelay, 0.04, "An ordinary adjustment uses the earlier geometry check")
+flush()
+check(outcome == nil and #pending == 1, "A slow layout gets one additional check without confirming stale geometry")
+near(scheduledDelay, 0.10, "Retry uses the full observation window")
 deferred.frozenPosition, deferred.frozenSize = nil, nil
 flush()
 check(outcome == true, "Delayed real geometry is confirmed after layout catches up")
@@ -354,6 +361,19 @@ check(transform:cancelTransaction() and Util.equal(transform:capture()[deferredK
     "Cancellation restores prior portable request without reapplying other targets")
 near(deferred.AbsolutePosition.X, finalRect.x, "Cancellation restores live geometry")
 check(not Util.equal(Discovery.serialize(deferred), deferredBefore), "Cancellation preserves earlier completed action")
+
+local replaced = create("Frame", "RecreatedDuringGesture", screen)
+flush()
+local replacedKey = key(replaced)
+check(transform:beginTransaction(), "Start gesture before target is recreated")
+check(transform:setRects({replacedKey}, {{x = 10, y = 10, w = 100, h = 100}}), "Move original target before replacement")
+replaced:Destroy()
+local replacement = create("Frame", "RecreatedDuringGesture", screen)
+flush()
+check(key(replacement) == replacedKey, "Replacement has the same portable identity")
+check(not transform:setRects({replacedKey}, {{x = 40, y = 40, w = 100, h = 100}}), "Gesture cannot move a recreated instance")
+check(transform:cancelTransaction(), "Recreation safely cancels old ownership")
+near(replacement.Position.X.Offset, 0, "Replacement remains at its own baseline until explicit restoration")
 
 local first = create("Frame", "IndependentFailure", screen)
 local second = create("Frame", "IndependentSuccess", screen)
@@ -424,11 +444,13 @@ flush()
 check(transform:beginTransaction(), "Move after applying sparse inherited configuration")
 check(transform:setRects({sparseKey}, {{x = 22, y = 16, w = 100, h = 100}}), "Move writes only supported geometry")
 sparse.BackgroundTransparency = 0.8
+outcome = nil
 check(transform:endTransaction(function(ok) outcome = ok end), "Move proceeds while a game animates unedited properties")
 flush()
 local sparseResult = transform:capture()[sparseKey]
 check(outcome == true and sparseResult.position.xo == 22 and sparseResult.rotation == nil and sparseResult.transparency == nil,
     "Geometry edits never materialize unrelated optional fields into profile patches")
+check(not transform.pendingStabilization and #pending == 0, "Resolved ordinary geometry releases the next action at the first check")
 near(sparse.BackgroundTransparency, 0.8, "Geometry verification leaves the game's separate property unchanged")
 check(transform:beginTransaction(), "Start second sparse edit")
 check(transform:setRects({sparseKey}, {{x = 60, y = 60, w = 100, h = 100}}), "Write another provisional move")

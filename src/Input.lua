@@ -17,6 +17,10 @@ local function cancelled(input)
     return Enum.UserInputState ~= nil and input.UserInputState == Enum.UserInputState.Cancel
 end
 
+local function released(input)
+    return Enum.UserInputState ~= nil and input.UserInputState == Enum.UserInputState.End
+end
+
 local function distance(a, b)
     local x, y = a.x - b.x, a.y - b.y
     return math.sqrt(x * x + y * y)
@@ -86,7 +90,7 @@ function Input:sliderRange()
 end
 
 function Input:_canStart(input)
-    return not self.destroyed and primary(input) and not self.ignored[input] and not cancelled(input)
+    return not self.destroyed and primary(input) and not self.ignored[input] and not cancelled(input) and not released(input)
         and not self.ui.modalOpen and not self.uis:GetFocusedTextBox()
 end
 
@@ -199,9 +203,10 @@ function Input:_canvasBegin(input)
         self:_claim(input, "box", p).additive = additive
         return
     end
-    local hits = self.app.discovery:hit(p.x, p.y)
-    local record = hits[1]
-    if #hits > 1 and not touch(input) and (self:_modifier("LeftAlt") or self:_modifier("RightAlt")) then
+    local hits, preferred = self.app.discovery:hit(p.x, p.y)
+    local record = preferred == nil and hits[1] or (preferred or nil)
+    if #hits > 0 and not touch(input) and (self:_modifier("LeftAlt") or self:_modifier("RightAlt")) then
+        record = hits[1]
         for i, hit in ipairs(hits) do
             if selected(self.app, hit.key) then record = hits[i % #hits + 1]; break end
         end
@@ -211,7 +216,7 @@ function Input:_canvasBegin(input)
         if hit.editable and selected(self.app, hit.key) then dragKey = hit.key; break end
     end
     local gap = not record and #self.app.selection > 1 and contains(self.app:currentBounds(true), p)
-    local kind = (record or gap or touch(input)) and "canvas" or "box"
+    local kind = (record or dragKey or gap or touch(input)) and "canvas" or "box"
     local gesture = self:_claim(input, kind, p)
     gesture.additive, gesture.record, gesture.dragKey, gesture.groupGap = additive, record, dragKey, gap
     gesture.hits = hits
@@ -278,7 +283,7 @@ function Input:_updateSlider(gesture, p)
     local fraction = math.max(0, math.min(1, (p.x - gesture.grabOffset - track.x) / track.w))
     local factor = (info.minimum + fraction * (info.maximum - info.minimum)) / info.scale
     local basis = info.size or info.bounds or gesture.bounds
-    local rects = self.app:sizeRects(gesture.rects, basis.w * factor, basis.h * factor, false, info.size)
+    local rects = self.app:sizeRects(gesture.rects, basis.w * factor, basis.h * factor, false, info.size, "x")
     self:_apply(gesture, rects, "Size slider")
 end
 
@@ -289,19 +294,20 @@ function Input:_updatePinch(gesture)
         if not self:_prepareDrag(gesture) then self:cancel(); return end
         gesture.pinchReady = true
     end
-    local scale = distance(a, b) / gesture.pinchDistance
     local center, bounds = midpoint(a, b), gesture.bounds
+    if not gesture.pinchModel then
+        local model = self.app:sizeInfo(bounds, gesture.rects, gesture.keys)
+        gesture.pinchModel = {maximum = model and math.max(1, model.maximum / model.scale) or math.huge,
+            size = model and model.size or bounds}
+    end
+    local scale = math.min(distance(a, b) / gesture.pinchDistance, gesture.pinchModel.maximum)
     local prefs = self.app.preferences
     local rects
     if prefs.equalSize and #gesture.rects > 1 then
-        if not gesture.pinchSize then
-            local model = self.app:sizeInfo(bounds, gesture.rects, gesture.keys)
-            gesture.pinchSize = model and model.size or bounds
-        end
-        local size = gesture.pinchSize
+        local size = gesture.pinchModel.size
         local w, h = size.w * (scale - 1), size.h * (scale - 1)
         local target = {x = bounds.x, y = bounds.y, w = bounds.w + w, h = bounds.h + h}
-        rects = Geometry.adjustMembers(gesture.rects, bounds, target, prefs.centerScale == true, true)
+        rects = Geometry.adjustMembers(gesture.rects, bounds, target, prefs.centerScale == true, true, "x")
         for i, rect in ipairs(rects) do
             rects[i] = Geometry.translate(rect, center.x - gesture.pinchCenter.x, center.y - gesture.pinchCenter.y)
         end
@@ -440,7 +446,7 @@ function Input:_ended(input)
     local owned = input == gesture.primary or input == gesture.secondary
         or (not touch(gesture.primary) and input.UserInputType == Enum.UserInputType.MouseButton1)
     if not owned then return end
-    local wasCancelled = cancelled(input)
+    local wasCancelled = cancelled(input) or self.ui.modalOpen or (gesture.kind ~= "launcher" and not self.app.editing)
     if not wasCancelled and touch(input) then
         local latest = input == gesture.secondary and gesture.secondLatest or gesture.latest
         if distance(Coordinates.point(input), latest) > 0 then
@@ -499,8 +505,8 @@ end
 
 function Input:destroy()
     if self.destroyed then return end
-    self:cancel()
     self.destroyed = true
+    self:cancel()
     for _, connection in ipairs(self.connections) do connection:Disconnect() end
     self.connections = {}
     self.ignored = {}

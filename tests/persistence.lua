@@ -41,10 +41,16 @@ local env = {
     writefile = function(path, text)
         writes = writes + 1
         if faults.write == path then error("disk full") end
-        files[path] = faults.truncate == path and text:sub(1, 3) or text
+        local truncate = faults.truncate == path or faults.truncateOnce == path
+        if faults.truncateOnce == path then faults.truncateOnce = nil end
+        files[path] = truncate and text:sub(1, 3) or text
     end,
     delfile = function(path) files[path] = nil end,
-    setclipboard = function(text) if faults.clipboard then error("clipboard failed") end; envClipboard = text end,
+    setclipboard = function(text)
+        if faults.clipboard == "declined" then return false end
+        if faults.clipboard then error("clipboard failed") end
+        envClipboard = text
+    end,
 }
 local cap = Capabilities.detect(env, {HttpService = http, UserInputService = {TouchEnabled = true, MouseEnabled = false, KeyboardEnabled = false}})
 check(writes == 0, "detection must never write probes")
@@ -90,6 +96,10 @@ check(not storage:save(data) and files[Storage.FILES.saved] == currentRaw, "stag
 faults.write = Storage.FILES.backup
 check(not storage:save(data) and files[Storage.FILES.saved] == currentRaw, "backup failure never touches primary")
 faults.write = nil
+faults.truncateOnce = Storage.FILES.saved
+local rollbackSaved, rollbackReason = storage:save(data)
+check(not rollbackSaved and rollbackReason:find("restored and verified") and files[Storage.FILES.saved] == currentRaw,
+    "a failed final write verifies restoration of the prior checkpoint when possible")
 faults.truncate = Storage.FILES.saved
 check(not storage:save(data), "readback failure is reported, never false success")
 faults.truncate = nil
@@ -98,6 +108,21 @@ local damaged = Storage.new(cap, http)
 local recovered = damaged:load()
 check(recovered ~= nil and damaged.blocked, "valid backup can be offered without erasing damaged original")
 check(not damaged:save(data) and files[Storage.FILES.saved] == "broken original", "corrupt data is never silently overwritten")
+files[Storage.FILES.saved] = nil
+check(damaged:save(data) and not damaged.blocked, "manually moving the damaged file allows a retry in the same editor session")
+files[Storage.FILES.saved] = nil
+local interruptedFirstSave = Storage.new(cap, http)
+faults.truncateOnce = Storage.FILES.saved
+check(not interruptedFirstSave:save(data) and files[Storage.FILES.saved] and files[Storage.FILES.pending],
+    "an incomplete first write reports failure and preserves the staged configuration")
+check(interruptedFirstSave:save(data) and Util.equal(interruptedFirstSave:load(), data),
+    "a retry replaces the exact incomplete first write created in this session")
+files[Storage.FILES.saved] = nil
+faults.truncateOnce = Storage.FILES.saved
+check(not interruptedFirstSave:save(data), "a later first write records an incomplete file for retry")
+files[Storage.FILES.saved] = "different damaged contents"
+check(not interruptedFirstSave:save(data) and files[Storage.FILES.saved] == "different damaged contents",
+    "a retry preserves a damaged file that differs from its own incomplete write")
 files[Storage.FILES.saved] = nil
 local fresh = Storage.new(cap, http)
 check(fresh:save(data), "fresh store can be saved")
@@ -113,6 +138,8 @@ check(fresh:import(http:JSONEncode(unsafe)) == nil, "code-shaped extra fields re
 check(fresh:copy("portable JSON") and envClipboard == "portable JSON", "clipboard API receives exact payload")
 faults.clipboard = true
 check(not fresh:copy("payload") and cap.clipboard.status == "Failed", "clipboard failures remain visible")
+faults.clipboard = "declined"
+check(not fresh:copy("payload") and cap.clipboard.status == "Failed", "an explicit clipboard refusal is reported as failure")
 faults.clipboard = nil
 
 local state = {layout = {[key] = target}, groups = {}, preferences = {grid = true}, context = context}
@@ -172,6 +199,32 @@ check(fresh:draft(state), "legacy generic draft slot remains supported")
 local foreignState = Util.copy(state); foreignState.context.place = "999"
 check(not fresh:draft(foreignState), "generic slot never silently overwrites foreign context")
 check(fresh:clearDraft(), "generic slot can be explicitly discarded")
+
+local slowContext = Util.copy(context)
+slowContext.place = "300"
+local slowEnv = Util.copy(env)
+function slowEnv.writefile(path, text)
+    if path:match("%.landscape%.json$") then coroutine.yield("write in progress") end
+    env.writefile(path, text)
+end
+local slowStorage = Storage.new(Capabilities.detect(slowEnv, {}), http, nil, slowContext)
+local slowState = Util.copy(state)
+slowState.context = Util.copy(slowContext)
+local draftWriter = coroutine.create(function() return slowStorage:draft(slowState) end)
+local started, suspension = coroutine.resume(draftWriter)
+check(started and suspension == "write in progress", "mock draft writer pauses inside its file operation")
+local clearedWhileBusy, _, clearBusy = slowStorage:clearDraft()
+local wroteWhileBusy, _, writeBusy = slowStorage:draft(slowState)
+local loadedWhileBusy, _, classifiedDamage = slowStorage:loadDraft()
+check(not clearedWhileBusy and clearBusy and not wroteWhileBusy and writeBusy and not loadedWhileBusy and not classifiedDamage,
+    "same-context writes and clears cannot race, and an active write is not classified as damage")
+local otherDraft = Util.copy(slowState)
+otherDraft.context.orientation = "portrait"
+check(slowStorage:draft(otherDraft, otherDraft.context), "an active landscape write does not lock portrait draft storage")
+local finished, recorded = coroutine.resume(draftWriter)
+check(finished and recorded and Util.equal(slowStorage:loadDraft(), slowState), "the first write completes with the intended data")
+check(slowStorage:clearDraft() and slowStorage:loadDraft() == nil and slowStorage:loadDraft(otherDraft.context),
+    "cleanup can retry after the write without clearing the other orientation")
 
 local memoryCap = Capabilities.detect({}, {})
 local memoryStorage = Storage.new(memoryCap, http)
@@ -345,4 +398,31 @@ check(migrating:save(changedLayout, changedGroups, changedPreferences) and files
 local migrated = oldStorage:load()
 check(migrated.profiles[2].layout[missingKey].inherit and Util.equal(migrated.profiles[2].layout[key], oldPlace.layout[key]),
     "incremental save adds only the edited override and preserves untouched legacy entries")
+
+local movedScope = Util.copy(experienceProfile)
+movedScope.scope, movedScope.scopeId, movedScope.device, movedScope.orientation = "orientation", context.place, context.device, context.orientation
+local movedJson = http:JSONEncode(activeData(movedScope))
+check(not migrating:beginImport(movedJson), "moving an imported profile ID to a new scope requires confirmation")
+check(migrating:beginImport(movedJson, true) and migrating:applyPreview()
+    and migrating.data.active[Config.scopeKey(experienceProfile)] == nil
+    and migrating.data.active[Config.scopeKey(movedScope)] == movedScope.id
+    and migrating.data.active[Config.scopeKey(oldPlace)] == oldPlace.id,
+    "confirmed import moves its stale activation without dropping unrelated scopes")
+
+local previousApp, previousWarn, previousGetgenv = package.loaded.App, warn, getgenv
+local opened, warnings, notice = 0, {}, nil
+local existingEditor = {alive = true, version = "3.1.0", pendingEdits = true}
+function existingEditor:Open() opened = opened + 1 end
+function existingEditor:status(message) notice = message end
+local sharedEditorEnvironment = {__HEAVENLY_AXIS_V3 = existingEditor}
+package.loaded.App = {VERSION = "3.1.1", new = function() error("should reuse the existing editor") end}
+warn = function(message) warnings[#warnings + 1] = message end
+getgenv = function() return sharedEditorEnvironment end
+local startup = assert(loadfile("src/Bootstrap.lua"))
+check(startup() == existingEditor and existingEditor.pendingEdits and opened == 1
+    and #warnings == 1 and notice == warnings[1] and notice:find("rejoin to start 3.1.1", 1, true),
+    "re-running a different version preserves live edits and tells the user how to activate the new release")
+existingEditor.version = "3.1.1"
+check(startup() == existingEditor and opened == 2 and #warnings == 1, "re-running the same version opens it without a version warning")
+package.loaded.App, warn, getgenv = previousApp, previousWarn, previousGetgenv
 return checks

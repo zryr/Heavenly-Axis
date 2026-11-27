@@ -9,12 +9,22 @@ pcall(function()
 end)
 local options = env.HeavenlyAxisOptions or {}
 if type(options) ~= "table" then options = {} end
-local previous = env.__HEAVENLY_AXIS_V3
-if type(previous) == "table" and previous.alive and type(previous.Open) == "function" then
-    if options.SafeMode then previous:SafeMode()
-    elseif not options.LoaderOnly then previous:Open() end
-    return previous
+local function reuse(app)
+    if type(app) ~= "table" or not app.alive or type(app.Open) ~= "function" then return false end
+    local notice
+    if app.version ~= App.VERSION then
+        notice = "Heavenly Axis " .. tostring(app.version or "V3") .. " is already running. Save or export your edits, then rejoin to start " .. App.VERSION .. "."
+        warn(notice)
+    end
+    if options.SafeMode then app:SafeMode()
+    elseif not options.LoaderOnly then
+        app:Open()
+        if notice and type(app.status) == "function" then app:status(notice) end
+    end
+    return true
 end
+local previous = env.__HEAVENLY_AXIS_V3
+if reuse(previous) then return previous end
 -- A bounded startup wait supports delayed LocalPlayer/PlayerGui without hanging forever.
 local services = {}
 for _, name in ipairs({"Players", "UserInputService", "GuiService", "RunService", "HttpService", "ContextActionService", "Workspace"}) do
@@ -32,11 +42,7 @@ if not playerGui then warn("Heavenly Axis: PlayerGui unavailable. Retry after th
 -- Reserve the slot before yielding module initialization; concurrent invocations cannot create duplicate handlers.
 local token = { initializing = true }
 local pending = env.__HEAVENLY_AXIS_V3
-if type(pending) == "table" and pending.alive and type(pending.Open) == "function" then
-    if options.SafeMode then pending:SafeMode()
-    elseif not options.LoaderOnly then pending:Open() end
-    return pending
-end
+if reuse(pending) then return pending end
 if type(pending) == "table" and pending.initializing then
     warn("Heavenly Axis: initialization already in progress.")
     return pending

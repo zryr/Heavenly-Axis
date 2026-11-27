@@ -115,8 +115,26 @@ function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
         Position = UDim2.new(x or 0, 0, 0, 0), BackgroundColor3 = C.field, BorderSizePixel = 0,
         TextColor3 = C.text, TextSize = 13, Font = Enum.Font.Gotham, ZIndex = parent.ZIndex + 1}, parent)
     corners(b, 7); outline(b)
-    if callback then self:connect(b.FocusLost, function(enter) callback(b.Text, enter) end, dynamic) end
+    self:connect(b.Focused, function()
+        local input = self.app.input
+        if input and input.isBusy and input:isBusy() then b:ReleaseFocus() end
+    end, dynamic)
+    if callback then
+        self.presentedText[b] = b.Text
+        self:connect(b.FocusLost, function(enter)
+            local input = self.app.input
+            if b.TextEditable ~= false and b.Text ~= self.presentedText[b]
+                and not (input and input.isBusy and input:isBusy()) then callback(b.Text, enter) end
+        end, dynamic)
+    end
     return b
+end
+
+function UI:syncTextBox(box, text)
+    if not box:IsFocused() then
+        self.presentedText[box] = text
+        if box.Text ~= text then box.Text = text end
+    end
 end
 
 function UI:section(parent, title)
@@ -183,7 +201,9 @@ function UI:dialog(title, message, text, actions)
     truncate(heading)
     local scroller = make("ScrollingFrame", {Name = "DialogContent", BackgroundTransparency = 1, BorderSizePixel = 0,
         Position = UDim2.fromOffset(12, 36), Size = UDim2.new(1, -24, 1, -92), CanvasSize = UDim2.new(),
+        Active = true, ClipsDescendants = true,
         ScrollBarThickness = 3, ScrollBarImageColor3 = C.cyan, ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = 72}, card)
+    self.dialogHeading, self.dialogScroller = heading, scroller
     local body = make("Frame", {Name = "Content", BackgroundTransparency = 1, Size = UDim2.new(1, -6, 0, 0),
         AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 72}, scroller)
     self:bindScroll(scroller, body, 8)
@@ -226,6 +246,11 @@ function UI:layoutDialog()
     if not self.dialogCard or not self.layoutPlan then return end
     local area = self.layoutPlan.area
     local w, h = math.min(area.w, 490), math.min(area.h, self.dialogHasText and 364 or 172)
+    local headingVisible = h >= 118
+    local bodyTop = headingVisible and 36 or 7
+    self.dialogHeading.Visible = headingVisible
+    self.dialogScroller.Position = UDim2.fromOffset(12, bodyTop)
+    self.dialogScroller.Size = UDim2.new(1, -24, 0, math.max(1, h - bodyTop - 56))
     localRect(self.dialogCard, {x = area.x + (area.w - w) / 2, y = area.y + (area.h - h) / 2, w = w, h = h})
 end
 
@@ -250,7 +275,7 @@ function UI:closeModal()
     for _, c in ipairs(self.modalConnections or {}) do c:Disconnect() end
     self.modalConnections, self.modalOpen = {}, false
     if self.modalGui then self.modalGui:Destroy(); self.modalGui = nil end
-    self.dialogCard = nil
+    self.dialogCard, self.dialogHeading, self.dialogScroller = nil, nil, nil
 end
 
 function UI:chooseElement(key)
@@ -332,6 +357,7 @@ function UI:makeAdvanced()
     truncate(self.selectionName)
     self.selectionDetail = label(body, "", 42, 12)
     self.selectionDetail.TextColor3 = C.muted
+    self.selectionDetail.AutomaticSize = Enum.AutomaticSize.Y
     self.precisionHeading = self:section(body, "Position and size (px)")
     local names = {"X", "Y", "W", "H"}
     local fieldRow = frame(body, 66)
@@ -527,16 +553,17 @@ function UI:makeSettings()
     self:toggle(body, "Snap to grid & guides", "snapping", false)
     self:toggle(body, "Multi-select taps", "multiSelect", false)
     self:toggle(body, "Box selection", "boxSelect", false)
-    self:textbox(body, "Grid spacing (4–128 pixels)", tostring(self.app.preferences.gridSize or 24), function(v)
+    self.preferenceFields = {}
+    self.preferenceFields.gridSize = self:textbox(body, "Grid spacing (4–128 pixels)", tostring(self.app.preferences.gridSize or 24), function(v)
         local n = tonumber(v); if n and n >= 4 and n <= 128 then self.app:setPreference("gridSize", n) else self.app:status("Grid spacing must be 4–128 pixels.") end
     end)
-    self:textbox(body, "Guide threshold (1–32 pixels)", tostring(self.app.preferences.snapThreshold or 6), function(v)
+    self.preferenceFields.snapThreshold = self:textbox(body, "Guide threshold (1–32 pixels)", tostring(self.app.preferences.snapThreshold or 6), function(v)
         local n = tonumber(v); if n and n >= 1 and n <= 32 then self.app:setPreference("snapThreshold", n) else self.app:status("Guide threshold must be 1–32 pixels.") end
     end)
-    self:textbox(body, "Fine adjustment step (1–64)", tostring(self.app.preferences.step or 1), function(v)
+    self.preferenceFields.step = self:textbox(body, "Fine adjustment step (1–64)", tostring(self.app.preferences.step or 1), function(v)
         local n = tonumber(v); if n and n >= 1 and n <= 64 then self.app:setPreference("step", n) else self.app:status("Step must be 1–64 pixels.") end
     end)
-    self:textbox(body, "Reopen key (for example F8)", self.app.preferences.shortcut or "F8", function(v)
+    self.preferenceFields.shortcut = self:textbox(body, "Reopen key (for example F8)", self.app.preferences.shortcut or "F8", function(v)
         local ok, key = pcall(function() return Enum.KeyCode[v] end)
         if ok and key and key ~= Enum.KeyCode.Unknown then self.app:setPreference("shortcut", v) else self.app:status("Enter a valid Roblox KeyCode name.") end
     end)
@@ -672,6 +699,7 @@ function UI:makeQuickEdit()
     local body = make("ScrollingFrame", {Name = "QuickControls", BackgroundTransparency = 1, BorderSizePixel = 0,
         Position = UDim2.fromOffset(8, 52), Size = UDim2.new(1, -16, 1, -58),
         CanvasSize = UDim2.fromOffset(0, 142), ScrollBarThickness = 2, ScrollingDirection = Enum.ScrollingDirection.Y,
+        Active = true, ScrollingEnabled = true, ClipsDescendants = true,
         ScrollBarImageColor3 = C.cyan, ZIndex = 25}, panel)
     self.quickBody = body
     self.slider = self:button(body, "", nil)
@@ -737,6 +765,7 @@ function UI:makeWorkspace()
     title.Font = Enum.Font.GothamBold
     self.tabs = make("ScrollingFrame", {Name = "ToolsNavigation", BackgroundTransparency = 1, BorderSizePixel = 0,
         ScrollBarThickness = 2, ScrollBarImageColor3 = C.cyan, ScrollingDirection = Enum.ScrollingDirection.X,
+        Active = true, ClipsDescendants = true,
         Position = UDim2.fromOffset(8, 50), Size = UDim2.new(1, -16, 0, 47),
         CanvasSize = UDim2.fromOffset(330, 0), ZIndex = 41}, self.workspace)
     self.tabButtons, self.pages, self.pageBodies = {}, {}, {}
@@ -749,6 +778,7 @@ function UI:makeWorkspace()
         navX = navX + width + 3
         local page = make("ScrollingFrame", {Name = name, BackgroundTransparency = 1, BorderSizePixel = 0,
             ScrollBarThickness = 3, ScrollBarImageColor3 = C.cyan, CanvasSize = UDim2.new(),
+            Active = true, ClipsDescendants = true,
             AutomaticCanvasSize = Enum.AutomaticSize.None, Position = UDim2.fromOffset(10, 102),
             Size = UDim2.new(1, -20, 1, -110), Visible = name == "Elements", ZIndex = 41,
             ScrollingDirection = Enum.ScrollingDirection.Y}, self.workspace)
@@ -792,6 +822,7 @@ function UI.new(app, playerGui, services)
     local self = setmetatable({app = app, services = services, connections = {}, elementConnections = {}, groupConnections = {},
         profileConnections = {}, missingConnections = {}, selectionConnections = {}, overlapConnections = {}, toggles = {},
         handles = {}, guideObjects = {}, gridObjects = {}, disabled = setmetatable({}, {__mode = "k"}),
+        presentedText = setmetatable({}, {__mode = "k"}),
         visible = false, tab = "Elements", collapsed = false, elementPage = 1, builtinKeys = {}}, UI)
     local ok, result = pcall(function()
         self.gui = make("ScreenGui", {Name = "HeavenlyAxis", ResetOnSpawn = false, IgnoreGuiInset = true,
@@ -854,6 +885,7 @@ function UI:setWorkspace(open)
     if self.workspaceOpen ~= open then
         if self.app.input then self.app.input:cancel() end
         self.workspaceOpen = open
+        if open and self.tab == "Elements" then self.elementRevision = nil end
         self:showSurfaces()
         self:updateSelection()
     end
@@ -864,6 +896,7 @@ end
 function UI:setTab(name)
     if not self.pages[name] then return end
     if self.tab ~= name and self.app.input then self.app.input:cancel() end
+    if self.tab ~= name and name == "Elements" then self.elementRevision = nil end
     self.tab = name
     for key, page in pairs(self.pages) do page.Visible = key == name end
     for key, button in pairs(self.tabButtons) do
@@ -901,7 +934,7 @@ function UI:layoutToolbar(plan)
         button.Visible = showSave or entry.name ~= "Save"
         if button.Visible then
             local width = math.floor(entry.width * factor)
-            button.Position, button.Size = UDim2.fromOffset(x, 2), UDim2.fromOffset(width, math.min(44, plan.toolbar.h - 2))
+            button.Position, button.Size = UDim2.fromOffset(x, 2), UDim2.fromOffset(width, math.max(1, math.min(44, plan.toolbar.h - 2)))
             x = x + width
         end
     end
@@ -953,6 +986,7 @@ function UI:layout()
 end
 
 function UI:viewportChanged()
+    self.elementRevision = nil
     self:layout()
     self:refresh()
 end
@@ -1024,13 +1058,16 @@ end
 function UI:moveLauncher(x, y)
     if not self.safeArea then return end
     self.launcherDragging = true
-    localRect(self.launcher, Layout.place({w = 48, h = 48}, self:launcherArea(), x, y))
+    self.launcherDragRect = Layout.place({w = 48, h = 48}, self:launcherArea(), x, y)
+    localRect(self.launcher, self.launcherDragRect)
 end
 
 function UI:finishLauncherMove(cancelled)
     self.launcherDragging = false
-    if not cancelled and self.safeArea then
-        local area, rect = self:launcherArea(), Coordinates.rect(self.launcher)
+    local rect = self.launcherDragRect
+    self.launcherDragRect = nil
+    if not cancelled and self.safeArea and rect then
+        local area = self:launcherArea()
         local x = rect.x + rect.w / 2 <= area.x + area.w / 2 and 0 or 1
         local y = math.max(0, math.min(1, (rect.y - area.y) / math.max(1, area.h - rect.h)))
         if self.app.setLauncherPosition then self.app:setLauncherPosition(x, y)
@@ -1085,6 +1122,10 @@ function UI:sliderTrackRect()
     return self.sliderEnabled and self.panel.Visible and Coordinates.rect(self.sliderTrack) or nil
 end
 
+function UI:setSliderDragging(dragging)
+    self.quickBody.ScrollingEnabled = not dragging
+end
+
 function UI:setBox(rect)
     self.box.Visible = rect ~= nil and self.visible
     if rect then localRect(self.box, rect) end
@@ -1114,32 +1155,48 @@ local touchCorners = {
     {name = "se", anchor = anchors.se, sx = 1, sy = 1}, {name = "sw", anchor = anchors.sw, sx = -1, sy = 1},
     {name = "ne", anchor = anchors.ne, sx = 1, sy = -1}, {name = "nw", anchor = anchors.nw, sx = -1, sy = -1},
 }
+local touchOffsets = {{0, 1}, {1, 0}, {1, 1}}
+
+local function usableHandle(hit, safe, panel, toolbar, workspace)
+    return hit.x >= safe.x and hit.y >= safe.y and hit.x + hit.w <= safe.x + safe.w
+        and hit.y + hit.h <= safe.y + safe.h and not Layout.intersects(hit, panel)
+        and not Layout.intersects(hit, toolbar) and not Layout.intersects(hit, workspace)
+end
+
+function UI:showTouchHandle(bounds, corner, x, y, size, markerX, markerY)
+    local handle = self.touchHandle
+    handle.handle = corner.name
+    handle.gui.Position = UDim2.fromOffset(x - bounds.x, y - bounds.y)
+    handle.gui.Size = UDim2.fromOffset(size, size)
+    handle.marker.Position = UDim2.new(.5, markerX, .5, markerY)
+    handle.gui.Visible = true
+end
 
 function UI:placeTouchHandle(bounds)
-    local safe = self.safeArea
-    local panel = self.panel.Visible and Coordinates.rect(self.panel)
-    local toolbar = self.toolbar.Visible and Coordinates.rect(self.toolbar)
-    local workspace = self.workspace.Visible and Coordinates.rect(self.workspace)
+    local safe, panel, toolbar, workspace = self.safeArea, self.panel.Visible and Coordinates.rect(self.panel),
+        self.toolbar.Visible and Coordinates.rect(self.toolbar), self.workspace.Visible and Coordinates.rect(self.workspace)
     for _, size in ipairs({44, 34}) do
-        for _, exterior in ipairs({true, false}) do
+        local half = size / 2
+        for _, offset in ipairs(touchOffsets) do
             for _, corner in ipairs(touchCorners) do
-                local x = bounds.x + corner.anchor[1] * bounds.w
-                local y = bounds.y + corner.anchor[2] * bounds.h + corner.sy * (size / 2 + 2)
-                if exterior then x = x + corner.sx * (size / 2 + 2) end
-                local hit = {x = x - size / 2, y = y - size / 2, w = size, h = size}
-                if hit.x >= safe.x and hit.y >= safe.y and hit.x + size <= safe.x + safe.w
-                    and hit.y + size <= safe.y + safe.h
-                    and not Layout.intersects(hit, panel) and not Layout.intersects(hit, toolbar)
-                    and not Layout.intersects(hit, workspace) then
-                    local handle = self.touchHandle
-                    handle.handle = corner.name
-                    handle.gui.Position = UDim2.fromOffset(x - bounds.x, y - bounds.y)
-                    handle.gui.Size = UDim2.fromOffset(size, size)
-                    handle.marker.Position = UDim2.new(.5, exterior and -corner.sx * 10 or 0, .5, -corner.sy * 10)
-                    handle.gui.Visible = true
+                local dx, dy = offset[1] * corner.sx, offset[2] * corner.sy
+                local x = bounds.x + corner.anchor[1] * bounds.w + dx * (half + 2)
+                local y = bounds.y + corner.anchor[2] * bounds.h + dy * (half + 2)
+                if usableHandle({x = x - half, y = y - half, w = size, h = size}, safe, panel, toolbar, workspace) then
+                    self:showTouchHandle(bounds, corner, x, y, size, -dx * 10, -dy * 10)
                     return
                 end
             end
+        end
+    end
+    -- A large selection still has room for movement if a corner handle sits just inside it.
+    if bounds.w < 88 or bounds.h < 88 then return end
+    for _, corner in ipairs(touchCorners) do
+        local x = bounds.x + corner.anchor[1] * bounds.w - corner.sx * 24
+        local y = bounds.y + corner.anchor[2] * bounds.h - corner.sy * 24
+        if usableHandle({x = x - 22, y = y - 22, w = 44, h = 44}, safe, panel, toolbar, workspace) then
+            self:showTouchHandle(bounds, corner, x, y, 44, corner.sx * 10, corner.sy * 10)
+            return
         end
     end
 end
@@ -1151,6 +1208,17 @@ function UI:updateSelection()
     local displayedBounds = bounds
     local record = #self.app.selection == 1 and self.app.discovery:get(self.app.selection[1]) or nil
     if not displayedBounds and record then displayedBounds = Coordinates.rect(record.object) end
+    local suspended = self.app.profiles and self.app.profiles.suspended
+    local checking = self.app.finishingGesture or self.app.saving
+    local writable = not self.app.previewState and not checking and not suspended
+    local gestureReady = bounds ~= nil and writable
+    local hint = "Drag element to move"
+    if not bounds then hint = "View details in Tools"
+    elseif self.app.previewState then hint = "Profile preview"
+    elseif suspended then hint = "Profiles suspended"
+    elseif checking then hint = "Checking layout"
+    elseif #self.app.selection > 1 then hint = "Drag selection to move" end
+    if self.quickHint.Text ~= hint then self.quickHint.Text = hint end
     local unavailable = not bounds and #self.app.selection > 0
     if self.dockSelection or self.inspectorUnavailable ~= unavailable then
         if self.dockSelection then self.selectionDockBounds = displayedBounds end
@@ -1159,10 +1227,15 @@ function UI:updateSelection()
     end
     self.selectionBounds.Visible = displayedBounds ~= nil
     if displayedBounds then localRect(self.selectionBounds, displayedBounds) end
+    local rotation = 0
+    if not bounds and record then
+        pcall(function() rotation = record.object.AbsoluteRotation or record.object.Rotation or 0 end)
+    end
+    self.selectionBounds.Rotation = rotation
     self.selectionStroke.Color = bounds and C.cyan or C.warning
     for _, entry in ipairs(self.handles) do
         local g = entry.gui
-        g.Visible = bounds ~= nil and not self.mobile
+        g.Visible = gestureReady and not self.mobile
         if g.Visible then
             g.Position = UDim2.fromScale(entry.anchor[1], entry.anchor[2])
             g.Size = UDim2.fromOffset(16, 16)
@@ -1170,7 +1243,7 @@ function UI:updateSelection()
         end
     end
     self.touchHandle.handle = "se"
-    if self.mobile and bounds then self:placeTouchHandle(bounds) end
+    if self.mobile and gestureReady then self:placeTouchHandle(bounds) end
     for i, rect in ipairs(rects or {}) do
         local object = self.individual[i]
         if not object and #rects > 1 then
@@ -1186,8 +1259,6 @@ function UI:updateSelection()
     for i = #(rects or {}) + 1, #self.individual do self.individual[i].Visible = false end
     if not self.slider then return end
     local info = bounds and self.app.sizeInfo and self.app:sizeInfo(bounds, rects, keys) or nil
-    local writable = not self.app.previewState and not self.app.finishingGesture and not self.app.saving
-        and not (self.app.profiles and self.app.profiles.suspended)
     self.sliderEnabled = info ~= nil and writable
     self.quickBody.Visible = info ~= nil
     if self.quickEditable ~= self.sliderEnabled then
@@ -1210,16 +1281,16 @@ function UI:updateSelection()
         local group = #rects > 1
         local sizeLabel = group and self.app.preferences.equalSize and "Member size" or (group and "Group size" or "Size")
         self.sliderTitle.Text = sizeLabel .. (info.original and " / 100% original" or " / 100% starting size")
-        if not self.percent:IsFocused() then self.percent.Text = numberText(info.scale) .. "%" end
+        self:syncTextBox(self.percent, numberText(info.scale) .. "%")
         self.quickSize.Text = numberText(bounds.w) .. " x " .. numberText(bounds.h)
-    elseif not self.percent:IsFocused() then self.percent.Text = "" end
+    else self:syncTextBox(self.percent, "") end
     if self.workspaceOpen and self.tab == "Advanced" then
         local size = info and info.size or bounds
         local map = bounds and {X = bounds.x, Y = bounds.y, W = size.w, H = size.h}
         self.precisionHeading.Text = #rects > 1 and self.app.preferences.equalSize
             and "Group position / largest member size (px)" or "Position and size (px)"
         for name, box in pairs(self.fields) do
-            if not box:IsFocused() then box.Text = map and numberText(map[name]) or "" end
+            self:syncTextBox(box, map and numberText(map[name]) or "")
             box.TextEditable = bounds ~= nil and writable
         end
     end
@@ -1235,14 +1306,12 @@ function UI:describeSelection()
         self.selectionName.Text, self.quickName.Text = record.object.Name, record.object.Name
         self.selectionDetail.Text = table.concat(path, " / ")
         if record.reason then self.selectionDetail.Text = self.selectionDetail.Text .. "\n" .. record.reason end
-        self.quickHint.Text = editable and "Drag element to move" or "View details in Tools"
-        if not self.rotation:IsFocused() then self.rotation.Text = numberText(record.object.Rotation) end
-        if not self.transparency:IsFocused() then self.transparency.Text = numberText(record.object.BackgroundTransparency) end
+        self:syncTextBox(self.rotation, numberText(record.object.Rotation))
+        self:syncTextBox(self.transparency, numberText(record.object.BackgroundTransparency))
     elseif selectedCount > 1 then
         self.selectionName.Text = tostring(selectedCount) .. " selected"
         self.quickName.Text = self.selectionName.Text
         self.selectionDetail.Text = "Drag the selection to move the group."
-        self.quickHint.Text = "Drag selection to move"
     else
         self.selectionName.Text = "Select an element"
         self.quickName.Text = self.selectionName.Text
@@ -1254,6 +1323,16 @@ function UI:describeSelection()
     self.visualHint.Text = editable and "Rotation in degrees. Transparency from 0 to 1." or "Select one editable element."
     self.experimental.Visible = record ~= nil and record.experimental == true and not record.experimentalApproved
     self.revoke.Visible = record ~= nil and record.experimentalApproved == true
+end
+
+function UI:requestSelectionUpdate()
+    if not self.visible or self.dead or self.selectionUpdateQueued then return end
+    self.selectionUpdateQueued = true
+    local function update()
+        self.selectionUpdateQueued = false
+        self:updateSelection()
+    end
+    if task and task.defer then task.defer(update) else update() end
 end
 
 function UI:watchSelection()
@@ -1274,17 +1353,9 @@ function UI:watchSelection()
     self.selectionConnections = {}
     for _, object in ipairs(objects) do
         if object then
-            for _, name in ipairs({"AbsolutePosition", "AbsoluteSize", "Visible"}) do
+            for _, name in ipairs({"AbsolutePosition", "AbsoluteSize", "AbsoluteRotation", "Visible"}) do
                 local exists, signal = pcall(function() return object:GetPropertyChangedSignal(name) end)
-                if exists and signal then self:connect(signal, function()
-                    if self.selectionUpdateQueued then return end
-                    self.selectionUpdateQueued = true
-                    local function update()
-                        self.selectionUpdateQueued = false
-                        if self.visible and not self.dead then self:updateSelection() end
-                    end
-                    if task and task.defer then task.defer(update) else update() end
-                end, self.selectionConnections) end
+                if exists and signal then self:connect(signal, function() self:requestSelectionUpdate() end, self.selectionConnections) end
             end
         end
     end
@@ -1352,17 +1423,20 @@ function UI:setOverlaps(records)
 end
 
 function UI:refreshOverlaps()
-    if self.shownOverlaps == self.overlapSignature then return end
-    self.shownOverlaps = self.overlapSignature
+    local revision = self.app.discovery.revision
+    if self.shownOverlaps == self.overlapSignature and self.overlapRevision == revision then return end
+    self.shownOverlaps, self.overlapRevision = self.overlapSignature, revision
     self:clearDynamic(self.overlapList, self.overlapConnections)
     self.overlapConnections = {}
-    self.overlapList.Visible = #(self.overlapKeys or {}) > 1
+    local records = {}
+    for _, key in ipairs(self.overlapKeys or {}) do
+        local record = self.app.discovery:get(key)
+        if record then records[#records + 1] = record end
+    end
+    self.overlapList.Visible = #records > 1
     if not self.overlapList.Visible then return end
     self:section(self.overlapList, "At your last tap")
-    for _, key in ipairs(self.overlapKeys) do
-        local record = self.app.discovery:get(key)
-        if record then self:elementRow(self.overlapList, record, self.overlapConnections) end
-    end
+    for _, record in ipairs(records) do self:elementRow(self.overlapList, record, self.overlapConnections) end
 end
 
 function UI:refreshMissing()
@@ -1394,6 +1468,7 @@ end
 
 function UI:refreshElements()
     local discovery = self.app.discovery
+    if self.childParent and not self.childParent.Parent then self.childParent = nil end
     local fallback = discovery.revision == nil and discovery:list()
     local search = self.search.Text:lower():match("^%s*(.-)%s*$")
     local filter = table.concat({search, tostring(self.onlyEditable), tostring(self.childParent)}, "\n")
@@ -1470,9 +1545,9 @@ function UI:refreshProfiles()
         end
         if #list == 0 then label(self.profileList, "No profiles yet. Create one to save this layout.", 44, 12) end
     end
-    local blocked = self.app.draftBlocked == true
+    local blocked = self.app.draftBlocked ~= nil and self.app.draftBlocked ~= false
     self.draftSection.Visible = blocked or (self.app.draft ~= nil and self.app.draft ~= false)
-    self.draftLabel.Text = blocked and "A saved profile changed after this draft was created. You can discard the draft."
+    self.draftLabel.Text = blocked and "This draft could not be opened. You can discard it."
         or "An unsaved draft is available to preview."
     self:enable(self.previewDraft, not blocked)
 end
@@ -1501,6 +1576,10 @@ function UI:refreshPage()
     elseif self.tab == "Profiles" then self:refreshProfiles()
     elseif self.tab == "Advanced" then self:describeSelection(); self:updateSelection()
     elseif self.tab == "Settings" then
+        for key, box in pairs(self.preferenceFields) do
+            local value = self.app.preferences[key]
+            if value ~= nil then self:syncTextBox(box, tostring(value)) end
+        end
         local caps = {}
         for _, name in ipairs({"storage", "clipboard", "network", "input"}) do
             local value = self.app.capabilities[name] or {}

@@ -342,6 +342,51 @@ check(#app.history.past == 2 and app.preferences.launcherX == 1, "docking the la
 app:undo()
 check(app.transform.live[key].size.xo == 150 and app.preferences.launcherX == 1, "undo retains the launcher dock")
 
+local tinyData = data()
+tinyData.profiles[1].layout[key].size.xo, tinyData.profiles[1].layout[key].size.yo = 24, 18
+app = setup({data = tinyData})
+local reference = app:sizeInfo().baseline
+app:select(key)
+check(app:sizeInfo().baseline == reference, "tapping the same selection keeps its resize reference")
+app:stepSize(1)
+check(math.abs(app.transform.live[key].size.xo - 25) < 0.001, "a fine step visibly changes a tiny selection")
+app:stepSize(-1)
+check(math.abs(app.transform.live[key].size.xo - 24) < 0.001, "opposite tiny fine steps return to the starting width")
+
+app = setup()
+app:move(9, 0)
+function app.storage:clearDraft()
+    coroutine.yield("cleaning draft")
+    return true
+end
+local savingThread = coroutine.create(function() return app:save() end)
+local startedSave, pausedSave = coroutine.resume(savingThread)
+check(startedSave and pausedSave == "cleaning draft" and app.saving, "Save stays locked while persistent cleanup yields")
+app:move(7, 0)
+check(x(app) == 19 and coroutine.resume(savingThread) and not app.saving and not app.dirty,
+    "a second action cannot change the checkpoint during Save cleanup")
+
+local missing = Util.copy(descriptor)
+missing.path[#missing.path].name = "OlderHealth"
+local missingKey = Identity.key(missing)
+local remapData = data()
+local missingEntry = entry(36)
+missingEntry.descriptor = missing
+remapData.profiles[1].layout = {[missingKey] = missingEntry}
+remapData.profiles[1].groups = {Hud = {missing, descriptor}}
+app = setup({data = remapData})
+app:remap(missingKey, key)
+check(x(app) == 36 and app.layout[missingKey] == nil and #app.groups.Hud == 1
+    and Identity.key(app.groups.Hud[1]) == key and Config.validateState(app:getState()),
+    "remapping onto an existing group member preserves a valid group and portable layout")
+
+app = setup()
+local originalUI = package.loaded.UI
+package.loaded.UI = {new = function() error("simulated UI construction failure") end}
+check(app:Open() == false and not app.editing and not app.ui,
+    "a UI startup failure returns safely without disturbing other PlayerGui children")
+package.loaded.UI = originalUI
+
 app = setup({deferGesture = true})
 app:move(10, 0)
 check(x(app) == 20 and app.finishingGesture and #app.history.past == 0 and not app.dirty,

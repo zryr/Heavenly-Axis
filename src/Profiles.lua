@@ -33,8 +33,9 @@ function Profiles:list(allScopes)
         if allScopes or Config.applies(profile, self.context) then profiles[#profiles + 1] = profile end
     end
     table.sort(profiles, function(a, b)
-        if a.name == b.name then return a.id < b.id end
-        return a.name:lower() < b.name:lower()
+        local first, second = a.name:lower(), b.name:lower()
+        if first == second then return a.id < b.id end
+        return first < second
     end)
     return profiles
 end
@@ -324,10 +325,16 @@ function Profiles:beginImport(text, overwriteConfirmed, context)
     for name, members in pairs(incoming.groups or {}) do
         if candidate.groups and candidate.groups[name] and not Util.equal(candidate.groups[name], members) then conflicts = true end
     end
-    if conflicts and overwriteConfirmed ~= true then return nil, "Import would overwrite existing profiles, activation, or preferences. Confirm overwrite, then preview again." end
+    if conflicts and overwriteConfirmed ~= true then return nil, "Import would overwrite existing profiles, activation, groups, or preferences. Confirm overwrite, then preview again." end
     for _, profile in ipairs(incoming.profiles) do
-        local _, index = find(candidate, profile.id)
-        if index then candidate.profiles[index] = Util.copy(profile) else candidate.profiles[#candidate.profiles + 1] = Util.copy(profile) end
+        local existing, index = find(candidate, profile.id)
+        if existing then
+            local oldSlot = Config.scopeKey(existing)
+            if oldSlot ~= Config.scopeKey(profile) and candidate.active[oldSlot] == profile.id then candidate.active[oldSlot] = nil end
+            candidate.profiles[index] = Util.copy(profile)
+        else
+            candidate.profiles[#candidate.profiles + 1] = Util.copy(profile)
+        end
     end
     for key, id in pairs(incoming.active) do candidate.active[key] = id end
     for key, value in pairs(incoming.preferences or {}) do candidate.preferences[key] = Util.copy(value) end
