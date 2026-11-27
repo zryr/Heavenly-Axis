@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.1.1**
+**Roblox HUD & Interface Editor · V3.1.2**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -26,6 +26,8 @@ The legacy [`Source`](Source) path contains the identical generated script. Do n
 4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Return to the canvas to continue with the same selection.
 
 Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing enforces a 16-unit minimum. The grid starts on and snapping starts off, with alignment guides available in either mode.
+
+Short notifications confirm saves, show recovery and history results, and flag errors. The verified Save confirmation stays visible briefly when Done returns you to gameplay.
 
 The selection boundary represents screen-space bounds. Pixel changes retain existing UDim scale components; scale-based layout still adapts with its parent while offsets remain fixed. Heavenly Axis does not guess a proportional conversion for offset-based layouts. Use device/orientation profile overrides when you need distinct arrangements.
 

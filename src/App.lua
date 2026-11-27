@@ -13,7 +13,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.1.1"
+App.VERSION = "3.1.2"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -108,10 +108,10 @@ function App:log(message)
     self.logs[#self.logs + 1] = tostring(message):sub(1, 320)
     if #self.logs > 100 then table.remove(self.logs, 1) end
 end
-function App:status(message)
+function App:status(message, options)
     self.statusMessage = tostring(message)
     self:log(message)
-    if self.ui then self.ui:status(self.statusMessage) end
+    if self.ui then self.ui:status(self.statusMessage, options) end
 end
 function App:_applyLayout(layout, replace, onlyNew)
     if self.profiles.suspended then return 0, 0 end
@@ -328,7 +328,10 @@ end
 function App:updateGesture(rects, keys)
     if not self.gesture then return false end
     local ok, reason = self.transform:setRects(keys or self.selection, rects)
-    if not ok then self:status(reason or "Transformation is unsupported."); return false end
+    if not ok then
+        self:status(reason or "Transformation is unsupported.", {kind = "error", title = "Adjustment stopped"})
+        return false
+    end
     if self.ui then
         if self.ui.requestSelectionUpdate then self.ui:requestSelectionUpdate() else self.ui:updateSelection() end
     end
@@ -362,17 +365,20 @@ function App:endGesture()
             self.layout = after.layout
             local recorded = self.history:push(gesture.before, after, gesture.label)
             if (gesture.skipped or 0) > 0 then
-                self:status(tostring(gesture.skipped) .. " unavailable or incompatible elements skipped.")
+                self:status(tostring(gesture.skipped) .. " unavailable or incompatible elements skipped.",
+                    {kind = "warning", title = "Partial adjustment"})
+            elseif recorded and gesture.label == "Reset to original" then
+                self:status("The selected controls are back to their original layout.", {kind = "success", title = "Selection reset"})
             elseif recorded then
                 local bounds = self:currentBounds(true)
                 local w, h = viewport(self.services)
                 local safe = Coordinates.safeRect(self.services.GuiService, w, h)
                 if bounds and not Coordinates.intersection(bounds, safe) then
-                    self:status("Selection is offscreen. Use Recover in Tools to bring it back.")
+                    self:status("Use Recover in Tools to bring it back.", {kind = "warning", title = "Selection is offscreen"})
                 end
             end
         else
-            self:status(reason or "The adjustment could not be verified and was rolled back.")
+            self:status(reason or "The previous layout was restored.", {kind = "error", title = "Adjustment rolled back"})
         end
         self:_afterInteraction(ok, reason)
     end
@@ -558,8 +564,8 @@ function App:_replay(direction)
             self:_setState(state, true)
             local note = (undoing and "Undid " or "Redid ") .. tostring(label)
             if (skipped or 0) > 0 then note = note .. ". " .. skipped .. " missing elements skipped." end
-            self:status(note)
-        else self:status(reason or "The original state could not be verified. History was preserved.") end
+            self:status(note, {kind = "info", title = "History"})
+        else self:status(reason or "History was preserved.", {kind = "error", title = "History action failed"}) end
         self:_afterInteraction(ok, reason)
     end
     if not self.transform:applyHistory(self.layout, target.layout, complete) then
@@ -602,7 +608,7 @@ function App:save(onComplete)
         local requested = self:getState()
         local revision = self.runtimeRevision
         self.saveWaiting = true
-        self:status("Waiting for the layout stability check before saving…")
+        self:status("Checking the latest adjustment.", {kind = "info", title = "Saving layout"})
         task.delay(0.35, function()
             self.saveWaiting = nil
             if not self.alive then return end
@@ -610,7 +616,7 @@ function App:save(onComplete)
                 or self.previewState or self.profiles.suspended or revision ~= self.runtimeRevision
                 or not Util.equal(requested, self:getState()) then
                 local reason = "Layout changed during the stability check. Review it and save again."
-                self:status(reason)
+                self:status(reason, {kind = "warning", title = "Save paused"})
                 if self.dirty then self:_draftLater() end
                 if onComplete then onComplete(false, reason) end
             else self:save(onComplete) end
@@ -634,7 +640,14 @@ function App:save(onComplete)
     end
     self.saving = nil
     if not self.alive then return ok, message, accepted end
-    self:status(message or (ok and "Profile persisted." or "Save failed; draft retained."))
+    if ok then
+        self:status("Changes saved on this device.",
+            {kind = "success", title = "Layout saved", keepOnClose = true})
+    elseif accepted then
+        self:status("Export JSON to keep this layout after restarting.", {kind = "warning", title = "Memory-only save"})
+    else
+        self:status(message or "Your edits are still open.", {kind = "error", title = "Save failed"})
+    end
     self:changed()
     if onComplete then onComplete(ok, message, accepted) end
     return ok, message, accepted
@@ -665,8 +678,8 @@ function App:cancel(onComplete)
             if self.editContext then self:_adoptContext() end
             local note = "Returned to the latest Save checkpoint."
             if (skipped or 0) > 0 then note = note .. " " .. skipped .. " missing elements skipped." end
-            self:status(note)
-        else self:status(reason or "The checkpoint could not be restored. Use Safe Mode to recover originals.") end
+            self:status(note, {kind = "info", title = "Changes discarded"})
+        else self:status(reason or "Use Safe Mode to recover originals.", {kind = "error", title = "Restore failed"}) end
         self.finishingGesture = nil
         self:_afterInteraction(ok, reason)
         if onComplete then onComplete(ok) end
@@ -817,7 +830,7 @@ function App:profile(action, idOrName, extra)
             self.profiles:suspend(false)
             self.transform.safe = false
             self.history:push(previous, state, "Restore recovered draft")
-            self:status("Recovered unsaved draft. Save to persist this layout.")
+            self:status("Save to keep this layout.", {kind = "success", title = "Draft recovered"})
             self:changed()
             return true
         end
@@ -1033,7 +1046,7 @@ function App:safeMode()
     self.transform.safe = true
     self.transform:restore()
     self:Open()
-    self:status("Safe Mode: original properties restored, profile suspended, experimental edits stopped. Saved profiles are preserved.")
+    self:status("Available controls restored. Saved profiles are preserved.", {kind = "warning", title = "Safe Mode active"})
     self:changed()
 end
 function App:SafeMode() return self:safeMode() end

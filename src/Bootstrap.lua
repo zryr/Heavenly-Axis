@@ -27,7 +27,7 @@ local previous = env.__HEAVENLY_AXIS_V3
 if reuse(previous) then return previous end
 -- A bounded startup wait supports delayed LocalPlayer/PlayerGui without hanging forever.
 local services = {}
-for _, name in ipairs({"Players", "UserInputService", "GuiService", "RunService", "HttpService", "ContextActionService", "Workspace"}) do
+for _, name in ipairs({"Players", "UserInputService", "GuiService", "RunService", "HttpService", "TextService", "ContextActionService", "Workspace"}) do
     services[name] = game:GetService(name)
 end
 local player = services.Players.LocalPlayer

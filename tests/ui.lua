@@ -75,6 +75,8 @@ check(listCalls == 0, "closed editor does not build hidden browsing lists")
 ui:setVisible(true)
 check(ui.visible and ui.canvas.Visible and ui.toolbar.Visible and not ui.panel.Visible and not ui.workspace.Visible,
     "opening shows the canvas toolbar before a selection")
+local hint = Coordinates.rect(ui.canvasHint)
+check(ui.canvasHint.Visible and not ui:pointInPanel(hint.x + 3, hint.y + 3), "empty canvas hint leaves the HUD beneath it reachable")
 check(not ui.launcher.Visible, "launcher releases gameplay space while editing")
 check(ui.gridLayer.Visible and #ui.gridObjects <= 162, "enabled grid uses bounded line count")
 check(not app.preferences.snapping, "grid does not force snapping")
@@ -82,6 +84,8 @@ check(not app.preferences.snapping, "grid does not force snapping")
 app:select("a")
 check(ui.panel.Visible and ui.quickBody.Visible and not ui.workspace.Visible, "compatible selection opens contextual Quick Edit")
 check(ui.quickName.Text == "Jump Mock" and ui.percent.Text == "100%", "visual size percentage matches selected element")
+check(not ui.canvasHint.Visible and ui.sliderTitle.Text == "Size" and ui.sliderReference.Text == "100% original"
+    and ui.quickSize.Text == "100 × 100", "selection replaces the empty hint with percentage and pixel size context")
 check(ui.selectionBounds.AbsolutePosition.X == 50 and ui.selectionBounds.AbsolutePosition.Y == 162,
     "canonical selection placement offsets the full-screen root origin")
 check(ui.selectionBounds.Position.X.Offset == 59 and ui.selectionBounds.Position.Y.Offset == 185,
@@ -89,6 +93,7 @@ check(ui.selectionBounds.Position.X.Offset == 59 and ui.selectionBounds.Position
 check(visibleHandles(ui) == 1, "touch layout exposes one resize handle")
 local grip = Coordinates.rect(ui.touchHandle.gui)
 check(grip.w == 44 and not Layout.intersects(grip, Coordinates.rect(target)), "touch handle has a 44-unit region outside the movement target")
+check(ui.touchHandleLink.Visible and ui.touchHandleLink.AbsoluteSize.X > 0, "touch handle visibly connects to the resized corner")
 local targetSize, targetPosition = target.Size, target.Position
 target.Size = UDim2.fromOffset(ui.safeArea.w, ui.safeArea.h)
 target.Position = UDim2.fromOffset(ui.safeArea.x, ui.safeArea.y)
@@ -143,6 +148,7 @@ ui:layout()
 services.UserInputService.PreferredInput = Enum.PreferredInput.KeyboardAndMouse
 ui:layout()
 check(visibleHandles(ui) == 8 and ui.panel.AbsoluteSize.X <= 286, "hybrid keyboard input uses desktop handles and compact inspector")
+check(not ui.touchHandleLink.Visible, "desktop markers sit on the outline without an exterior handle link")
 services.UserInputService.PreferredInput = Enum.PreferredInput.Touch
 ui:layout()
 check(visibleHandles(ui) == 1, "hybrid touch input restores exterior handle")
@@ -157,6 +163,11 @@ ui:updateSelection()
 ui.percent.Text = "124%"
 ui.percent.FocusLost:Fire(false)
 check(app.lastPercent == 124, "quick size commits the numeric percentage")
+local focusRing = ui.percent:FindFirstChildOfClass("UIStroke")
+ui.percent.Focused:Fire()
+check(focusRing.Transparency < .2, "numeric field gains a visible focus ring")
+ui.percent.FocusLost:Fire(false)
+check(focusRing.Transparency >= .2, "numeric focus ring returns to rest when dismissed")
 ui.percent.Focused = true; ui.percent.Text = "12"
 services.UserInputService.OnScreenKeyboardVisible, services.UserInputService.OnScreenKeyboardSize = true, vec(640, 440)
 ui:layout()

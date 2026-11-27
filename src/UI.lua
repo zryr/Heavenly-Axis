@@ -3,16 +3,17 @@
 local Geometry = require("Geometry")
 local Coordinates = require("Coordinates")
 local Layout = require("UILayout")
+local Notifications = require("Notifications")
 local UI = {}
 UI.__index = UI
 
 local C = {
-    surface = Color3.fromRGB(14, 23, 32), raised = Color3.fromRGB(27, 40, 52),
-    field = Color3.fromRGB(10, 18, 26), selected = Color3.fromRGB(27, 63, 74),
-    cyan = Color3.fromRGB(112, 229, 236), ink = Color3.fromRGB(11, 36, 42),
-    text = Color3.fromRGB(239, 245, 248), muted = Color3.fromRGB(164, 184, 197),
-    border = Color3.fromRGB(57, 79, 96), quiet = Color3.fromRGB(118, 139, 154),
-    warning = Color3.fromRGB(255, 193, 106), danger = Color3.fromRGB(227, 130, 131),
+    surface = Color3.fromRGB(16, 25, 36), raised = Color3.fromRGB(29, 43, 57),
+    field = Color3.fromRGB(10, 19, 28), selected = Color3.fromRGB(28, 58, 69),
+    cyan = Color3.fromRGB(123, 231, 237), ink = Color3.fromRGB(13, 37, 43),
+    text = Color3.fromRGB(240, 246, 249), muted = Color3.fromRGB(169, 188, 201),
+    border = Color3.fromRGB(62, 86, 102), quiet = Color3.fromRGB(125, 145, 159),
+    warning = Color3.fromRGB(255, 193, 106),
 }
 local orders = setmetatable({}, {__mode = "k"})
 local function make(class, props, parent)
@@ -114,11 +115,14 @@ function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
         PlaceholderColor3 = C.muted, ClearTextOnFocus = false, Size = UDim2.new(width or 1, width and -4 or 0, 0, 44),
         Position = UDim2.new(x or 0, 0, 0, 0), BackgroundColor3 = C.field, BorderSizePixel = 0,
         TextColor3 = C.text, TextSize = 13, Font = Enum.Font.Gotham, ZIndex = parent.ZIndex + 1}, parent)
-    corners(b, 7); outline(b)
+    corners(b, 8)
+    local stroke = outline(b)
     self:connect(b.Focused, function()
         local input = self.app.input
-        if input and input.isBusy and input:isBusy() then b:ReleaseFocus() end
+        if input and input.isBusy and input:isBusy() then b:ReleaseFocus(); return end
+        stroke.Color, stroke.Transparency = C.cyan, .05
     end, dynamic)
+    self:connect(b.FocusLost, function() stroke.Color, stroke.Transparency = C.border, .35 end, dynamic)
     if callback then
         self.presentedText[b] = b.Text
         self:connect(b.FocusLost, function(enter)
@@ -631,8 +635,10 @@ function UI:makeToolbar()
         BorderSizePixel = 0, ZIndex = 34, Visible = false, Active = true}, self.root)
     self.toolbar = toolbar
     corners(toolbar, 12); outline(toolbar)
-    self.toolbarBrand = brand(toolbar, 35)
-    self.toolbarBrand.Position = UDim2.fromOffset(9, 12)
+    self.toolbarBrand = make("Frame", {Name = "HeavenlyAxisMark", BackgroundColor3 = C.field, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(7, 10), Size = UDim2.fromOffset(28, 28), ZIndex = 35}, toolbar)
+    corners(self.toolbarBrand, 9)
+    brand(self.toolbarBrand, 36).Position = UDim2.fromOffset(2, 3)
     local actions = {
         {"Edit", function()
             self:setWorkspace(false)
@@ -647,6 +653,7 @@ function UI:makeToolbar()
         {"Redo", function() self.app:redo() end, 44},
         {"Tools", function()
             if self.workspaceOpen then self:setWorkspace(false)
+            elseif self.inspectorUnavailable and #self.app.selection > 0 then self:setTab("Advanced")
             else self:setTab(self.tab == "Elements" and "Settings" or self.tab) end
         end, 45},
         {"Save", function() self.app:save() end, 44},
@@ -665,10 +672,22 @@ function UI:makeToolbar()
         self.toolbarButtons[#self.toolbarButtons + 1] = {name = name, button = button, width = width}
         self[name:lower() .. "Button"] = button
     end
+    self.doneButton.Font = Enum.Font.GothamBold
+    self.saveIndicator = make("Frame", {Name = "Unsaved", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+        Position = UDim2.new(1, -9, 0, 8), Size = UDim2.fromOffset(4, 4), ZIndex = 36, Visible = false}, self.saveButton)
+    corners(self.saveIndicator, 2)
+
+    self.canvasHint = make("Frame", {Name = "SelectionHint", Active = false, BackgroundColor3 = C.surface,
+        BackgroundTransparency = .1, BorderSizePixel = 0, ZIndex = 20, Visible = false}, self.root)
+    corners(self.canvasHint, 9)
+    outline(self.canvasHint)
+    local text = label(self.canvasHint, "Tap a HUD control to edit", 30, 12)
+    text.Position, text.Size, text.TextColor3 = UDim2.fromOffset(11, 0), UDim2.new(1, -22, 1, 0), C.muted
+    truncate(text)
 end
 
 function UI:makeQuickEdit()
-    local panel = make("Frame", {Name = "QuickEdit", BackgroundColor3 = C.surface, BackgroundTransparency = .02,
+    local panel = make("Frame", {Name = "QuickEdit", BackgroundColor3 = C.surface, BackgroundTransparency = .04,
         BorderSizePixel = 0, ZIndex = 24, Visible = false, Active = true, ClipsDescendants = true}, self.root)
     self.panel = panel
     corners(panel, 13)
@@ -678,19 +697,24 @@ function UI:makeQuickEdit()
     self.inspectorGrip.Position, self.inspectorGrip.Size = UDim2.fromOffset(7, 4), UDim2.new(1, -64, 0, 44)
     self.inspectorGrip.BackgroundTransparency = 1
     self.inspectorGrip.AutoButtonColor = false
-    self.quickName = label(self.inspectorGrip, "Selection", 20, 15)
+    self.quickName = label(self.inspectorGrip, "Selection", 21, 16)
     self.quickName.Font = Enum.Font.GothamBold
     self.quickName.ZIndex = 26
-    self.quickName.Position, self.quickName.Size = UDim2.fromOffset(4, 2), UDim2.new(1, -17, 0, 20)
+    self.quickName.Position, self.quickName.Size = UDim2.fromOffset(10, 2), UDim2.new(1, -23, 0, 21)
     truncate(self.quickName)
     self.quickHint = label(self.inspectorGrip, "Drag element to move", 18, 11)
     self.quickHint.ZIndex, self.quickHint.TextColor3 = 26, C.muted
-    self.quickHint.Position, self.quickHint.Size = UDim2.fromOffset(4, 22), UDim2.new(1, -10, 0, 18)
+    self.quickHint.Position, self.quickHint.Size = UDim2.fromOffset(10, 24), UDim2.new(1, -21, 0, 16)
     truncate(self.quickHint)
-    for y = 18, 24, 6 do
-        local gripLine = make("Frame", {BackgroundColor3 = C.quiet, BorderSizePixel = 0,
-            Position = UDim2.new(1, -9, 0, y), Size = UDim2.fromOffset(9, 2), ZIndex = 26}, self.inspectorGrip)
-        corners(gripLine, 1)
+    self.selectionAccent = make("Frame", {Name = "SelectionState", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(2, 9), Size = UDim2.fromOffset(2, 26), ZIndex = 26}, self.inspectorGrip)
+    corners(self.selectionAccent, 1)
+    for y = 15, 25, 5 do
+        for x = -10, -5, 5 do
+            local dot = make("Frame", {BackgroundColor3 = C.quiet, BorderSizePixel = 0,
+                Position = UDim2.new(1, x, 0, y), Size = UDim2.fromOffset(3, 3), ZIndex = 26}, self.inspectorGrip)
+            corners(dot, 2)
+        end
     end
     local hide = self:button(panel, "Hide", function() self:setCollapsed(true) end)
     hide.Position, hide.Size = UDim2.new(1, -52, 0, 4), UDim2.fromOffset(44, 44)
@@ -708,7 +732,14 @@ function UI:makeQuickEdit()
     self.slider.AutoButtonColor = false
     self.sliderTitle = label(self.slider, "Size", 18, 11)
     self.sliderTitle.Position, self.sliderTitle.ZIndex = UDim2.fromOffset(10, 1), 28
-    self.sliderTitle.Size, self.sliderTitle.TextColor3 = UDim2.new(1, -20, 0, 19), C.muted
+    self.sliderTitle.Size, self.sliderTitle.TextColor3 = UDim2.new(.5, -10, 0, 19), C.text
+    self.sliderTitle.Font = Enum.Font.GothamMedium
+    truncate(self.sliderTitle)
+    self.sliderReference = label(self.slider, "", 18, 11)
+    self.sliderReference.Position, self.sliderReference.Size = UDim2.new(.5, 0, 0, 1), UDim2.new(.5, -10, 0, 19)
+    self.sliderReference.ZIndex, self.sliderReference.TextColor3 = 28, C.muted
+    self.sliderReference.TextXAlignment = Enum.TextXAlignment.Right
+    truncate(self.sliderReference)
     self.sliderTrack = make("Frame", {Name = "Track", BackgroundColor3 = C.border, BorderSizePixel = 0,
         Position = UDim2.fromOffset(15, 26), Size = UDim2.new(1, -30, 0, 3), ZIndex = 28}, self.slider)
     corners(self.sliderTrack, 2)
@@ -720,23 +751,31 @@ function UI:makeQuickEdit()
     corners(self.sliderThumb, 7)
     local values = frame(body, 44)
     values.Position, values.ZIndex = UDim2.fromOffset(0, 48), 26
-    local minus = self:button(values, "-", function()
+    local stepper = make("Frame", {Name = "SizeStepper", BackgroundColor3 = C.raised, BorderSizePixel = 0,
+        Size = UDim2.fromOffset(155, 44), ZIndex = 27}, values)
+    corners(stepper, 9)
+    outline(stepper)
+    local minus = self:button(stepper, "−", function()
         if self.app.stepSize then self.app:stepSize(-1) else self.app:scale(.99) end
     end)
+    minus.Name = "DecreaseSize"
     minus.Size = UDim2.fromOffset(44, 44)
-    self.percent = self:textbox(values, "Size %", "", function(value)
+    minus.BackgroundTransparency, minus.TextSize = 1, 19
+    self.percent = self:textbox(stepper, "Size %", "", function(value)
         local n = validNumber((value:gsub("%%", "")))
         if n and self.app.setSizePercent then self.app:setSizePercent(n)
         elseif not n then self.app:status("Enter a valid size percentage.") end
         self:updateSelection()
     end)
-    self.percent.Position, self.percent.Size = UDim2.fromOffset(48, 0), UDim2.fromOffset(59, 44)
+    self.percent.Position, self.percent.Size = UDim2.fromOffset(44, 0), UDim2.fromOffset(67, 44)
     self.percent.Font = Enum.Font.GothamMedium
-    local plus = self:button(values, "+", function()
+    local plus = self:button(stepper, "+", function()
         if self.app.stepSize then self.app:stepSize(1) else self.app:scale(1.01) end
     end)
+    plus.Name = "IncreaseSize"
     plus.Position, plus.Size = UDim2.fromOffset(111, 0), UDim2.fromOffset(44, 44)
-    self.quickSize = label(values, "", 44, 12)
+    plus.BackgroundTransparency, plus.TextSize = 1, 19
+    self.quickSize = label(values, "", 44, 13)
     self.quickSize.Position, self.quickSize.Size = UDim2.fromOffset(160, 0), UDim2.new(1, -160, 0, 44)
     self.quickSize.TextXAlignment, self.quickSize.TextColor3, self.quickSize.ZIndex = Enum.TextXAlignment.Center, C.muted, 28
     truncate(self.quickSize)
@@ -747,6 +786,7 @@ function UI:makeQuickEdit()
     self.quickReset = self:button(actions, "Reset", function() self.app:reset() end, .30, .34)
     local advanced = self:button(actions, "Advanced", function() self:setTab("Advanced") end, .36, .64)
     advanced.Size = UDim2.new(.36, 0, 0, 44)
+    advanced.BackgroundColor3, advanced.TextColor3 = C.selected, C.cyan
     self.quickEdits = {minus, plus, self.quickLock, self.quickReset}
     self.sliderEnabled = false
 end
@@ -802,6 +842,8 @@ function UI:makeCanvas()
     self.overlay = make("Frame", {Name = "SelectionOverlay", BackgroundTransparency = 1, Size = UDim2.fromScale(1, 1), ZIndex = 5, Visible = false}, self.root)
     self.selectionBounds = make("Frame", {Name = "SelectionBounds", BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 6, Visible = false}, self.overlay)
     self.selectionStroke = outline(self.selectionBounds, C.cyan, 2)
+    self.touchHandleLink = make("Frame", {Name = "TouchHandleLink", BackgroundColor3 = C.cyan, BackgroundTransparency = .25,
+        AnchorPoint = Vector2.new(.5, .5), BorderSizePixel = 0, Visible = false, ZIndex = 9}, self.selectionBounds)
     self.individual = {}
     self.box = make("Frame", {Name = "BoxSelection", BackgroundColor3 = C.cyan, BackgroundTransparency = .9,
         BorderSizePixel = 0, ZIndex = 6, Visible = false}, self.overlay)
@@ -810,8 +852,8 @@ function UI:makeCanvas()
         local b = make("TextButton", {Name = "Resize_" .. handle, Text = "", BackgroundTransparency = 1,
             AnchorPoint = Vector2.new(.5, .5), AutoButtonColor = false, ZIndex = 10, Visible = false}, self.selectionBounds)
         local marker = make("Frame", {BackgroundColor3 = C.cyan, BorderSizePixel = 0, AnchorPoint = Vector2.new(.5, .5),
-            Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(12, 12), ZIndex = 11}, b)
-        corners(marker, 4); outline(marker, C.ink)
+            Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(14, 14), ZIndex = 11}, b)
+        corners(marker, 5); outline(marker, C.ink)
         local entry = {gui = b, marker = marker, handle = handle, anchor = anchors[handle]}
         self.handles[#self.handles + 1] = entry
         if handle == "se" then self.touchHandle = entry end
@@ -838,12 +880,7 @@ function UI.new(app, playerGui, services)
         self:makeQuickEdit()
         self:makeWorkspace()
 
-        self.toast = make("Frame", {Name = "Toast", BackgroundColor3 = C.surface, BackgroundTransparency = .04,
-            BorderSizePixel = 0, Visible = false, ZIndex = 55}, self.root)
-        corners(self.toast, 10); outline(self.toast)
-        self.statusLabel = label(self.toast, "", 34, 12)
-        self.statusLabel.Position, self.statusLabel.Size = UDim2.fromOffset(9, 4), UDim2.new(1, -18, 1, -8)
-        self.statusLabel.TextXAlignment, self.statusLabel.ZIndex = Enum.TextXAlignment.Center, 56
+        self.notifications = Notifications.new(self.root, self.services)
 
         self.launcher = make("TextButton", {Name = "HeavenlyAxisLauncher", Text = "", BackgroundColor3 = C.surface,
             BorderSizePixel = 0, Size = UDim2.fromOffset(48, 48), ZIndex = 50, AutoButtonColor = true}, self.root)
@@ -878,6 +915,7 @@ function UI:setCollapsed(collapsed)
     self.collapsed = collapsed
     self:showSurfaces()
     self:updateSelection()
+    self:layoutNotifications()
     self:refreshToolbar()
 end
 
@@ -888,6 +926,7 @@ function UI:setWorkspace(open)
         if open and self.tab == "Elements" then self.elementRevision = nil end
         self:showSurfaces()
         self:updateSelection()
+        self:layoutNotifications()
     end
     self:refreshToolbar()
     if open then self:refreshPage() end
@@ -917,6 +956,7 @@ function UI:showSurfaces()
     self.toolbar.Visible = self.visible and self.layoutPlan and self.layoutPlan.toolbarVisible or false
     self.workspace.Visible = self.visible and self.workspaceOpen == true
     self.panel.Visible = self.visible and not self.workspaceOpen and not self.collapsed and #self.app.selection > 0
+    self.canvasHint.Visible = self.toolbar.Visible and not self.workspaceOpen and #self.app.selection == 0
     self.launcher.Visible = not self.visible and self.app.preferences.launcherHidden ~= true
 end
 
@@ -933,7 +973,7 @@ function UI:layoutToolbar(plan)
         local button = entry.button
         button.Visible = showSave or entry.name ~= "Save"
         if button.Visible then
-            local width = math.floor(entry.width * factor)
+            local width = math.max(1, math.floor(entry.width * factor))
             button.Position, button.Size = UDim2.fromOffset(x, 2), UDim2.fromOffset(width, math.max(1, math.min(44, plan.toolbar.h - 2)))
             x = x + width
         end
@@ -948,7 +988,20 @@ function UI:placeInspector()
         local y = plan.portrait and not self.manualPanel and panel.y + panel.h - height or panel.y
         panel = Layout.place({w = panel.w, h = height}, plan.content, panel.x, y)
     end
+    self.panelRect = panel
     localRect(self.panel, panel)
+end
+
+function UI:layoutNotifications()
+    if not self.notifications or not self.layoutPlan then return end
+    local avoid = {}
+    if self.toolbar.Visible then avoid[#avoid + 1] = self.layoutPlan.toolbar end
+    if self.canvasHint.Visible then avoid[#avoid + 1] = self.hintRect end
+    if self.panel.Visible then avoid[#avoid + 1] = self.panelRect end
+    if self.workspace.Visible then avoid[#avoid + 1] = self.layoutPlan.workspace end
+    if self.visible and self.selectionBounds.Visible then avoid[#avoid + 1] = self.selectionOverlayRect end
+    if self.launcher.Visible then avoid[#avoid + 1] = Coordinates.rect(self.launcher) end
+    self.notifications:layout(self.layoutPlan.area, avoid)
 end
 
 function UI:layout()
@@ -967,6 +1020,8 @@ function UI:layout()
     self.layoutPlan = plan
     localRect(self.toolbar, plan.toolbar)
     self:layoutToolbar(plan)
+    self.hintRect = {x = plan.toolbar.x, y = plan.content.y, w = math.min(184, plan.area.w), h = math.min(30, plan.content.h)}
+    localRect(self.canvasHint, self.hintRect)
     self:placeInspector()
     localRect(self.workspace, plan.workspace)
     self.tabs.Visible = plan.workspace.h >= 142
@@ -974,15 +1029,13 @@ function UI:layout()
     for _, page in pairs(self.pages) do
         page.Position, page.Size = UDim2.fromOffset(10, bodyTop), UDim2.new(1, -20, 0, math.max(1, plan.workspace.h - bodyTop - 8))
     end
-    local area = plan.area
-    local toastW = math.min(395, area.w)
-    localRect(self.toast, {x = area.x + (area.w - toastW) / 2, y = area.y + math.max(0, area.h - 44), w = toastW, h = 44})
     self:positionLauncher()
     self:showSurfaces()
     self:layoutDialog()
     self:drawGrid()
     self:updateSelection()
     self:layoutKeyboard((keyboardHeight or 0) > 0)
+    self:layoutNotifications()
 end
 
 function UI:viewportChanged()
@@ -1038,6 +1091,7 @@ function UI:finishInspectorMove(cancelled)
     self.movingPanel, self.priorManualPanel = false, nil
     self:placeInspector()
     self:updateSelection()
+    self:layoutNotifications()
 end
 
 function UI:launcherArea()
@@ -1077,6 +1131,7 @@ function UI:finishLauncherMove(cancelled)
         end
     end
     self:positionLauncher()
+    self:layoutNotifications()
 end
 
 function UI:gridSpacing()
@@ -1170,6 +1225,14 @@ function UI:showTouchHandle(bounds, corner, x, y, size, markerX, markerY)
     handle.gui.Size = UDim2.fromOffset(size, size)
     handle.marker.Position = UDim2.new(.5, markerX, .5, markerY)
     handle.gui.Visible = true
+    local cornerX, cornerY = bounds.w * corner.anchor[1], bounds.h * corner.anchor[2]
+    local markX, markY = x - bounds.x + markerX, y - bounds.y + markerY
+    local dx, dy = markX - cornerX, markY - cornerY
+    local link = self.touchHandleLink
+    link.Position = UDim2.fromOffset((cornerX + markX) / 2, (cornerY + markY) / 2)
+    link.Size = UDim2.fromOffset(math.sqrt(dx * dx + dy * dy), 1)
+    link.Rotation = math.deg((math.atan2 or math.atan)(dy, dx))
+    link.Visible = true
 end
 
 function UI:placeTouchHandle(bounds)
@@ -1226,6 +1289,7 @@ function UI:updateSelection()
         self:placeInspector()
     end
     self.selectionBounds.Visible = displayedBounds ~= nil
+    self.selectionOverlayRect = displayedBounds
     if displayedBounds then localRect(self.selectionBounds, displayedBounds) end
     local rotation = 0
     if not bounds and record then
@@ -1233,6 +1297,8 @@ function UI:updateSelection()
     end
     self.selectionBounds.Rotation = rotation
     self.selectionStroke.Color = bounds and C.cyan or C.warning
+    self.selectionAccent.BackgroundColor3 = gestureReady and C.cyan or C.quiet
+    self.touchHandleLink.Visible = false
     for _, entry in ipairs(self.handles) do
         local g = entry.gui
         g.Visible = gestureReady and not self.mobile
@@ -1280,9 +1346,10 @@ function UI:updateSelection()
         self.sliderThumb.Position = UDim2.fromScale(fraction, .5)
         local group = #rects > 1
         local sizeLabel = group and self.app.preferences.equalSize and "Member size" or (group and "Group size" or "Size")
-        self.sliderTitle.Text = sizeLabel .. (info.original and " / 100% original" or " / 100% starting size")
+        self.sliderTitle.Text = sizeLabel
+        self.sliderReference.Text = info.original and "100% original" or "100% starting size"
         self:syncTextBox(self.percent, numberText(info.scale) .. "%")
-        self.quickSize.Text = numberText(bounds.w) .. " x " .. numberText(bounds.h)
+        self.quickSize.Text = numberText(bounds.w) .. " × " .. numberText(bounds.h)
     else self:syncTextBox(self.percent, "") end
     if self.workspaceOpen and self.tab == "Advanced" then
         local size = info and info.size or bounds
@@ -1371,6 +1438,7 @@ function UI:selectionChanged()
     self:showSurfaces()
     self:updateSelection()
     self:refreshToolbar()
+    if changed then self:layoutNotifications() end
     if self.workspaceOpen and self.tab == "Elements" then self:updateElementSelection() end
 end
 
@@ -1557,17 +1625,22 @@ function UI:refreshToolbar()
     self:enable(self.undoButton, not history or #(history.past or {}) > 0)
     self:enable(self.redoButton, not history or #(history.future or {}) > 0)
     self:enable(self.saveButton, not self.app.previewState and not (self.app.profiles and self.app.profiles.suspended))
-    self.editButton.TextColor3 = not self.workspaceOpen and not self.collapsed and C.cyan or C.text
-    self.elementsButton.TextColor3 = self.workspaceOpen and self.tab == "Elements" and C.cyan or C.text
+    local tabs = {
+        {self.editButton, not self.workspaceOpen and not self.collapsed},
+        {self.elementsButton, self.workspaceOpen and self.tab == "Elements"},
+        {self.multiButton, self.app.preferences.multiSelect},
+        {self.toolsButton, self.workspaceOpen and self.tab ~= "Elements"},
+    }
+    for _, tab in ipairs(tabs) do
+        local button, active = tab[1], tab[2]
+        button.TextColor3 = active and C.cyan or C.text
+        button.BackgroundColor3, button.BackgroundTransparency = C.selected, active and 0 or 1
+    end
     self.elementsButton.Text = #(self.overlapKeys or {}) > 1 and "Elements+" or "Elements"
     self.elementsButton.TextSize = #(self.overlapKeys or {}) > 1 and 11 or 12
-    self.multiButton.TextColor3 = self.app.preferences.multiSelect and C.cyan or C.text
-    self.multiButton.BackgroundTransparency = self.app.preferences.multiSelect and 0 or 1
-    self.multiButton.BackgroundColor3 = self.app.preferences.multiSelect and C.selected or C.surface
-    self.toolsButton.TextColor3 = self.workspaceOpen and self.tab ~= "Elements" and C.cyan or C.text
     self.doneButton.BackgroundColor3, self.doneButton.TextColor3 = C.cyan, C.ink
-    self.saveButton.Text = self.app.dirty and "Save*" or "Save"
-    if self.app.dirty and not self.disabled[self.saveButton] then self.saveButton.TextColor3 = C.cyan end
+    self.saveIndicator.Visible = self.app.dirty and not self.disabled[self.saveButton] or false
+    if self.saveIndicator.Visible then self.saveButton.TextColor3 = C.cyan end
 end
 
 function UI:refreshPage()
@@ -1601,24 +1674,12 @@ function UI:refresh()
     if self.visible and self.workspaceOpen then self:refreshPage() end
 end
 
-function UI:status(message)
+function UI:status(message, options)
     if self.dead then return end
     self:refreshToolbar()
-    if not self.visible then return end
-    local text = tostring(message or "")
-    self.statusLabel.Text = text
-    local lower = text:lower()
-    local caution = lower:find("fail", 1, true) or lower:find("unsupported", 1, true)
-        or lower:find("unavailable", 1, true) or lower:find("draft", 1, true)
-    self.statusLabel.TextColor3 = caution and C.warning or C.text
-    self.toast.Visible = text ~= ""
-    self.toastId = (self.toastId or 0) + 1
-    local id = self.toastId
-    if task and task.delay then
-        task.delay(caution and 6 or 3, function()
-            if not self.dead and id == self.toastId then self.toast.Visible = false end
-        end)
-    end
+    if not self.visible and not (options and options.keepOnClose) then return end
+    self:layoutNotifications()
+    self.notifications:show(message, options)
 end
 
 function UI:setVisible(visible)
@@ -1626,7 +1687,7 @@ function UI:setVisible(visible)
     self.canvas.Visible, self.overlay.Visible = self.visible, self.visible
     if not self.visible then
         self.workspaceOpen, self.collapsed = false, false
-        self.toast.Visible = false
+        self.notifications:close()
         self:closeModal()
         self:setGuides()
         self:setBox()
@@ -1639,6 +1700,7 @@ function UI:destroy()
     if self.dead then return end
     self.dead = true
     self:closeModal()
+    if self.notifications then self.notifications:destroy() end
     for _, list in ipairs({self.connections, self.elementConnections, self.profileConnections, self.groupConnections,
         self.missingConnections, self.selectionConnections, self.overlapConnections}) do
         for _, connection in ipairs(list) do connection:Disconnect() end

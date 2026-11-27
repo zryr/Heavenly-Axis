@@ -144,7 +144,7 @@ package.loaded.Transform = { new = function(discovery)
 end }
 package.loaded.UI = { new = function()
     local ui = { gui = {}, visible = false }
-    function ui:status(value) self.message = value end
+    function ui:status(value, options) self.message, self.notification = value, options end
     function ui:refresh() self.refreshed = true end
     function ui:updateSelection() end
     function ui:setVisible(value) self.visible = value end
@@ -428,9 +428,17 @@ app.ui.done.discard()
 check(not app.editing and x(app) == 10 and not app.dirty, "Done discard restores checkpoint before closing")
 app:Open(); app:move(7, 0); app:Done(); app.ui.done.save()
 check(not app.editing and x(app) == 17 and not app.dirty, "Done Save closes after a durable checkpoint")
+check(app.ui.notification.kind == "success" and app.ui.notification.keepOnClose,
+    "durable Save uses a confirmation that remains visible after Done")
 app = setup({appOptions = {}, storageStatus = "Unsupported"})
 app:move(7, 0); app:Done(); app.ui.done.save()
 check(app.editing and app.ui.exportShown and not app.dirty, "Done offers export after a memory-only checkpoint")
+check(app.ui.notification.kind == "warning" and not app.ui.notification.keepOnClose,
+    "a memory checkpoint is distinct from a durable Save confirmation")
+app = setup({appOptions = {}, saveFails = true})
+app:move(7, 0); app:Done(); app.ui.done.save()
+check(app.editing and app.dirty and app.ui.notification.kind == "error",
+    "failed Save keeps the layout open and provides an error notification")
 
 app = setup()
 app:move(9, 0)

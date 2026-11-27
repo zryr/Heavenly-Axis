@@ -150,7 +150,15 @@ check(savedSize > 96 and savedSize == jump.AbsoluteSize.Y and jump.AbsolutePosit
     "relative slider verifies a single anchored, aspect-preserving resize")
 
 ui.saveButton.Activated:Fire()
+local toast = ui.notifications
+check(toast.frame.Visible and toast.current.kind == "success" and toast.title.Text == "Layout saved",
+    "verified toolbar Save shows a short success notification")
+ui.doneButton.Activated:Fire()
+check(not app.editing and toast.frame.Visible and not toast.frame.Active,
+    "Save confirmation remains visible without capturing gameplay after Done")
+app:Open()
 mock:flush()
+check(not toast.frame.Visible, "the Save notification expires after reopening the editor")
 local path = "HeavenlyAxis-v3.json"
 local checkpoint = files[path]
 check(checkpoint and not app.dirty and app:VerifyStartup().storage == "Supported and verified",

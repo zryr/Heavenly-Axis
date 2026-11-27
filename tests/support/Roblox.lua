@@ -186,7 +186,7 @@ function Roblox.new(width, height)
     mock.services = {
         Players = {LocalPlayer = player}, UserInputService = input, Workspace = workspace,
         GuiService = {GetGuiInset = function() return vec(0, safeTop), vec(0, safeBottom) end, GetInsetArea = insetArea},
-        RunService = {}, HttpService = {}, ContextActionService = {},
+        RunService = {}, HttpService = {}, TextService = {}, ContextActionService = {},
     }
     mock.game = {GameId = 100, PlaceId = 200, GetService = function(_, name) return assert(mock.services[name], name) end}
 

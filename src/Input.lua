@@ -136,11 +136,16 @@ function Input:_handleAt(p)
             local r = Coordinates.rect(handle.gui)
             if contains(r, p) then
                 local d = distance(p, {x = r.x + r.w / 2, y = r.y + r.h / 2})
-                if not score or d < score then nearest, score = handle.handle, d end
+                if not score or d < score then nearest, score = handle, d end
             end
         end
     end
     return nearest
+end
+
+function Input:_canvasHits(p)
+    local hits, preferred = self.app.discovery:hit(p.x, p.y)
+    return hits, preferred == nil and hits[1] or (preferred or nil)
 end
 
 function Input:_snapshot(gesture)
@@ -194,7 +199,10 @@ function Input:_canvasBegin(input)
     local handle = self:_handleAt(p)
     if handle then
         local gesture = self:_claim(input, "resize", p)
-        gesture.handle = handle
+        gesture.handle = handle.handle
+        local marker = touch(input) and Coordinates.rect(handle.marker)
+        gesture.tapThrough = marker and not contains(marker, p)
+        gesture.additive = self:_multi(input)
         if not self:_snapshot(gesture) then self:_disown(gesture, input) end
         return
     end
@@ -203,8 +211,7 @@ function Input:_canvasBegin(input)
         self:_claim(input, "box", p).additive = additive
         return
     end
-    local hits, preferred = self.app.discovery:hit(p.x, p.y)
-    local record = preferred == nil and hits[1] or (preferred or nil)
+    local hits, record = self:_canvasHits(p)
     if #hits > 0 and not touch(input) and (self:_modifier("LeftAlt") or self:_modifier("RightAlt")) then
         record = hits[1]
         for i, hit in ipairs(hits) do
@@ -432,7 +439,11 @@ function Input:_finish(gesture, cancelledGesture)
         if gesture.transaction then self.app:cancelGesture() end
     elseif gesture.kind == "box" then self:_boxEnd(gesture)
     elseif gesture.kind == "canvas" and not gesture.moved then self:_tap(gesture)
-    elseif gesture.kind == "pinch" and not gesture.pinchReady then self:_tap(gesture) end
+    elseif gesture.kind == "pinch" and not gesture.pinchReady then self:_tap(gesture)
+    elseif gesture.tapThrough and not gesture.moved then
+        gesture.hits, gesture.record = self:_canvasHits(gesture.start)
+        if gesture.record then self:_tap(gesture) end
+    end
     if not cancelledGesture and gesture.transaction then self.app:endGesture() end
     self.ui:setBox(nil)
     self.ui:setGuides({})

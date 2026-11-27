@@ -1,4 +1,4 @@
-# V3.1.1 mobile rescue verification
+# V3.1.2 mobile rescue verification
 
 Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
@@ -6,15 +6,17 @@ Studio rendering and physical Android testing were unavailable in the Debian Lin
 
 | Command | Result |
 | --- | --- |
-| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 314,563 bytes. |
-| `work/test-venv/bin/python tools/test.py` | Passed. Eight suites, 797 checks, 19 Lua syntax checks, zero failures. |
-| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 28 files, including the shared Roblox test fixture. |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 330,433 bytes. |
+| `work/test-venv/bin/python tools/test.py` | Passed. Nine suites, 840 checks, 20 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 30 files, including the shared Roblox test fixture. |
 | `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-The test suites cover App orchestration (86), core geometry and history (58), discovery (43), input (53), persistence (132), release integration (31), transform and runtime adapters (271), and UI layout and interactions (123). The UI suite instantiates the production UI and input controller in a Lua fixture. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
+The test suites cover App orchestration (89), core geometry and history (58), discovery (43), input (56), notifications (28), persistence (132), release integration (34), transform and runtime adapters (271), and UI layout and interactions (129). The UI suite instantiates the production UI and input controller in a Lua fixture. The viewport cases include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and keyboard variations.
 
 ## Final touchscreen pass
 
+- The toolbar marks unsaved edits with a dot. Quick Edit groups its touch stepper, indicates numeric focus, and shows which corner the resize handle controls. The invisible handle margin passes taps through to neighboring controls while remaining available for drag resizing.
+- Typed notifications distinguish successful saves, memory-only saves, retries, and failed adjustments. Notifications stay within the safe area, avoid the selection and inspector when possible, and leave touch interaction available. Bundled tests verify that a confirmed Save remains visible immediately after Done and then expires.
 - Fresh bundle execution covers opening the editor through the LocalScript and shared-environment paths, selecting Jump, dragging, slider resizing, pinching, Save readback, Undo, Done, reopening, and cold restore through `Source`. It also verifies the version notice, original-layout recovery, and teardown.
 - Horizontal slider ownership pauses the inspector scroller and restores it on release or cancellation. Vertical swipes remain available for scrolling. Releasing an unchanged field makes no history entry. Fine steps move a tiny selection by a visible increment. Blank taps ignore passive, transparent structural zones, which remain in the explicit element list.
 - Ordinary settled transforms can verify at the early 40 ms check. Delayed layout gets a bounded retry. An element recreated under the same identity during a drag stays out of that gesture. The selection overlay coalesces redundant redraw requests.

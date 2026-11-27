@@ -394,6 +394,29 @@ check(app.starts == 1 and app.ends == 1 and app.rects.a.w == 120 and app.rects.a
 controller:destroy()
 
 app, ui, uis, controller = setup()
+local handle = ui.handles[1]
+handle.marker = {AbsolutePosition = {X = 123, Y = 123}, AbsoluteSize = {X = 12, Y = 12}}
+local adjacent = {key = "b", editable = true}
+function app.discovery:hit() return {adjacent}, adjacent end
+finger = pointer("touch", 129, 129)
+handle.gui.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.starts == 0, "tapping the visible resize marker leaves the selection unchanged")
+finger = pointer("touch", 111, 111)
+handle.gui.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "b" and app.starts == 0, "tapping a HUD control under invisible handle padding selects it")
+app.selection = {"a"}
+finger = pointer("touch", 111, 111)
+handle.gui.InputBegan:Fire(finger)
+finger.Position = {X = 131, Y = 141}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.ends == 1 and app.rects.a.w == 120 and app.rects.a.h == 130,
+    "dragging from the same generous handle padding still resizes its original target")
+controller:destroy()
+
+app, ui, uis, controller = setup()
 finger = pointer("touch", 340, 490)
 ui.canvas.InputBegan:Fire(finger)
 ui.inspectorGrip.InputBegan:Fire(finger)
