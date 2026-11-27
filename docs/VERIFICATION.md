@@ -48,7 +48,7 @@ The same headless Roblox mock indexed 240 sibling controls inside a shared paren
 | Descendant scans | 1 | 1 |
 | `GetChildren()` calls | 1,685 | 243 |
 | Entries returned by all `GetChildren()` calls | 173,763 | 242 |
-| Mock `IsA()` checks | 348,974 | 5,783 |
+| Mock `IsA()` checks | 348,974 | 6,023 |
 | Owned property watchers | 964 | 726 |
 
 A second mock applied 120 updates to one selected control during one gesture. Classification calls dropped from 2,160 to 1 and `GetChildren()` enumerations from 6,840 to 1. Both versions made zero full-tree scans and queued zero stabilization timers during those updates. The rescue keeps the gesture reference for successive writes and verifies geometry on completion.
