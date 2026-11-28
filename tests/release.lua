@@ -283,6 +283,68 @@ do
         "discard restores the representative bar and member without changing the saved checkpoint")
 end
 
+do
+    local grip = ui.toolbarGrip
+    local start = ui.toolbar.AbsolutePosition
+    local before = #app.history.past
+    local finger = begin(grip)
+    move(finger, 74, 18)
+    releasePointer(finger)
+    check(ui.toolbar.AbsolutePosition.X > start.X and app:getEditorPlacement("toolbar") and #app.history.past == before and not app.dirty,
+        "moving the toolbar updates its independent placement without changing the HUD")
+    check(app:resetEditorLayout() and not app:getEditorPlacement("toolbar"), "Reset Editor Layout restores the default toolbar placement")
+
+    app:selectMany({key})
+    ui:setTransformTool("rotate")
+    local model = app:appearanceInfo("rotation")
+    local handle = ui.rotationHandle.gui
+    check(model and handle.Visible and model.pivot, "Rotate presents an exterior handle and the authored center")
+    finger = begin(handle)
+    local dx, dy = finger.Position.X - model.pivot.x, finger.Position.Y - model.pivot.y
+    move(finger, -dy - dx, dx - dy)
+    releasePointer(finger)
+    check(math.abs(jump.Rotation - 90) < 1 and #app.history.past == before + 1,
+        "dragging the rotation handle turns the control and commits a single action")
+    local afterTurn = jump.Position.X.Offset
+    app:move(-14, 0)
+    mock:flush()
+    check(jump.Position.X.Offset == afterTurn - 14 and math.abs(jump.Rotation - 90) < 1,
+        "a locally rotated control can still move without changing angle")
+
+    local badge = make("ImageButton", "Opacity sample", hud)
+    badge.Position, badge.Size = UDim2.fromOffset(515, 160), UDim2.fromOffset(58, 58)
+    badge.Image, badge.ImageTransparency, badge.BackgroundTransparency = "rbxassetid://1", .2, 1
+    mock:flush()
+    local badgeKey
+    for _, record in ipairs(app.discovery:list("all")) do if record.object == badge then badgeKey = record.key; break end end
+    check(badgeKey ~= nil, "image button is available for property-aware opacity")
+    app:selectMany({badgeKey})
+    ui:setTransformTool("opacity")
+    app:setOpacity(25, "element")
+    mock:flush()
+    check(math.abs(badge.ImageTransparency - .8) < .001 and badge.BackgroundTransparency == 1,
+        "quarter opacity fades the visible image relative to its original and leaves the background invisible")
+    app:setOpacity(0, "element")
+    mock:flush()
+    check(badge.ImageTransparency == 1 and app.discovery:get(badgeKey) ~= nil,
+        "a fully faded control remains accessible by its exact layer identity")
+
+    app:resetAll()
+    mock:flush()
+    check(jump.Rotation == 0 and jump.AbsolutePosition.X == origin.X and jump.AbsoluteSize.X == 96
+        and math.abs(badge.ImageTransparency - .2) < .001 and app.resetAllPending,
+        "Reset All restores original geometry, rotation, and image opacity together")
+    app:undo()
+    mock:flush()
+    check(math.abs(jump.Rotation - 90) < 1 and badge.ImageTransparency == 1,
+        "one Undo restores both appearance changes and geometry before the reset")
+    app:cancel()
+    mock:flush()
+    check(not app.dirty and jump.AbsolutePosition.X == editedPosition.X and jump.AbsoluteSize.X == savedSize
+        and math.abs(badge.ImageTransparency - .2) < .001 and files[path] == checkpoint,
+        "Discard restores the prior durable checkpoint after direct transformations")
+end
+
 app:Destroy()
 mock:flush()
 check(env.__HEAVENLY_AXIS_V3 == nil and mock.activeConnections == 0 and jump.AbsolutePosition.X == origin.X and jump.AbsoluteSize.X == 96,

@@ -19,7 +19,7 @@ Storage.MAX_BYTES = 2 * 1024 * 1024
 local function validateState(state)
     if type(state) ~= "table" then return false, "Draft must contain a state" end
     for key in pairs(state) do
-        if key ~= "layout" and key ~= "groups" and key ~= "preferences" and key ~= "context" and key ~= "reference" then
+        if key ~= "layout" and key ~= "groups" and key ~= "preferences" and key ~= "context" and key ~= "reference" and key ~= "resetAll" then
             return false, "Unknown draft field"
         end
     end
@@ -44,7 +44,7 @@ local function validateState(state)
             return false, "Invalid draft revision"
         end
     end
-    return Config.validateState({layout = state.layout or {}, groups = state.groups or {}, preferences = state.preferences or {}})
+    return Config.validateState({layout = state.layout or {}, groups = state.groups or {}, preferences = state.preferences or {}, resetAll = state.resetAll})
 end
 
 function Storage.new(capabilities, httpService, log, context)

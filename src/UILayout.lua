@@ -19,6 +19,42 @@ function Layout.intersects(first, second)
         and first.y < second.y + second.h and second.y < first.y + first.h
 end
 
+function Layout.fromPlacement(rect, area, placement)
+    if not placement then return rect end
+    local dx, dy = math.max(0, area.w - rect.w), math.max(0, area.h - rect.h)
+    local x, y = area.x + (placement.x or 0) * dx, area.y + (placement.y or 0) * dy
+    if placement.dock == "left" then x = area.x
+    elseif placement.dock == "right" then x = area.x + dx
+    elseif placement.dock == "top" then y = area.y
+    elseif placement.dock == "bottom" then y = area.y + dy end
+    return Layout.place(rect, area, x, y)
+end
+
+function Layout.toPlacement(rect, area, docking)
+    local dx, dy = math.max(0, area.w - rect.w), math.max(0, area.h - rect.h)
+    local x, y = clamp((rect.x - area.x) / math.max(1, dx), 0, 1), clamp((rect.y - area.y) / math.max(1, dy), 0, 1)
+    local edge, distance
+    if docking then
+        for _, entry in ipairs({{"left", rect.x - area.x}, {"right", area.x + area.w - rect.x - rect.w},
+            {"top", rect.y - area.y}, {"bottom", area.y + area.h - rect.y - rect.h}}) do
+            if entry[2] <= 20 and (not distance or entry[2] < distance) then edge, distance = entry[1], entry[2] end
+        end
+    end
+    return {x = x, y = y, dock = edge}
+end
+
+function Layout.avoid(rect, area, obstacle)
+    if not Layout.intersects(rect, obstacle) then return rect end
+    local best, distance
+    for _, origin in ipairs({{rect.x, obstacle.y + obstacle.h + 7}, {rect.x, obstacle.y - rect.h - 7},
+        {obstacle.x + obstacle.w + 7, rect.y}, {obstacle.x - rect.w - 7, rect.y}}) do
+        local candidate = Layout.place(rect, area, origin[1], origin[2])
+        local cost = (candidate.x - rect.x) ^ 2 + (candidate.y - rect.y) ^ 2
+        if not Layout.intersects(candidate, obstacle) and (not distance or cost < distance) then best, distance = candidate, cost end
+    end
+    return best or rect
+end
+
 function Layout.plan(safe, touch, keyboardHeight)
     local margin, gap = 8, 8
     local w = math.max(1, safe.w - margin * 2)
@@ -26,12 +62,13 @@ function Layout.plan(safe, touch, keyboardHeight)
     local area = {x = safe.x + margin, y = safe.y + margin, w = w, h = h}
     local portrait = safe.w < safe.h
     local keyboard = (keyboardHeight or 0) > 0
-    local toolbarW = math.min(w, w < 438 and 372 or 440)
+    local compactLandscape = touch and not portrait and safe.w < 700
+    local toolbarW = math.min(w, compactLandscape and 426 or (w < 438 and 372 or 440))
     local toolbar = {x = area.x, y = area.y, w = toolbarW, h = math.min(48, h)}
     local occupied = keyboard and 0 or toolbar.h + gap
     local content = {x = area.x, y = area.y + occupied, w = w, h = math.max(1, h - occupied)}
-    local panelW = math.min(portrait and 350 or (touch and 262 or 286), content.w)
-    local panelH = math.min(202, content.h)
+    local panelW = math.min(portrait and 350 or (touch and (compactLandscape and 246 or 262) or 286), content.w)
+    local panelH = math.min(244, content.h)
     local panel = {x = content.x, y = content.y, w = panelW, h = panelH}
     if portrait and not keyboard then
         panel.x = content.x + math.floor((content.w - panel.w) / 2)

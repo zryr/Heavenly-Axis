@@ -1,4 +1,4 @@
-# V3.2.0 verification
+# V3.3.0 verification
 
 Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
@@ -6,12 +6,24 @@ Studio rendering and physical Android testing were unavailable in the Debian Lin
 
 | Command | Result |
 | --- | --- |
-| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 443,430 bytes. |
-| `work/test-venv/bin/python tools/test.py` | Passed. Ten suites, 1,048 checks, 23 Lua syntax checks, zero failures. |
-| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 34 files, including the shared Roblox test fixture. |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 556,256 bytes. |
+| `work/test-venv/bin/python tools/test.py` | Passed. Twelve suites, 1,170 checks, 26 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 39 files, including the shared Roblox test fixture. |
 | `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-The suites cover App orchestration (101), core geometry and history (58), discovery (54), input (84), notifications (35), onboarding (26), persistence (158), bundled integration (57), transform and runtime adapters (329), and UI layout and interactions (146). The UI suite instantiates the production editor and input controller in a Lua fixture. Viewport scenarios include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and software keyboard variations.
+The suites cover App orchestration (115), core geometry and history (58), direct transform integration (12), discovery (57), input (102), notifications (35), onboarding (47), opacity planning (23), persistence (179), bundled integration (68), transform and runtime adapters (329), and UI layout and interactions (145). Viewport scenarios include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and software keyboard variations.
+
+## Direct tools and recovery
+
+| Workflow | Headless evidence |
+| --- | --- |
+| Movable editor | Bundled toolbar grip movement and Reset Editor Layout. Independent device and orientation buckets, safe travel, optional docking, and cancellation are covered by mocks. |
+| Rotate | Bundled exterior-handle gesture commits one action. Subsequent movement preserves the angle. Compatible group roots orbit their shared center and cancel as one transaction. |
+| Opacity | Bundle fades a visible image on a transparent background. Appearance planning covers text, stroke, group compositing, exact descendants, and scope. An exact recreated child regains its fade while a newly added sibling retains its own original appearance. |
+| Reset All | The bundle restores position, size, rotation, and a faded image together. Undo restores the edits. App and persistence tests cover Save, Discard, protected controls, scoped inheritance, and cold restore. |
+| Quick Start and Help | Isolated practice, chapter navigation, resume across instances, skip, and completion. Tutorial gestures include panel dragging, selection, resizing, rotation, opacity, grouping, and resetting. |
+
+Reviewed source-derived geometry previews showing Size, Rotate, Opacity, and the tour in landscape, plus portrait and short-landscape placement. Shortened Quick Edit labels and removed redundant reset buttons from its appearance tools after review. The previews represent mock bounds and cannot verify native wrapping, input dispatch, or renderer output. The three recordings mentioned in the brief were unavailable in the attached files.
 
 ## Master workflow coverage
 
@@ -55,10 +67,10 @@ The baseline ran through the original mobile UI's layout mock. The rescue runs t
 
 | Landscape viewport | Baseline panel and scroll body | Baseline area | Rescue Quick Edit | Rescue area |
 | --- | --- | ---: | --- | ---: |
-| 1536 × 695 | 1520 × 364.7, body 132.7 high | 51.9% | 262 × 202 | 6.9% |
-| 960 × 440 | 944 × 302, body 70 high | 67.5% | 262 × 202 | 17.5% |
-| 640 × 360 | 624 × 234, body 70 high | 63.4% | 262 × 202 | 32.1% |
-| 932 × 430 | 916 × 302, body 70 high | 69.0% | 262 × 202 | 18.5% |
+| 1536 × 695 | 1520 × 364.7, body 132.7 high | 51.9% | 262 × 244 | 8.0% |
+| 960 × 440 | 944 × 302, body 70 high | 67.5% | 262 × 244 | 20.1% |
+| 640 × 360 | 624 × 234, body 70 high | 63.4% | 246 × 244 | 34.9% |
+| 932 × 430 | 916 × 302, body 70 high | 69.0% | 262 × 244 | 21.2% |
 
 The fixture loaded, toggled all four inset configurations, added and removed its 240-object collection, recreated its mock HUD, and released its owned screens and connections in Lua mocks. The Roblox geometry probe is available for Studio execution. [Controlled fixture protocol](TESTING.md#controlled-studio-fixture)
 

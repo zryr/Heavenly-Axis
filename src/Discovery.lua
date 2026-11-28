@@ -1,5 +1,6 @@
 -- Heavenly Axis V3. Original project by Syshi; V2 inspired by Danechka.
 -- Discovery stays inside the local PlayerGui.
+local Appearance = require("Appearance")
 local Coordinates = require("Coordinates")
 local Identity = require("Identity")
 local SmartLayers = require("SmartLayers")
@@ -57,7 +58,7 @@ function Discovery.serialize(object)
 end
 
 function Discovery.new(playerGui, excludedGui, log, guiService)
-    return setmetatable({
+    local self = setmetatable({
         root = playerGui, excluded = excludedGui, guiService = guiService,
         records = {}, ordered = {}, byObject = {}, metadata = {}, siblingOrder = {}, containerNames = {}, containerSiblings = {},
         connections = {}, objectConnections = {}, approved = {}, log = log or function() end,
@@ -65,6 +66,8 @@ function Discovery.new(playerGui, excludedGui, log, guiService)
         destroyed = false, queued = false, revision = 0, classificationRevision = 0,
         stats = {scans = 0, indexed = 0, lastScanMs = 0},
     }, Discovery)
+    self.appearance = Appearance.new(self)
+    return self
 end
 
 function Discovery:_excluded(object)
@@ -151,30 +154,30 @@ end
 function Discovery:_geometryLimits(record, childCache)
     local object = record.object
     if record.descriptor.ambiguous then return "Ambiguous HUD identity. Choose a uniquely named layer.", true end
-    local current = object
+    local current, localRotated = object, false
     while current and current ~= self.root do
         if isA(current, "GuiObject") then
             local ok, rotation = pcall(function() return current.Rotation end)
             if not ok or not Util.finite(rotation) then
-                return "GUI geometry is unavailable.", current == object
+                return "GUI geometry is unavailable.", current == object, localRotated
             end
             if rotated(rotation) then
-                if current == object then return "Reset rotation before moving or resizing this layer." end
-                return "A rotated parent prevents direct movement or resizing."
+                if current == object then localRotated = true
+                else return "A rotated parent prevents direct movement or resizing.", false, localRotated end
             end
             local scales = self:_metadata(current, childCache).scales
-            if #scales > 1 then return "Multiple UIScale objects prevent direct movement or resizing." end
+            if #scales > 1 then return "Multiple UIScale objects prevent direct movement or resizing.", false, localRotated end
             if scales[1] then
                 local value = scales[1].Scale
                 if not Util.finite(value) or value <= 0 then
-                    return "Invalid UIScale prevents direct movement or resizing."
+                    return "Invalid UIScale prevents direct movement or resizing.", false, localRotated
                 end
             end
         end
         current = current.Parent
     end
     if current ~= self.root then return "Layer is no longer in PlayerGui.", true end
-    return nil, false
+    return nil, false, localRotated
 end
 
 local function flexValue(value)
@@ -199,7 +202,8 @@ end
 
 function Discovery:_classify(record, childCache)
     local object = record.object
-    local geometryReason, inaccessible = self:_geometryLimits(record, childCache)
+    local geometryReason, inaccessible, localRotated = self:_geometryLimits(record, childCache)
+    record.localRotated = localRotated == true
     local own = self:_metadata(object, childCache)
     local parent = object.Parent and self:_metadata(object.Parent, childCache) or EMPTY
     local layout = parent.layout
@@ -231,17 +235,29 @@ function Discovery:_classify(record, childCache)
     local position = propertyCapability(record, "position", inaccessible and geometryReason or managed.position)
     local size = propertyCapability(record, "size", inaccessible and geometryReason or managed.size)
     local move = geometryReason and {supported = false, reason = geometryReason} or position
-    local resize = geometryReason and {supported = false, reason = geometryReason} or size
+    local resizeReason = geometryReason or localRotated and "Reset rotation before resizing this layer."
+    local resize = resizeReason and {supported = false, reason = resizeReason} or size
     local rotation = propertyCapability(record, "rotation", inaccessible and geometryReason or managed.rotation)
+    local rotationHandle = geometryReason and {supported = false, reason = geometryReason} or rotation
     local transparency = propertyCapability(record, "transparency", inaccessible and geometryReason or nil)
+    local ownOpacity, groupOpacity, originallyHiddenGroup = self.appearance:available(record, own.strokes)
+    local opacity = propertyCapability(record, "opacity", inaccessible and geometryReason
+        or not ownOpacity and "This layer has no visible appearance of its own." or nil)
+    local opacityContents = propertyCapability(record, "opacity", inaccessible and geometryReason
+        or (originallyHiddenGroup or not (ownOpacity or groupOpacity or #(record.childKeys or EMPTY) > 0))
+            and "This layer has no editable visible contents." or nil)
     record.capabilities = {
         move = move, resize = resize, position = position, size = size, rotation = rotation, transparency = transparency,
         groupMove = move, groupResize = move.supported and resize or move,
-        visual = {supported = rotation.supported or transparency.supported, reason = not rotation.supported and transparency.reason or nil},
+        rotationHandle = rotationHandle, groupRotate = move.supported and rotationHandle or move,
+        opacity = opacity, opacityElement = opacity, opacityContents = opacityContents,
+        visual = {supported = rotation.supported or opacity.supported or opacityContents.supported,
+            reason = not rotation.supported and opacity.reason or nil},
         container = {supported = record.parentKey ~= nil, reason = not record.parentKey and "No accessible containing layer." or nil},
     }
-    record.editable = move.supported or resize.supported or rotation.supported or transparency.supported
-    record.experimental = position.experimental == true or size.experimental == true or rotation.experimental == true or transparency.experimental == true
+    record.editable = move.supported or resize.supported or record.capabilities.visual.supported or transparency.supported
+    record.experimental = position.experimental == true or size.experimental == true or rotation.experimental == true
+        or transparency.experimental == true or opacity.experimental == true or opacityContents.experimental == true
     record.reason = move.reason or resize.reason or rotation.reason or transparency.reason
 end
 
@@ -326,7 +342,7 @@ function Discovery:_watch(object, childCache, modifier)
             self:_invalidateModifier(previous, modifier)
             self:_invalidateModifier(parent, modifier)
             connections.modifierParent = parent
-            self:_presentation(modifier ~= "stroke")
+            self:_presentation(true)
         end)
         if modifier == "scale" then
             local valid = Util.finite(object.Scale) and object.Scale > 0
@@ -339,6 +355,14 @@ function Discovery:_watch(object, childCache, modifier)
             for _, name in ipairs({"HorizontalFlex", "VerticalFlex", "Wraps", "ItemLineAlignment"}) do
                 watch(name, function() self:_presentation(true) end)
             end
+        elseif modifier == "stroke" then
+            watch("Enabled", function() self:_presentation(true) end)
+            local paints = object.Thickness > 0
+            watch("Thickness", function()
+                local nextPaints = object.Thickness > 0
+                if nextPaints ~= paints then self:_presentation(true) end
+                paints = nextPaints
+            end)
         end
         return
     end
@@ -350,7 +374,14 @@ function Discovery:_watch(object, childCache, modifier)
         elseif gui then
             watch("Visible", function() self:_presentation() end)
             watch("AutomaticSize", function() self:_presentation(true) end)
-            if isA(object, "CanvasGroup") then watch("GroupTransparency", function() self:_presentation() end) end
+            if isA(object, "CanvasGroup") then
+                local hidden = object.GroupTransparency >= 1
+                watch("GroupTransparency", function()
+                    local nextHidden = object.GroupTransparency >= 1
+                    if hidden ~= nextHidden then self:_presentation() end
+                    hidden = nextHidden
+                end)
+            end
         end
     end
     if gui and not connections.rotates and self:_metadata(object, childCache).hasGuiChild then
@@ -479,7 +510,7 @@ function Discovery:start(onChanged)
         self:_invalidateModifier(parent, modifier)
         if modifier then
             self:_watch(object, nil, modifier)
-            self:_presentation(modifier ~= "stroke")
+            self:_presentation(true)
         else self:_schedule() end
     end)
     self.connections[#self.connections + 1] = self.root.DescendantRemoving:Connect(function(object)
@@ -497,7 +528,7 @@ function Discovery:start(onChanged)
         end
         disconnectAll(connections)
         self.objectConnections[object] = nil
-        if modifier then self:_presentation(modifier ~= "stroke") else self:_schedule() end
+        if modifier then self:_presentation(true) else self:_schedule() end
     end)
     self.log("Discovery limited to accessible on-screen PlayerGui objects")
     self:refresh()
@@ -507,7 +538,10 @@ function Discovery:get(key)
     local record = self.records[key]
     if not record or not self:_attached(record) then return nil end
     if not record.baselineRect then record.visible = self:_visible(record) end
-    if record.classificationRevision ~= self.classificationRevision then self:_classify(record) end
+    local angle = record.object.Rotation
+    if record.classificationRevision ~= self.classificationRevision or Util.finite(angle) and rotated(angle) ~= record.localRotated then
+        self:_classify(record)
+    end
     self:_layerPolicy(record)
     return record
 end

@@ -70,6 +70,13 @@ function Profiles:active(context)
     return active[#active]
 end
 
+function Profiles:resetTarget(context)
+    context = context or self.context
+    local active = Config.activeProfiles(self.data, context)
+    local profile = active[#active]
+    if profile and profile.scope == "orientation" and profile.device == context.device then return profile end
+end
+
 function Profiles:_id()
     repeat
         self.serial = self.serial + 1
@@ -254,10 +261,15 @@ local function conflicts(changes, resolved, layout)
     return false
 end
 
-function Profiles:save(layout, groups, preferences, baseline, context)
+function Profiles:save(layout, groups, preferences, baseline, context, options)
     if self.preview then return false, "Apply or cancel the preview before saving." end
     if self.saving then return false, "Save is already in progress." end
     context = context or self.context
+    local reset = type(options) == "table" and options.resetAll == true
+    if reset and ((context.device ~= "touch" and context.device ~= "desktop")
+        or (context.orientation ~= "landscape" and context.orientation ~= "portrait")) then
+        return false, "Reset requires a recognized device and screen orientation."
+    end
     layout, groups, preferences = layout or {}, groups or {}, preferences or {}
     local stateValid, stateReason = Config.validateState({layout = layout, groups = groups, preferences = preferences})
     if not stateValid then return false, "Checkpoint rejected. " .. tostring(stateReason) end
@@ -269,23 +281,35 @@ function Profiles:save(layout, groups, preferences, baseline, context)
     local groupChanges = differences(baseline.groups, groups)
     local prefChanges = differences(baseline.preferences, preferences)
     local candidate = Util.copy(self.data)
-    if #layoutChanges + #groupChanges + #prefChanges > 0 then
+    local resetProfileId
+    if reset or #layoutChanges + #groupChanges + #prefChanges > 0 then
         local active = self:active(context)
+        if reset then active = self:resetTarget(context) end
         local profile = active and find(candidate, active.id)
         if not profile then
             profile = {id = self:_id(), name = "Default place", scope = "place", scopeId = context.place, layout = {}, groups = {}, preferences = {}}
+            if reset then
+                profile.name, profile.scope = "Original " .. context.orientation .. " layout", "orientation"
+                profile.device, profile.orientation = context.device, context.orientation
+            end
             candidate.profiles[#candidate.profiles + 1] = profile
             candidate.active[Config.scopeKey(profile)] = profile.id
         end
         local inheritedLayout, inheritedPrefs, inheritedGroups = Config.resolve(candidate, context, profile.id)
         profile.groups, profile.preferences = profile.groups or {}, profile.preferences or {}
-        patchLayout(profile.layout, layoutChanges, inheritedLayout)
+        if reset then
+            profile.resetLayout, profile.layout = true, Util.copy(layout)
+            resetProfileId = profile.id
+        else
+            patchLayout(profile.layout, layoutChanges, profile.resetLayout and {} or inheritedLayout)
+        end
         patchValues(profile.groups, groupChanges, inheritedGroups, true)
         patchValues(profile.preferences, prefChanges, inheritedPrefs, false)
         local valid, reason = Config.validate(candidate)
         if not valid then return false, "Save rejected. " .. tostring(reason) .. ". Use an experience or place profile for game-specific elements." end
         local candidateLayout, candidatePrefs, candidateGroups = Config.resolve(candidate, context)
-        if conflicts(layoutChanges, candidateLayout, true) or conflicts(groupChanges, candidateGroups) or conflicts(prefChanges, candidatePrefs) then
+        if (reset and not Util.equal(layout, candidateLayout)) or (not reset and conflicts(layoutChanges, candidateLayout, true))
+            or conflicts(groupChanges, candidateGroups) or conflicts(prefChanges, candidatePrefs) then
             return false, "A more specific profile overrides these edits. Choose that profile to save them here."
         end
     end
@@ -296,6 +320,7 @@ function Profiles:save(layout, groups, preferences, baseline, context)
     if saved or memoryOnly then
         self.data = candidate
         self.checkpoint = Util.copy(candidate)
+        if resetProfileId then self:setEditTarget(resetProfileId, context) end
     end
     self.log(message)
     return saved, message, saved == true or memoryOnly == true
@@ -382,6 +407,7 @@ local function revision(data, context)
     for _, profile in ipairs(Config.activeProfiles(data, context)) do
         visit(profile.id)
         visit(Config.scopeKey(profile))
+        if profile.resetLayout then visit("original layout override") end
         visit(profile.layout)
         visit(profile.groups or {})
         visit(profile.preferences or {})

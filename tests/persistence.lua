@@ -469,6 +469,41 @@ local function checkEditorPreferences()
     check(reopened:setElementFlag("locked", recreated, false) and #reopened:listElementFlags("locked") == 0,
         "unlock remains available even when the layer is no longer present")
 
+    local portraitEditor = Util.copy(context)
+    portraitEditor.orientation = "portrait"
+    local landscapePosition = {x = 0.3, y = 0.6}
+    local portraitPosition = {x = 1, y = 0.5, dock = "right"}
+    check(reopened:setPanelPlacement("inspector", landscapePosition, context)
+        and reopened:setPanelPlacement("inspector", portraitPosition, portraitEditor)
+        and reopened:setPanelPlacement("toolbar", {x = 0.7, y = 0}, context)
+        and reopened:setPanelPlacement("workspace", {x = 0.4, y = 0.3}, context)
+        and reopened:setPanelPlacement("launcher", {x = 0, y = 0.3}, context), "four editor panels store individual positions")
+    landscapePosition.x = 0.9
+    local withPlacements = EditorPreferences.new(oldStorage, context)
+    check(withPlacements:panelPlacement("inspector").x == 0.3
+        and Util.equal(withPlacements:panelPlacement("inspector", portraitEditor), portraitPosition)
+        and not withPlacements:panelPlacement("inspector", reoriented),
+        "editor panel positions persist independently by device and orientation without aliasing input")
+    check(not reopened.data.panelDocking and reopened:setPreference("panelDocking", true)
+        and not reopened:setPanelPlacement("inspector", {x = 1.1, y = 0})
+        and not reopened:setPanelPlacement("workspace", {x = 0, y = 0, dock = "center"}),
+        "docking is optional and editor placements are validated before writing")
+    check(reopened:setTutorialProgress("quick", 2) and reopened:setTutorialProgress("tour", 5)
+        and not reopened:setTutorialProgress("tour", 17) and not reopened:setTutorialProgress("quick", 2.5),
+        "quick start and guided tour have separate bounded progress")
+    check(reopened:resetPanelLayout() and reopened.data.panelLayoutReset
+        and not reopened.data.panelDocking and not reopened:panelPlacement("inspector", portraitEditor)
+        and not reopened:panelPlacement("launcher") and reopened:tutorialProgress("tour") == 5,
+        "Reset Editor Layout clears panel placements and docking without changing lesson progress")
+    check(reopened:setTutorialProgress("quick", nil)
+        and EditorPreferences.new(oldStorage, context):tutorialProgress("quick") == nil
+        and EditorPreferences.new(oldStorage, context):tutorialProgress("tour") == 5
+        and EditorPreferences.new(oldStorage, context).data.onboardingCompleted
+        and EditorPreferences.new(oldStorage, differentPlace):elementFlags(recreated),
+        "clearing completed Quick Start progress preserves guided progress, completion, and independent layer rules")
+    check(files[Storage.FILES.saved] == hudRaw and files[Storage.FILES.backup] == hudBackup,
+        "panel movements and learning progress never commit HUD state")
+
     local storedPreferencesRaw = files[editorFiles.saved]
     faults.write = editorFiles.pending
     local failedEditorAccepted, failedEditorMessage, failedEditorDurable = reopened:setPreference("skipTransparent", true)
@@ -514,6 +549,92 @@ local function checkEditorPreferences()
         "unpublished contexts can use session rules without leaking identity preferences to other games")
 end
 checkEditorPreferences()
+
+local function checkResetAndOpacity()
+    local globalEntry = Util.copy(jumpEntry)
+    globalEntry.transparency = 0.42
+    local globalDefaults = {id = "retained-global", name = "Built-in defaults", scope = "global",
+        layout = {[jumpKey] = globalEntry}, groups = {}, preferences = {snapping = true}}
+    local localPlace = Util.copy(placeProfile)
+    localPlace.layout[key] = Util.copy(target)
+    localPlace.groups.HUD = {target.descriptor}
+    local original = activeData(globalDefaults, localPlace)
+
+    local changedOpacity = Profiles.new(original, memoryStorage, context)
+    local layout, prefs, groups = changedOpacity:resolve()
+    local childKey = jumpKey .. "/Outline:UIStroke:1"
+    layout[jumpKey].opacity = {factor = 0.5, scope = "contents", targets = {jumpKey, childKey}}
+    local _, _, acceptedOpacity = changedOpacity:save(layout, groups, prefs)
+    local sparse = changedOpacity:active().layout[jumpKey]
+    check(acceptedOpacity and sparse.inherit and sparse.opacity.factor == 0.5 and sparse.transparency == nil,
+        "new opacity can be saved as a sparse local edit without flattening a legacy background value")
+    local opacityReopen = Profiles.new(memoryStorage:import(changedOpacity:export()), memoryStorage, context)
+    local reopenedOpacity = opacityReopen:resolve()[jumpKey]
+    check(reopenedOpacity.transparency == 0.42 and reopenedOpacity.opacity.scope == "contents"
+        and reopenedOpacity.opacity.targets[2] == childKey, "legacy background transparency and new contents opacity round trip independently")
+    check(Config.validateOpacity({factor = 0, scope = "element"}, jumpKey)
+        and not Config.validateOpacity({factor = 1.1, scope = "element"}, jumpKey)
+        and not Config.validateOpacity({factor = 0.5, scope = "all"}, jumpKey)
+        and not Config.validateOpacity({factor = 0.5, scope = "contents", targets = {missingKey}}, jumpKey)
+        and not Config.validateOpacity({factor = 0.5, scope = "contents", targets = {jumpKey, jumpKey}}, jumpKey),
+        "portable opacity validates bounded factors, known scopes, and exact non-duplicate descendant keys")
+
+    local orientation = {id = "existing-mobile-landscape", name = "My landscape", scope = "orientation", scopeId = context.place,
+        orientation = context.orientation, device = context.device, layout = {[missingKey] = Util.copy(missingTarget)}, groups = {}, preferences = {grid = true}}
+    local originalWithOrientation = activeData(globalDefaults, localPlace, orientation)
+    local resetSession = Profiles.new(originalWithOrientation, memoryStorage, context)
+    check(resetSession:setEditTarget(globalDefaults.id) and resetSession:resetTarget().id == orientation.id,
+        "Reset All always chooses the exact device and orientation slot even while editing a broader profile")
+    local _, resetPrefs, resetGroups = resetSession:resolve()
+    local _, _, acceptedReset = resetSession:save({}, resetGroups, resetPrefs, nil, context, {resetAll = true})
+    local resetLayout, restoredPrefs, restoredGroups = resetSession:resolve()
+    check(acceptedReset and not next(resetLayout) and resetSession:active().id == orientation.id
+        and resetSession:active().name == orientation.name and resetSession:active().resetLayout and #resetSession.data.profiles == 3,
+        "saving Reset All keeps the named exact profile and masks inherited and missing scoped layouts")
+    check(restoredPrefs.grid and restoredPrefs.snapping and restoredGroups.HUD and Util.equal(resetSession.data.profiles[1], globalDefaults),
+        "Reset All preserves inherited non-layout preferences, groups, and the original global profile")
+    local portraitContext, desktopContext, unrelatedContext = Util.copy(context), Util.copy(context), Util.copy(context)
+    portraitContext.orientation = "portrait"
+    desktopContext.device = "desktop"
+    unrelatedContext.place = "999"
+    check(resetSession:resolve(portraitContext)[jumpKey] and resetSession:resolve(desktopContext)[jumpKey]
+        and resetSession:resolve(unrelatedContext)[jumpKey] and not resetSession:resolve(unrelatedContext)[key],
+        "the original-layout override does not affect other devices, orientations, or places")
+    local reopenedReset = Profiles.new(memoryStorage:import(resetSession:export()), memoryStorage, context)
+    check(not next((reopenedReset:resolve())), "reopening a saved reset does not reapply inherited layout values")
+    local laterEdit = Util.copy(jumpEntry)
+    laterEdit.position.xo = 15
+    laterEdit.opacity = {factor = 0, scope = "element", targets = {jumpKey}}
+    local _, _, laterSaved = reopenedReset:save({[jumpKey] = laterEdit}, restoredGroups, restoredPrefs)
+    check(laterSaved and reopenedReset:active().resetLayout and not reopenedReset:active().layout[jumpKey].inherit
+        and reopenedReset:resolve()[jumpKey].opacity.factor == 0 and not reopenedReset:resolve()[key],
+        "new edits after Reset All persist against originals without resurrecting other inherited entries")
+    local freshScope = Profiles.new(original, memoryStorage, context)
+    local _, freshPrefs, freshGroups = freshScope:resolve()
+    local beforeReset = freshScope:draftReference()
+    local _, _, createdScope = freshScope:save({[jumpKey] = laterEdit}, freshGroups, freshPrefs, nil, context, {resetAll = true})
+    check(createdScope and freshScope:active().scope == "orientation" and freshScope:active().resetLayout
+        and freshScope:resolve()[jumpKey].position.xo == 15 and not freshScope:resolve()[key]
+        and not freshScope:matchesDraftReference(beforeReset),
+        "a reset with new edits creates a narrow destination only on Save and invalidates older draft baselines")
+    local failure = Profiles.new(original, {save = function() return false, "Test write failure" end}, context)
+    local _, failedPrefs, failedGroups = failure:resolve()
+    local savedFailure, _, acceptedResetFailure = failure:save({}, failedGroups, failedPrefs, nil, context, {resetAll = true})
+    check(not savedFailure and not acceptedResetFailure and Util.equal(failure.data, original) and not failure:resetTarget(),
+        "failed Reset All Save neither selects a new destination nor changes existing checkpoints")
+    local invalidReset = Util.copy(localPlace)
+    invalidReset.resetLayout = true
+    check(not Config.validateProfile(invalidReset), "a broad place profile cannot be imported with an original-layout override")
+
+    local draftContext = Util.copy(context)
+    draftContext.place = "411"
+    local storage = Storage.new(cap, http, nil, draftContext)
+    local resetDraft = {layout = {}, groups = {}, preferences = {}, context = draftContext, resetAll = true}
+    check(storage:draft(resetDraft) and Util.equal(storage:loadDraft(), resetDraft), "reset intent survives a draft round trip")
+    resetDraft.resetAll = "true"
+    check(not storage:draft(resetDraft), "malformed reset intent cannot be saved into a draft")
+end
+checkResetAndOpacity()
 
 local previousApp, previousWarn, previousGetgenv = package.loaded.App, warn, getgenv
 local opened, warnings, notice = 0, {}, nil

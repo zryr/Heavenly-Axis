@@ -58,8 +58,8 @@ local function label(parent, name, text, position, size)
         TextSize = 13, TextWrapped = true,
     }, parent)
 end
-local hud, abilityScenarios
-local abilityScenariosVisible = false
+local hud, abilityScenarios, appearanceScenarios
+local abilityScenariosVisible, appearanceScenariosVisible = false, false
 local function pointer(input)
     return input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1
 end
@@ -85,7 +85,7 @@ make("UISizeConstraint", {MaxSize = Vector2.new(560, 88)}, admin)
 label(admin, "Notice", "STUDIO FIXTURE · Mock HUD controls", UDim2.fromOffset(8, 0), UDim2.new(1, -16, 0, 20))
 local status = label(admin, "FixtureStatus", "Gameplay activations: 0", UDim2.fromOffset(8, 66), UDim2.new(1, -16, 0, 20))
 local function adminButton(column, name, text, callback)
-    return button(admin, name, text, UDim2.new((column - 1) / 6, 4, 0, 20), UDim2.new(1 / 6, -8, 0, 44), callback)
+    return button(admin, name, text, UDim2.new((column - 1) / 7, 4, 0, 20), UDim2.new(1 / 7, -8, 0, 44), callback)
 end
 local count = 0
 local function activate(name)
@@ -136,6 +136,30 @@ local function makeAbilityScenarios(parent)
         FillDirectionMaxCells = 4, HorizontalAlignment = Enum.HorizontalAlignment.Center,
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
     })
+    return region
+end
+
+local function makeAppearanceScenarios(parent)
+    local region = rounded(make("Frame", {Name = "Appearance fixtures", AnchorPoint = Vector2.new(.5, .5),
+        Position = UDim2.fromScale(.5, .46), Size = UDim2.new(.92, 0, 0, 172), BackgroundColor3 = dark,
+        Visible = appearanceScenariosVisible, ZIndex = 5}, parent))
+    make("UISizeConstraint", {MaxSize = Vector2.new(390, 172)}, region)
+    label(region, "Instructions", "Rotate the samples. Fade the row or its contents.", UDim2.fromOffset(8, 4), UDim2.new(1, -16, 0, 29))
+    local row = make("Frame", {Name = "Transparent ability row", Position = UDim2.fromOffset(12, 38),
+        Size = UDim2.new(1, -24, 0, 58), BackgroundTransparency = 1}, region)
+    make("UIListLayout", {FillDirection = Enum.FillDirection.Horizontal, Padding = UDim.new(0, 8)}, row)
+    local icon = rounded(make("ImageButton", {Name = "Ability icon", Size = UDim2.fromOffset(54, 54),
+        Image = "rbxasset://textures/ui/GuiImagePlaceholder.png", ImageTransparency = .2,
+        BackgroundTransparency = 1, AutoButtonColor = false}, row), 8)
+    make("UIStroke", {ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Color = cyan, Thickness = 2, Transparency = .1}, icon)
+    local press = button(row, "Ability text and stroke", "Ability 2", UDim2.new(), UDim2.fromOffset(98, 54), function() activate("Opacity fixture") end)
+    press.BackgroundTransparency, press.TextTransparency, press.TextStrokeTransparency = .3, .15, .45
+    press.TextStrokeColor3 = cyan
+    local group = make("CanvasGroup", {Name = "Existing CanvasGroup", Position = UDim2.fromOffset(12, 104),
+        Size = UDim2.new(1, -24, 0, 54), BackgroundTransparency = .35, BackgroundColor3 = cyan, GroupTransparency = .18}, region)
+    local nested = make("CanvasGroup", {Name = "Nested CanvasGroup", Position = UDim2.fromOffset(8, 6),
+        Size = UDim2.new(1, -16, 1, -12), BackgroundTransparency = 1, GroupTransparency = .3}, group)
+    label(nested, "Nested label", "Existing nested CanvasGroup", UDim2.new(), UDim2.fromScale(1, 1)).TextTransparency = .12
     return region
 end
 
@@ -262,6 +286,7 @@ local function makeHud()
         button(hud, "GroupItem" .. index, "Group " .. index, UDim2.new(0.04, (index - 1) * 110, 0.44, index * 12), UDim2.fromOffset(88 + index * 6, 44 + index * 4), function() activate("Group") end)
     end
     abilityScenarios = makeAbilityScenarios(hud)
+    appearanceScenarios = makeAppearanceScenarios(hud)
 end
 makeHud()
 
@@ -287,7 +312,7 @@ adminButton(2, "TemporaryMenu", "Menu", function()
     }, gui))
     label(menu, "Notice", "Temporary menu\nDestroy and recreate using fixture button", UDim2.fromOffset(12, 12), UDim2.new(1, -24, 1, -24))
 end)
-adminButton(3, "ToggleHUD", "Show / hide", function()
+adminButton(3, "ToggleHUD", "HUD", function()
     if hud then hud.Visible = not hud.Visible end
 end)
 
@@ -369,7 +394,21 @@ end)
 
 adminButton(6, "AbilityScenarios", "Bars", function()
     abilityScenariosVisible = not abilityScenariosVisible
+    if abilityScenariosVisible then
+        appearanceScenariosVisible = false
+        if appearanceScenarios and appearanceScenarios.Parent then appearanceScenarios.Visible = false end
+    end
     if abilityScenarios and abilityScenarios.Parent then abilityScenarios.Visible = abilityScenariosVisible end
     status.Text = abilityScenariosVisible and "Ability bars shown. Edit and then tap their buttons to check activation."
         or "Ability bars hidden."
+end)
+
+adminButton(7, "AppearanceScenarios", "Fade", function()
+    appearanceScenariosVisible = not appearanceScenariosVisible
+    if appearanceScenariosVisible then
+        abilityScenariosVisible = false
+        if abilityScenarios and abilityScenarios.Parent then abilityScenarios.Visible = false end
+    end
+    if appearanceScenarios and appearanceScenarios.Parent then appearanceScenarios.Visible = appearanceScenariosVisible end
+    status.Text = appearanceScenariosVisible and "Test element opacity, contents, rotation, and Recreate." or "Appearance samples hidden."
 end)

@@ -31,7 +31,7 @@ local function signal()
 end
 
 local enumerations, descendantScans = 0, 0
-local classes = {Frame = true, ImageButton = true, ImageLabel = true, TextButton = true, TextLabel = true, ScrollingFrame = true}
+local classes = {Frame = true, CanvasGroup = true, ImageButton = true, ImageLabel = true, TextButton = true, TextLabel = true, ScrollingFrame = true}
 local dim = {X = {Scale = 0, Offset = 0}, Y = {Scale = 0, Offset = 0}}
 local function create(class, name, parent, x, y, w, h)
     local object = {
@@ -160,6 +160,9 @@ local framed = create("Frame", "Border Only", gameGui, 840, 165, 48, 48)
 framed.BackgroundTransparency = 1
 local stroke = create("UIStroke", "Outline", framed)
 stroke.Thickness, stroke.Transparency, stroke.ApplyStrokeMode, stroke.Enabled = 2, 0.3, "Border", true
+local blend = create("CanvasGroup", "Floating blend", gameGui, 40, 120, 46, 46)
+blend.GroupTransparency = 0.25
+local blendChild = create("ImageLabel", "Blend member", blend, 40, 120, 40, 40)
 local controls = create("Frame", "Large collection", gameGui, 300, 0, 450, 200)
 for index = 1, 500 do
     create("Frame", "Control " .. index, controls, 400 + index % 220, 10 + index % 100, 1, 1)
@@ -201,6 +204,10 @@ check(discovery:hit(515, 355)[1] == record(topButton), "Fallback sibling mode re
 gameGui.ZIndexBehavior = "Global"
 check(discovery:hit(515, 355)[1] == record(bottomButton), "Fallback global mode respects the individual object's ZIndex")
 check(found(discovery:hit(550, 223), rotatedButton) and not found(discovery:hit(518, 253), rotatedButton), "Fallback respects a rotated object's screen footprint")
+rotatedButton.Rotation = 90
+local rotatedCaps = discovery:get(record(rotatedButton).key).capabilities
+check(rotatedCaps.move.supported and rotatedCaps.rotationHandle.supported and rotatedCaps.groupRotate.supported
+    and not rotatedCaps.resize.supported, "A locally rotated layer keeps independent movement and direct rotation")
 check(found(discovery:hit(315, 225), clippedChild), "Fallback finds a partially visible scroll child")
 check(not found(discovery:hit(304, 225), clippedChild) and not found(discovery:hit(315, 270), clippedChild), "Scroll gutter and clipped portion are excluded")
 local visible = discovery:visibleRect(record(clippedChild))
@@ -235,7 +242,8 @@ touchFrame.Rotation = 12
 touchFrame.props.Rotation:Fire()
 flush()
 local rotationCaps = discovery:get(record(jump).key).capabilities
-check(not rotationCaps.move.supported and not rotationCaps.resize.supported and rotationCaps.visual.supported,
+check(not rotationCaps.move.supported and not rotationCaps.resize.supported and not rotationCaps.rotationHandle.supported
+    and rotationCaps.rotation.supported and rotationCaps.visual.supported,
     "Ancestor rotation blocks screen geometry while compatible visual editing remains available")
 touchFrame.Rotation = 0
 touchFrame.props.Rotation:Fire()
@@ -324,6 +332,18 @@ root.GetGuiObjectsAtPosition = nil
 discovery:setSelectionPolicy({skipTransparent = false})
 local _, unfiltered = discovery:hit(850, 260)
 check(unfiltered == record(touchFrame), "Disabling transparent filtering makes a transparent structural layer directly selectable")
+local noticeCount = #revisions
+for _, alpha in ipairs({0.3, 0.6, 0.9}) do
+    blend.GroupTransparency = alpha
+    blend.props.GroupTransparency:Fire()
+end
+flush()
+check(#revisions == noticeCount, "CanvasGroup opacity drag updates do not refresh Layers while visibility stays the same")
+blend.GroupTransparency = 1
+blend.props.GroupTransparency:Fire()
+flush()
+check(#revisions == noticeCount + 1 and found(discovery:list("all"), blendChild) and record(blendChild).visibility == "hidden",
+    "Crossing fully faded refreshes layer visibility but keeps descendants available for recovery")
 local firstSubscription = discovery.objectConnections[upper][1]
 discovery:destroy()
 check(not firstSubscription.live, "Discovery destroy disconnects retained GUI subscriptions")

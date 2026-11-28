@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.2.0**
+**Roblox HUD & Interface Editor · V3.3.0**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -21,15 +21,19 @@ The legacy [`Source`](Source) path contains the identical generated script. Do n
 ## Editing on Android
 
 1. Open the editor and take or skip the practice tutorial. Tap **Jump** in Layers or tap the jump button on the canvas. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
-2. Drag the selection with one finger. Resize with the size slider, two-finger pinch, or the touch handle. The percentage refers to the original size when available and otherwise to the size when selected. Tap the percentage field for a precise value, or use the minus and plus controls for fine adjustment.
+2. Choose **Move**, **Size**, **Rotate**, or **Opacity** in Quick Edit. Drag to move. Resize with the handle, pinch, slider, or size stepper. To rotate, pull the exterior handle around the selection, use the angle slider, or tap a quarter-turn button. Compatible groups rotate around their combined center.
 3. Hold a spot to **Select Through**, or arm the tool in **Layers** and tap the spot. Layers also offers search, filters, hierarchy navigation, and per-layer Details. Toggle **Multi** to add or remove targets by touch.
 4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Return to the canvas to continue with the same selection.
 
 Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing enforces a 16-unit minimum. The grid starts on and snapping starts off, with alignment guides available in either mode.
 
+**Opacity** is relative to the original appearance. At 50%, each supported visual surface has half its original opacity. A transparent background stays transparent. **Element only** edits the selection itself. **Include contents** can fade supported descendants or an existing compatible CanvasGroup. Layers can recover a fully faded control, which may still respond to gameplay input.
+
+Drag the grips on the toolbar, Quick Edit, and Tools panels, or drag the launcher itself. Positions are saved separately from HUD edits and adapt to the current orientation and safe area. Edge docking is optional. **Reset Editor Layout** in Settings moves the editor surfaces back to their defaults.
+
 Short notifications confirm saves, show recovery and history results, and flag errors. The verified Save confirmation stays visible briefly when Done returns you to gameplay.
 
-**Ignore** skips a layer during ordinary taps. **Lock** lets you inspect a layer and prevents edits that would move or resize it, including changes through its container. Both are editor-only preferences scoped to the current experience and place. Clear them in Smart Layers settings. The practice tutorial is replayable in Help, with practice controls separate from the game HUD and undo history.
+**Ignore** skips a layer during ordinary taps. **Lock** lets you inspect a layer and prevents edits that would change it through its container. Both are editor-only preferences scoped to the current experience and place. Clear them in Smart Layers settings. **Help** offers Quick Start, the resumable Guided Tour, and a searchable control reference. Practice changes stay separate from the game HUD and undo history.
 
 The selection boundary represents screen-space bounds. Pixel changes retain existing UDim scale components; scale-based layout still adapts with its parent while offsets remain fixed. Heavenly Axis does not guess a proportional conversion for offset-based layouts. Use device/orientation profile overrides when you need distinct arrangements.
 
@@ -63,6 +67,8 @@ Enable multi-select and tap/click members. Moving a selection transforms only se
 Proportional scaling resizes the selection as a unit. **Equal size change** applies an equivalent size adjustment to each editable root and keeps the controls at their respective positions. Opposite-corner scaling is the default for handles, with optional center scaling. Named groups support creation, renaming, adding and removing members, and selection. Missing members remain in the saved group for restoration or remapping.
 
 ## Save, history, and Cancel
+
+**Reset All Changes** in Tools and Recovery restores supported HUD edits to their original values in one undoable action. Locked edits are kept. Save makes the reset effective for this device and orientation, including adjustments inherited from broader profiles. Saved profiles remain available. **Discard Unsaved Changes** returns to the current checkpoint, and **Reset Editor Layout** only moves the editor's own panels.
 
 One verified drag, pinch, slider adjustment, or group operation is one history action. History holds up to 80 completed actions. **Save** waits for pending geometry verification and establishes a checkpoint, while keeping undo history for the active layout. Undo after Save changes the live layout and marks it unsaved. Choose Save again to persist it.
 
@@ -165,4 +171,4 @@ Use [`studio/TestHUD.client.lua`](studio/TestHUD.client.lua) for controlled rend
 - `tools/`, `tests/`, `studio/`, `docs/`: deterministic packaging, automated checks, controlled HUD, and verification instructions.
 
 See the [mobile rescue audit](docs/MOBILE_RESCUE.md), [architecture](docs/ARCHITECTURE.md), and [V2 audit](docs/AUDIT.md).
-See [release changes](docs/CHANGELOG.md) for V3.2.0.
+See [release changes](docs/CHANGELOG.md) for V3.3.0.

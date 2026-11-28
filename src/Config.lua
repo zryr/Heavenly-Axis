@@ -4,10 +4,16 @@ local Identity = require("Identity")
 local Config = { VERSION = 3, EDITOR_VERSION = 1 }
 local MAX_PROFILES, MAX_LAYOUT, MAX_GROUPS, MAX_MEMBERS = 64, 512, 64, 128
 local MAX_EDITOR_SCOPES, MAX_LAYER_RULES = 128, 256
+Config.MAX_OPACITY_TARGETS = 96
 local scopes = { global = true, experience = true, place = true, device = true, orientation = true }
 local priorities = { global = 1, experience = 2, place = 3, device = 4, orientation = 5 }
-local optionalProperties = { rotation = true, transparency = true, experimental = true, viewport = true }
-Config.LAYOUT_PROPERTIES = { "position", "size", "rotation", "transparency", "experimental", "viewport" }
+local optionalProperties = { rotation = true, transparency = true, opacity = true, experimental = true, viewport = true }
+Config.LAYOUT_PROPERTIES = { "position", "size", "rotation", "transparency", "opacity", "experimental", "viewport" }
+Config.EDITOR_PANELS = {inspector = true, toolbar = true, workspace = true, launcher = true}
+Config.EDITOR_TUTORIAL_MODES = {quick = true, tour = true}
+local panelModes = { ["touch-landscape"] = true, ["touch-portrait"] = true,
+    ["desktop-landscape"] = true, ["desktop-portrait"] = true }
+local panelEdges = {left = true, right = true, top = true, bottom = true}
 local builtins = { JumpButton = true, ThumbstickFrame = true, DynamicThumbstickFrame = true }
 local booleanPrefs = { grid = true, snapping = true, multiSelect = true, boxSelect = true,
     aspectLock = true, centerScale = true, equalSize = true, launcherHidden = true,
@@ -80,6 +86,22 @@ function Config.emptyEditorPreferences()
     return {version = Config.EDITOR_VERSION, smartSelection = true, skipTransparent = true, onboardingCompleted = false, scopes = {}}
 end
 
+function Config.editorPanelMode(context)
+    if type(context) ~= "table" or type(context.device) ~= "string" or type(context.orientation) ~= "string" then return nil end
+    local mode = context.device .. "-" .. context.orientation
+    return panelModes[mode] and mode or nil
+end
+
+function Config.validatePanelPlacement(placement)
+    return fields(placement, {x = true, y = true, dock = true})
+        and number(placement.x, 0, 1) and number(placement.y, 0, 1)
+        and (placement.dock == nil or panelEdges[placement.dock] == true)
+end
+
+function Config.validateTutorialStep(step)
+    return step == nil or (number(step, 1, 16) and step % 1 == 0)
+end
+
 function Config.validateLayerRules(rules)
     if not mapCount(rules, MAX_LAYER_RULES) then return false, "Too many layer preferences for this place." end
     for key, rule in pairs(rules) do
@@ -95,10 +117,30 @@ function Config.validateLayerRules(rules)
 end
 
 function Config.validateEditorPreferences(data)
-    if not fields(data, {version = true, smartSelection = true, skipTransparent = true, onboardingCompleted = true, scopes = true})
+    if not fields(data, {version = true, smartSelection = true, skipTransparent = true, onboardingCompleted = true, scopes = true,
+        panels = true, panelDocking = true, panelLayoutReset = true, tutorialProgress = true})
         or data.version ~= Config.EDITOR_VERSION or type(data.smartSelection) ~= "boolean"
         or type(data.skipTransparent) ~= "boolean" or type(data.onboardingCompleted) ~= "boolean"
         or not mapCount(data.scopes, MAX_EDITOR_SCOPES) then return false, "Invalid or unsupported editor preferences." end
+    if (data.panelDocking ~= nil and type(data.panelDocking) ~= "boolean")
+        or (data.panelLayoutReset ~= nil and type(data.panelLayoutReset) ~= "boolean") then
+        return false, "Invalid panel preferences."
+    end
+    if data.panels ~= nil then
+        if not fields(data.panels, panelModes) then return false, "Invalid panel screen mode." end
+        for _, placements in pairs(data.panels) do
+            if not fields(placements, Config.EDITOR_PANELS) then return false, "Invalid editor panel." end
+            for _, placement in pairs(placements) do
+                if not Config.validatePanelPlacement(placement) then return false, "Invalid editor panel position." end
+            end
+        end
+    end
+    if data.tutorialProgress ~= nil then
+        if not fields(data.tutorialProgress, Config.EDITOR_TUTORIAL_MODES) then return false, "Invalid lesson type." end
+        for _, step in pairs(data.tutorialProgress) do
+            if not Config.validateTutorialStep(step) then return false, "Invalid lesson progress." end
+        end
+    end
     for scope, rules in pairs(data.scopes) do
         local experience, place = scope:match("^(%d+):(%d+)$")
         if not Config.editorScope({experience = experience, place = place}) then return false, "Invalid layer preference scope." end
@@ -132,11 +174,26 @@ local function udim(value, size)
     return true
 end
 
+function Config.validateOpacity(value, ownerKey)
+    if not fields(value, {factor = true, scope = true, targets = true}) or not number(value.factor, 0, 1)
+        or (value.scope ~= "element" and value.scope ~= "contents") then return false end
+    if value.targets == nil then return true end
+    if not array(value.targets, Config.MAX_OPACITY_TARGETS) or #value.targets == 0 then return false end
+    local prefix = ownerKey and (ownerKey .. "/")
+    local previous
+    for _, target in ipairs(value.targets) do
+        if not text(target, 8192) or (previous and target <= previous)
+            or (prefix and target ~= ownerKey and target:sub(1, #prefix) ~= prefix) then return false end
+        previous = target
+    end
+    return true
+end
+
 function Config.validateLayout(layout, global, overrides)
     if not mapCount(layout, MAX_LAYOUT) then return false, "Layout exceeds limits or is not a map" end
     for key, entry in pairs(layout) do
         if not fields(entry, { descriptor = true, position = true, size = true, rotation = true,
-            transparency = true, experimental = true, viewport = true,
+            transparency = true, opacity = true, experimental = true, viewport = true,
             inherit = overrides, removed = overrides, clear = overrides }) then return false, "Invalid layout entry" end
         local valid, reason = Config.validateDescriptor(entry.descriptor)
         if not valid then return false, reason end
@@ -158,6 +215,7 @@ function Config.validateLayout(layout, global, overrides)
         end
         if entry.rotation ~= nil and not number(entry.rotation, -360, 360) then return false, "Invalid rotation" end
         if entry.transparency ~= nil and not number(entry.transparency, 0, 1) then return false, "Invalid transparency" end
+        if entry.opacity ~= nil and not Config.validateOpacity(entry.opacity, key) then return false, "Invalid opacity" end
         if entry.experimental ~= nil and type(entry.experimental) ~= "boolean" then return false, "Invalid experimental approval" end
         if entry.viewport ~= nil and (not fields(entry.viewport, { w = true, h = true })
             or not number(entry.viewport.w, 1, 32768) or not number(entry.viewport.h, 1, 32768)) then return false, "Invalid saved viewport" end
@@ -191,7 +249,7 @@ end
 
 function Config.validateProfile(profile)
     if not fields(profile, { id = true, name = true, scope = true, scopeId = true, device = true,
-        orientation = true, layout = true, groups = true, preferences = true }) then return false, "Invalid profile fields" end
+        orientation = true, layout = true, groups = true, preferences = true, resetLayout = true }) then return false, "Invalid profile fields" end
     if not text(profile.id, 128) or not text(profile.name, 64) or not profile.name:match("%S") or not scopes[profile.scope] then return false, "Invalid profile identity or scope" end
     if profile.scope == "global" then
         if profile.scopeId ~= nil or profile.device ~= nil or profile.orientation ~= nil then return false, "Global profile cannot bind an experience or device" end
@@ -201,6 +259,9 @@ function Config.validateProfile(profile)
     if (profile.scope == "experience" or profile.scope == "place") and (profile.device ~= nil or profile.orientation ~= nil) then return false, "Use device/orientation scope for device overrides" end
     if profile.scope == "device" and (profile.device == nil or profile.orientation ~= nil) then return false, "Device profile requires a device only" end
     if profile.scope == "orientation" and profile.orientation == nil then return false, "Orientation profile requires orientation" end
+    if profile.resetLayout ~= nil and (profile.resetLayout ~= true or profile.scope ~= "orientation" or profile.device == nil) then
+        return false, "Original-layout overrides require a device-specific orientation profile"
+    end
     local valid, reason = Config.validateLayout(profile.layout, profile.scope == "global", true)
     if not valid then return false, reason end
     valid, reason = Config.validateGroups(profile.groups or {}, profile.scope == "global", true)
@@ -232,7 +293,8 @@ function Config.validate(data)
 end
 
 function Config.validateState(state)
-    if not fields(state, { layout = true, groups = true, preferences = true }) then return false, "Invalid draft state" end
+    if not fields(state, { layout = true, groups = true, preferences = true, resetAll = true })
+        or (state.resetAll ~= nil and type(state.resetAll) ~= "boolean") then return false, "Invalid draft state" end
     local valid, reason = Config.validateLayout(state.layout)
     if not valid then return false, reason end
     valid, reason = Config.validateGroups(state.groups or {})
@@ -269,6 +331,7 @@ function Config.resolve(data, context, beforeProfile)
     local layout, prefs, groups = {}, Util.copy(data.preferences or {}), Util.copy(data.groups or {})
     for _, profile in ipairs(Config.activeProfiles(data, context)) do
         if profile.id == beforeProfile then break end
+        if profile.resetLayout then layout = {} end
         for key, entry in pairs(profile.layout) do
             if entry.removed then layout[key] = nil
             elseif not entry.inherit then layout[key] = Util.copy(entry)

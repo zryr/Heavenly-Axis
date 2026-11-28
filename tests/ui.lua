@@ -145,7 +145,7 @@ for _, dims in ipairs({{1536, 695}, {960, 440}, {640, 360}, {932, 430}, {393, 85
         and panel.y + panel.h <= safe.y + safe.h, "inspector remains inside simulated safe area")
     check(not Layout.intersects(panel, toolbar), "quick editor and toolbar remain distinct")
     if view.X >= 640 and view.X > view.Y then
-        check(panel.w <= 262 and panel.h <= 202 and (panel.w * panel.h + toolbar.w * toolbar.h) / (view.X * view.Y) < .35,
+        check(panel.w <= 262 and panel.h <= 244 and (panel.w * panel.h + toolbar.w * toolbar.h) / (view.X * view.Y) < .35,
             "landscape chrome preserves at least 65 percent of the canvas")
         check(ui.quickBody.AbsoluteSize.Y >= 140, "landscape quick tools fit in initial viewport")
     end

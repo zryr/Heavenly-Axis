@@ -20,6 +20,10 @@ Build output must be byte-identical between clean runs and match both tracked ar
 
 ## Controlled Studio fixture
 
+For V3.3.0, use **Fade** to open a transparent ability row with an image, mixed text transparency and strokes, plus nested existing CanvasGroups. Test **Element only** and **Include contents** separately at 50%, 0%, and 100%. Confirm the background stays transparent, invisible controls remain available through Layers, and Recreate applies changes only to the original matched scope.
+
+Use **Rotate** on the labeled sample. Drag the exterior handle across the angle boundary, move the rotated sample, and Undo. Then try rotating a compatible group and confirm the center-to-center spacing stays consistent. Drag the toolbar, Quick Edit, and Tools grips near safe-area edges, rotate the device, and reset panel placement in Settings. Finally, confirm **Reset All Changes**, undo it, then save it and reopen in the same orientation to verify that inherited modifications stay masked.
+
 For V3.2.0, start or skip the practice tutorial before editing the game HUD. On a touch viewport, long-press an overlapping control and select a candidate from Select Through. Repeat with its explicit action in Layers. Set Ignore and Lock separately and verify that the canvas selection, editing controls, and parent protection change while the fixture GUI itself stays unchanged.
 
 Use **Bars** in the fixture controls to show the representative numbered ability bars. The simple list should permit resizing the first button without changing its raw Position. The flex and grid cases should offer a container route when the layout owns the adjustment. Move the container and use Undo, confirming that tapping a fixture ability after Done still reports its activation. These fixtures exercise supported Roblox layouts. A live Heroes Battlegrounds session is a separate validation step.

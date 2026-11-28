@@ -338,9 +338,9 @@ check(app.transform.live[key].size.xo == 150 and app.transform.live[key].size.yo
 app:resize(180, 75)
 check(app.transform.live[key].size.xo == 180 and app.transform.live[key].size.yo == 90, "precise size input respects aspect lock")
 app:setLauncherPosition(1, 0.25)
-check(#app.history.past == 2 and app.preferences.launcherX == 1, "docking the launcher is independent of HUD undo history")
+check(#app.history.past == 2 and app:getEditorPlacement("launcher").x == 1, "moving the launcher is independent of HUD undo history")
 app:undo()
-check(app.transform.live[key].size.xo == 150 and app.preferences.launcherX == 1, "undo retains the launcher dock")
+check(app.transform.live[key].size.xo == 150 and app:getEditorPlacement("launcher").x == 1, "undo retains launcher placement")
 
 local tinyData = data()
 tinyData.profiles[1].layout[key].size.xo, tinyData.profiles[1].layout[key].size.yo = 24, 18
@@ -457,6 +457,48 @@ check(app.profiles.suspended and app.transform.safe and app.transform.applyCount
 check(app.editing and app.ui.visible and app.profiles:active().id == "first",
     "SafeMode startup opens recovery while retaining saved profile definitions")
 app:Destroy()
+
+do
+    local editor, editorServices, viewportChanged = setup()
+    check(editor:setEditorPlacement("toolbar", {x = .24, y = .3}) and not editor.dirty and #editor.history.past == 0,
+        "moving a panel stays outside HUD history and saved layouts")
+    editorServices.Workspace.CurrentCamera.ViewportSize = {X = 720, Y = 1280}
+    viewportChanged:Fire()
+    check(editor:getEditorPlacement("toolbar") == nil, "portrait uses its own panel placement")
+    editor:setEditorPlacement("toolbar", {x = .6, y = .7})
+    editorServices.Workspace.CurrentCamera.ViewportSize = {X = 1280, Y = 720}
+    viewportChanged:Fire()
+    check(editor:getEditorPlacement("toolbar").x == .24 and not editor.dirty, "landscape placement is restored on rotation")
+    check(editor:resetEditorLayout() and editor:getEditorPlacement("toolbar") == nil and not editor.dirty,
+        "resetting editor placement leaves the HUD checkpoint intact")
+
+    editor:move(9, 0)
+    editor:resetAll()
+    check(x(editor) == 0 and editor.resetAllPending and #editor.history.past == 2, "Reset All restores original geometry in one history entry")
+    editor:undo()
+    check(x(editor) == 19 and not editor.resetAllPending, "undo restores the layout and clears the pending reset destination")
+    editor:redo()
+    check(x(editor) == 0 and editor.resetAllPending, "redo restores originals and the pending reset destination")
+    editor:cancel()
+    check(x(editor) == 10 and not editor.resetAllPending and not editor.dirty, "discard after Reset All returns to the saved checkpoint")
+    editor:resetAll()
+    check(editor:save() and x(editor) == 0 and not editor.dirty and not editor.resetAllPending, "saving Reset All creates a clean checkpoint")
+    local profileData = scenario.persisted
+    check(profileData.profiles[1].layout[key].position.xo == 10 and not Config.resolve(profileData, editor.context)[key],
+        "scoped reset masks inherited edits while retaining the original stored profile")
+    editor:undo()
+    check(x(editor) == 10 and editor.dirty, "undo remains available after the reset is saved")
+    editor:redo()
+    check(x(editor) == 0 and not editor.dirty, "redo after a saved reset returns to its clean checkpoint")
+    editor = setup({data = profileData})
+    check(x(editor) == 0 and not editor.dirty, "a fresh session honors the saved original-layout mask")
+
+    editor = setup()
+    editor:setLayerState(key, "locked", true)
+    editor:resetAll()
+    check(x(editor) == 10 and not editor.dirty and editor:resetAllSummary().protected == 1,
+        "Reset All skips the editor's locked controls")
+end
 
 do
     local editor = setup()

@@ -5,6 +5,8 @@ local Geometry = require("Geometry")
 local Input = {}
 Input.__index = Input
 local HOLD_SECONDS = 0.5
+local ROTATION_DEAD_ZONE = 6
+local APPEARANCE_LABELS = {rotation = "Rotate selection", opacity = "Adjust opacity"}
 
 local function touch(input)
     return input.UserInputType == Enum.UserInputType.Touch
@@ -33,6 +35,16 @@ end
 
 local function midpoint(a, b)
     return {x = (a.x + b.x) / 2, y = (a.y + b.y) / 2}
+end
+
+local function crossesRotationPivot(a, b, pivot)
+    local dx, dy = b.x - a.x, b.y - a.y
+    local length = dx * dx + dy * dy
+    if length == 0 then return false end
+    local t = ((pivot.x - a.x) * dx + (pivot.y - a.y) * dy) / length
+    if t <= 0 or t >= 1 then return false end
+    local x, y = a.x + t * dx - pivot.x, a.y + t * dy - pivot.y
+    return x * x + y * y < ROTATION_DEAD_ZONE * ROTATION_DEAD_ZONE
 end
 
 local function contains(rect, p, margin)
@@ -81,9 +93,15 @@ function Input.new(app, ui, services)
     for _, handle in ipairs(ui.handles) do
         connect(handle.gui.InputBegan, function(input) self:_canvasBegin(input) end)
     end
-    if ui.slider then connect(ui.slider.InputBegan, function(input) self:_sliderBegin(input) end) end
-    if ui.launcher then connect(ui.launcher.InputBegan, function(input) self:_floatBegin(input, "launcher") end) end
-    if ui.inspectorGrip then connect(ui.inspectorGrip.InputBegan, function(input) self:_floatBegin(input, "inspector") end) end
+    if ui.rotationHandle then connect(ui.rotationHandle.gui.InputBegan, function(input) self:_canvasBegin(input) end) end
+    if ui.slider then connect(ui.slider.InputBegan, function(input) self:_sliderBegin(input, "size") end) end
+    for mode, slider in pairs(ui.visualSliders or {}) do
+        connect(slider.InputBegan, function(input) self:_sliderBegin(input, mode) end)
+    end
+    for kind, grip in pairs({launcher = ui.launcher, inspector = ui.inspectorGrip,
+        toolbar = ui.toolbarGrip, workspace = ui.workspaceGrip}) do
+        connect(grip.InputBegan, function(input) self:_floatBegin(input, kind) end)
+    end
     connect(self.uis.InputChanged, function(input) self:_changed(input) end)
     connect(self.uis.InputEnded, function(input) self:_ended(input) end)
     connect(self.uis.InputBegan, function(input, processed) self:_key(input, processed) end)
@@ -120,10 +138,11 @@ function Input:selectionChanged()
     if not self.selectingForGesture then self:cancel() end
 end
 
-function Input:sliderRange()
+function Input:sliderRange(mode)
     local gesture = self.gesture
-    if gesture and gesture.kind == "slider" and gesture.sizeInfo then
-        return gesture.sizeInfo.minimum, gesture.sizeInfo.maximum
+    if gesture and gesture.kind == "slider" and gesture.sliderMode == (mode or "size") then
+        local model = gesture.sizeInfo or gesture.appearance
+        return model.minimum, model.maximum
     end
 end
 
@@ -195,7 +214,13 @@ function Input:_startHold(gesture)
     end)
 end
 
-function Input:_handleAt(p)
+function Input:_handleAt(p, tool)
+    if tool == "rotate" then
+        local rotation = self.ui.rotationHandle
+        if rotation and rotation.gui.Visible and contains(Coordinates.rect(rotation.gui), p) then return rotation end
+        return nil
+    end
+    if tool ~= "size" then return nil end
     local nearest, score
     for _, handle in ipairs(self.ui.handles) do
         if handle.gui.Visible then
@@ -221,6 +246,10 @@ function Input:_operation(mode)
     return mode == "move" and "groupMove" or "groupResize"
 end
 
+function Input:_tool()
+    return self.ui.getTransformTool and self.ui:getTransformTool() or "size"
+end
+
 function Input:_supports(record, operation)
     if not record then return false end
     if not self.app.capability then return record.editable end
@@ -234,6 +263,11 @@ function Input:_snapshot(gesture, mode)
     if not rects or #rects == 0 then return false end
     gesture.rects, gesture.keys, gesture.skipped = rects, keys, skipped
     gesture.bounds, gesture.operation = Geometry.bounds(rects), operation
+    self:_watchTargets(gesture, keys)
+    return true
+end
+
+function Input:_watchTargets(gesture, keys)
     local discovery = self.app.discovery
     gesture.objects, gesture.parents, gesture.revision = {}, {}, discovery.revision
     for i, key in ipairs(keys) do
@@ -241,6 +275,16 @@ function Input:_snapshot(gesture, mode)
         local object = record and record.object
         gesture.objects[i], gesture.parents[i] = object or false, object and object.Parent
     end
+end
+
+function Input:_snapshotAppearance(gesture, mode)
+    if not self.app.appearanceInfo then return false end
+    local scope = mode == "opacity" and self.ui.opacityScope or nil
+    local model = self.app:appearanceInfo(mode, scope)
+    if not model or not model.keys or #model.keys == 0 then return false end
+    gesture.appearance, gesture.appearanceMode = model, mode
+    gesture.keys, gesture.skipped = model.keys, model.skipped
+    self:_watchTargets(gesture, gesture.keys)
     return true
 end
 
@@ -318,14 +362,26 @@ function Input:_canvasBegin(input)
         self:_claim(input, "selectThrough", p)
         return
     end
-    local handle = self:_handleAt(p)
+    local tool = self:_tool()
+    local handle = self:_handleAt(p, tool)
     if handle then
-        local gesture = self:_claim(input, "resize", p)
+        local rotating = tool == "rotate"
+        local gesture = self:_claim(input, rotating and "rotate" or "resize", p)
         gesture.handle = handle.handle
         local marker = touch(input) and Coordinates.rect(handle.marker)
         gesture.tapThrough = marker and not contains(marker, p)
         gesture.additive = self:_multi(input)
-        if not self:_snapshot(gesture, "resize") then self:_disown(gesture, input) end
+        if rotating then
+            if not self:_snapshotAppearance(gesture, "rotation") or not gesture.appearance.pivot then
+                self:_disown(gesture, input)
+                return
+            end
+            gesture.arc = gesture.appearance.value
+            gesture.arcPoint = p
+            if distance(gesture.appearance.pivot, p) >= ROTATION_DEAD_ZONE then
+                gesture.lastAngle = Geometry.angle(gesture.appearance.pivot, p)
+            end
+        elseif not self:_snapshot(gesture, "resize") then self:_disown(gesture, input) end
         return
     end
     local additive = self:_multi(input)
@@ -358,26 +414,58 @@ function Input:_canvasBegin(input)
         moveGap = contains(self.app:currentBounds(true, moveOperation), p)
         resizeGap = contains(self.app:currentBounds(true, resizeOperation), p)
     end
+    if tool == "rotate" or tool == "opacity" then dragKey, pinchKey, moveGap, resizeGap = nil, nil, nil, nil end
     local kind = (record or dragKey or moveGap or resizeGap or touch(input)) and "canvas" or "box"
     local gesture = self:_claim(input, kind, p)
+    gesture.selectionOnly = tool == "rotate" or tool == "opacity"
     gesture.additive, gesture.record, gesture.dragKey, gesture.pinchKey = additive, record, dragKey, pinchKey
     gesture.moveGap, gesture.resizeGap = moveGap, resizeGap
     gesture.hits = hits
     if kind == "canvas" then self:_startHold(gesture) end
 end
 
-function Input:_apply(gesture, rects, label)
-    if not changedRects(gesture.lastRects or gesture.rects, rects) then return end
-    if not self:_targetsValid(gesture) then self:cancel(); return end
+function Input:_startTransaction(gesture, label)
+    if not self:_targetsValid(gesture) then self:cancel(); return false end
     if not gesture.transaction then
-        if self.app:beginGesture(label, gesture.skipped) == false then self:cancel(); return end
+        if self.app:beginGesture(label, gesture.skipped) == false then self:cancel(); return false end
         gesture.transaction = true
     end
+    return true
+end
+
+function Input:_apply(gesture, rects, label)
+    if not changedRects(gesture.lastRects or gesture.rects, rects) or not self:_startTransaction(gesture, label) then return end
     if self.app:updateGesture(rects, gesture.keys, gesture.operation) == false then
         self:cancel()
         return
     end
     gesture.lastRects = rects
+end
+
+function Input:_applyAppearance(gesture, value)
+    local mode = gesture.appearanceMode
+    if math.abs(value - (gesture.lastAppearance or gesture.appearance.value)) < .001
+        or not self:_startTransaction(gesture, APPEARANCE_LABELS[mode]) then return end
+    if self.app:updateAppearance(mode, value, gesture.appearance) == false then
+        self:cancel()
+        return
+    end
+    gesture.lastAppearance = value
+end
+
+function Input:_updateRotation(gesture, p)
+    local pivot = gesture.appearance.pivot
+    local previous = gesture.arcPoint
+    gesture.arcPoint = p
+    if distance(pivot, p) < ROTATION_DEAD_ZONE then gesture.lastAngle = nil; return end
+    local angle = Geometry.angle(pivot, p)
+    -- Rapid samples can straddle the pivot without reporting a sample inside
+    -- the dead zone. Rebase direction instead of treating it as a half turn.
+    if gesture.lastAngle and not crossesRotationPivot(previous, p, pivot) then
+        gesture.arc = gesture.arc + Geometry.angleDelta(gesture.lastAngle, angle)
+        self:_applyAppearance(gesture, gesture.arc)
+    end
+    gesture.lastAngle = angle
 end
 
 function Input:_updateDrag(gesture, p)
@@ -406,28 +494,40 @@ function Input:_updateResize(gesture, p)
     self:_apply(gesture, rects, "Resize selection")
 end
 
-function Input:_sliderBegin(input)
-    if not self:_canStart(input) or not self.app.editing or self.gesture or self.ui.sliderEnabled == false then return end
+function Input:_sliderBegin(input, mode)
+    if not self:_canStart(input) or not self.app.editing or self.gesture then return end
+    local size = mode == "size"
+    if size and self.ui.sliderEnabled == false then return end
     local track
-    if self.ui.sliderTrackRect then track = self.ui:sliderTrackRect()
-    else track = Coordinates.rect(self.ui.slider) end
+    if size then
+        if self.ui.sliderTrackRect then track = self.ui:sliderTrackRect()
+        else track = Coordinates.rect(self.ui.slider) end
+    elseif self.ui.visualSliderTrackRect then track = self.ui:visualSliderTrackRect(mode) end
     if not track or track.w <= 0 then return end
     local p = Coordinates.point(input)
     local gesture = self:_claim(input, "slider", p)
-    if not self:_snapshot(gesture, "resize") then self:_disown(gesture, input); return end
-    local info = self.app:sizeInfo(gesture.bounds, gesture.rects, gesture.keys)
-    if not info or info.maximum <= info.minimum or info.scale <= 0 then self:_disown(gesture, input); return end
-    gesture.sizeInfo, gesture.track = info, track
-    local fraction = math.max(0, math.min(1, (info.scale - info.minimum) / (info.maximum - info.minimum)))
+    local info, value
+    if size and self:_snapshot(gesture, "resize") then
+        info = self.app:sizeInfo(gesture.bounds, gesture.rects, gesture.keys)
+        if info and info.scale > 0 then gesture.sizeInfo, value = info, info.scale end
+    elseif not size and self:_snapshotAppearance(gesture, mode) then
+        info = gesture.appearance
+        value = info.value
+    end
+    if value == nil or info.maximum <= info.minimum then self:_disown(gesture, input); return end
+    gesture.sliderMode, gesture.track = mode, track
+    local fraction = math.max(0, math.min(1, (value - info.minimum) / (info.maximum - info.minimum)))
     local thumbX = track.x + track.w * fraction
     gesture.thumb = math.abs(p.x - thumbX) <= (touch(input) and 22 or 8)
     gesture.grabOffset = gesture.thumb and (p.x - thumbX) or 0
 end
 
 function Input:_updateSlider(gesture, p)
-    local info, track = gesture.sizeInfo, gesture.track
+    local info, track = gesture.sizeInfo or gesture.appearance, gesture.track
     local fraction = math.max(0, math.min(1, (p.x - gesture.grabOffset - track.x) / track.w))
-    local factor = (info.minimum + fraction * (info.maximum - info.minimum)) / info.scale
+    local value = info.minimum + fraction * (info.maximum - info.minimum)
+    if gesture.appearance then self:_applyAppearance(gesture, value); return end
+    local factor = value / info.scale
     local basis = info.size or info.bounds or gesture.bounds
     local rects = self.app:sizeRects(gesture.rects, basis.w * factor, basis.h * factor, false, info.size, "x")
     self:_apply(gesture, rects, "Size slider")
@@ -469,24 +569,24 @@ function Input:_updatePinch(gesture)
 end
 
 function Input:_floatBegin(input, kind)
-    if not self:_canStart(input) or self.gesture or (kind == "inspector" and not self.app.editing) then return end
-    local rect
-    if kind == "launcher" then
-        rect = Coordinates.rect(self.ui.launcher)
-    else
-        local x, y = self.ui:inspectorPosition()
-        if x and y then rect = {x = x, y = y} end
-    end
-    if not rect then return end
-    local gesture = self:_claim(input, kind, Coordinates.point(input))
-    gesture.x, gesture.y = rect.x, rect.y
+    if not self:_canStart(input) or self.gesture or (kind ~= "launcher" and not self.app.editing) then return end
+    local x, y
+    if self.ui.surfacePosition then x, y = self.ui:surfacePosition(kind)
+    elseif kind == "launcher" then
+        local rect = Coordinates.rect(self.ui.launcher)
+        if rect then x, y = rect.x, rect.y end
+    elseif kind == "inspector" then x, y = self.ui:inspectorPosition() end
+    if x == nil or y == nil then return end
+    local gesture = self:_claim(input, "surface", Coordinates.point(input))
+    gesture.surface, gesture.x, gesture.y = kind, x, y
 end
 
 function Input:_updateFloat(gesture, p)
     local x = gesture.x + p.x - gesture.start.x
     local y = gesture.y + p.y - gesture.start.y
-    if gesture.kind == "launcher" then self.ui:moveLauncher(x, y)
-    else self.ui:moveInspector(x, y) end
+    if self.ui.moveSurface then self.ui:moveSurface(gesture.surface, x, y)
+    elseif gesture.surface == "launcher" then self.ui:moveLauncher(x, y)
+    elseif gesture.surface == "inspector" then self.ui:moveInspector(x, y) end
 end
 
 function Input:_changed(input)
@@ -496,7 +596,7 @@ function Input:_changed(input)
     local mouseMove = not touch(gesture.primary) and input.UserInputType == Enum.UserInputType.MouseMovement
     if not owner and not mouseMove then return end
     if cancelled(input) then self:_ended(input); return end
-    if self:_blocked() or (gesture.kind ~= "launcher" and not self.app.editing) then self:cancel(); return end
+    if self:_blocked() or (gesture.surface ~= "launcher" and not self.app.editing) then self:cancel(); return end
     local p = Coordinates.point(input)
     if input == gesture.secondary then gesture.secondLatest = p else gesture.latest = p end
     if gesture.kind == "pinch" then self:_updatePinch(gesture); return end
@@ -506,6 +606,7 @@ function Input:_changed(input)
     end
     if not gesture.moved then return end
     if gesture.kind == "canvas" then
+        if gesture.selectionOnly then gesture.kind = "passive"; return end
         if (not gesture.dragKey and not gesture.moveGap) or not self:_prepareTransform(gesture, "move") then
             if gesture.record and self.app.capability and self.app.status and not gesture.additive then
                 local capability = self.app:capability(gesture.record.key, "move")
@@ -521,16 +622,17 @@ function Input:_changed(input)
     end
     if gesture.kind == "drag" then self:_updateDrag(gesture, p)
     elseif gesture.kind == "resize" then self:_updateResize(gesture, p)
+    elseif gesture.kind == "rotate" then self:_updateRotation(gesture, p)
     elseif gesture.kind == "slider" then
         local dx, dy = math.abs(p.x - gesture.start.x), math.abs(p.y - gesture.start.y)
         if not gesture.sliderMoved then
             if dy > dx then gesture.kind = "passive"; return end
             if dx < gesture.threshold then return end
             gesture.sliderMoved = true
-            if self.ui.setSliderDragging then self.ui:setSliderDragging(true) end
+            if self.ui.setSliderDragging then self.ui:setSliderDragging(true, gesture.sliderMode) end
         end
         self:_updateSlider(gesture, p)
-    elseif gesture.kind == "launcher" or gesture.kind == "inspector" then self:_updateFloat(gesture, p)
+    elseif gesture.surface then self:_updateFloat(gesture, p)
     elseif gesture.kind == "box" then self.ui:setBox(boxBetween(gesture.start, p)) end
 end
 
@@ -576,12 +678,14 @@ function Input:_toggleEditor()
 end
 
 function Input:_finish(gesture, cancelledGesture)
-    if gesture.sliderMoved and self.ui.setSliderDragging then self.ui:setSliderDragging(false) end
-    if gesture.kind == "launcher" then
-        if gesture.moved then self.ui:finishLauncherMove(cancelledGesture)
-        elseif not cancelledGesture then self:_toggleEditor() end
-    elseif gesture.kind == "inspector" then
-        if gesture.moved then self.ui:finishInspectorMove(cancelledGesture) end
+    if gesture.sliderMoved and self.ui.setSliderDragging then self.ui:setSliderDragging(false, gesture.sliderMode) end
+    local surface = gesture.surface
+    if surface then
+        if gesture.moved then
+            if self.ui.finishSurfaceMove then self.ui:finishSurfaceMove(surface, cancelledGesture)
+            elseif surface == "launcher" then self.ui:finishLauncherMove(cancelledGesture)
+            elseif surface == "inspector" then self.ui:finishInspectorMove(cancelledGesture) end
+        elseif surface == "launcher" and not cancelledGesture then self:_toggleEditor() end
     elseif cancelledGesture then
         if gesture.transaction then self.app:cancelGesture() end
     elseif gesture.kind == "box" then self:_boxEnd(gesture)
@@ -607,7 +711,7 @@ function Input:_ended(input)
     local owned = input == gesture.primary or input == gesture.secondary
         or (not touch(gesture.primary) and input.UserInputType == gesture.primary.UserInputType)
     if not owned then return end
-    local wasCancelled = cancelled(input) or self:_blocked() or (gesture.kind ~= "launcher" and not self.app.editing)
+    local wasCancelled = cancelled(input) or self:_blocked() or (gesture.surface ~= "launcher" and not self.app.editing)
         or (gesture.transaction == true and not self:_targetsValid(gesture))
     if not wasCancelled and touch(input) then
         local latest = input == gesture.secondary and gesture.secondLatest or gesture.latest

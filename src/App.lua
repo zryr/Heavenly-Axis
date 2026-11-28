@@ -14,7 +14,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.2.0"
+App.VERSION = "3.3.0"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -230,9 +230,10 @@ function App:getState()
     for key, entry in pairs(self.transform:capture()) do layout[key] = entry end
     local preferences = Util.copy(self.preferences)
     for key, value in pairs(self.toolDefaults or {}) do preferences[key] = value end
-    return {layout = layout, groups = Util.copy(self.groups), preferences = preferences}
+    return {layout = layout, groups = Util.copy(self.groups), preferences = preferences, resetAll = self.resetAllPending}
 end
 function App:_setState(state, keepLauncher)
+    self.resetAllPending = state.resetAll == true or nil
     state = resolvedState(state.layout, state.preferences, state.groups)
     self.layout, self.groups, self.preferences = state.layout, state.groups, state.preferences
     if keepLauncher then
@@ -383,6 +384,41 @@ function App:markTutorialSeen()
     return accepted
 end
 
+function App:tutorialProgress(mode)
+    return self.editorPreferences:tutorialProgress(mode)
+end
+
+function App:setTutorialProgress(mode, step)
+    return self.editorPreferences:setTutorialProgress(mode, step)
+end
+
+function App:getEditorPlacement(name)
+    local position = self.editorPreferences:panelPlacement(name, self.context)
+    if position or name ~= "launcher" or self.editorPreferences.data.panelLayoutReset then return position end
+    return {x = self.preferences.launcherX, y = self.preferences.launcherY}
+end
+
+function App:setEditorPlacement(name, position)
+    local accepted, message, durable = self.editorPreferences:setPanelPlacement(name, position, self.context)
+    self.smartPreferences = self.editorPreferences.data
+    if not accepted then self:status(message or "Panel position could not be saved.")
+    elseif not durable and message and not self.panelSessionNotice then
+        self.panelSessionNotice = true
+        self:status(message)
+    end
+    return accepted
+end
+
+function App:resetEditorLayout()
+    if self.input then self.input:cancel() end
+    local accepted, message = self.editorPreferences:resetPanelLayout()
+    self.smartPreferences = self.editorPreferences.data
+    if accepted and self.ui and self.ui.resetPlacements then self.ui:resetPlacements() end
+    self:status(message or "Panels returned to their default positions.",
+        {kind = accepted and "success" or "warning", title = accepted and "Editor layout reset" or "Editor layout unchanged"})
+    return accepted
+end
+
 function App:canvasHits(x, y, explicit)
     if explicit and self.discovery.hitThrough then return self.discovery:hitThrough(x, y, self.selection) end
     return self.discovery:hit(x, y, self.selection)
@@ -424,7 +460,8 @@ function App:capability(key, operation)
     local operations = record.capabilities
     if operations then
         if operation == "reset" then
-            return {supported = operations.move.supported or operations.resize.supported or operations.visual.supported,
+            return {supported = operations.move.supported or operations.resize.supported or operations.visual.supported
+                or operations.opacity and operations.opacity.supported or operations.opacityContents and operations.opacityContents.supported,
                 reason = "The layout controls this element. Try its container."}
         end
         if operation and operations[operation] then return operations[operation] end
@@ -433,14 +470,24 @@ function App:capability(key, operation)
 end
 
 function App:capabilitiesForSelection()
-    local result = {move = false, resize = false, rotation = false, transparency = false, reset = false, groupMove = false, groupResize = false}
+    local result = {move = false, resize = false, rotation = false, transparency = false, opacity = false,
+        opacityContents = false, reset = false, groupMove = false, groupResize = false}
     for _, key in ipairs(self.selection) do
-        for _, operation in ipairs({"move", "resize", "rotation", "transparency", "reset", "groupMove", "groupResize"}) do
+        for _, operation in ipairs({"move", "resize", "rotation", "transparency", "opacity", "opacityContents", "reset", "groupMove", "groupResize"}) do
             local capability = self:capability(key, groupOperation(operation, #self.selection))
             result[operation] = result[operation] or capability.supported
             result.locked = result.locked or capability.locked
             if not capability.supported then result.reason = result.reason or capability.reason end
+            if operation == "opacity" and not capability.supported then result.opacityReason = capability.reason end
+            if operation == "opacityContents" and not capability.supported then result.opacityContentsReason = capability.reason end
         end
+    end
+    local _, roots = self.transform:selectionRects(self.selection, false)
+    result.rotate = #roots > 0
+    local rotationOperation = #roots > 1 and "groupRotate" or "rotationHandle"
+    for _, key in ipairs(roots) do
+        local capability = self:capability(key, rotationOperation)
+        if not capability.supported then result.rotate, result.rotateReason = false, capability.reason; break end
     end
     result.visual = result.rotation or result.transparency
     if #self.selection == 1 then
@@ -743,6 +790,149 @@ function App:scale(factor)
     local info = self:sizeInfo()
     if info then self:setSizePercent(info.scale * factor) end
 end
+
+local function signedAngle(value) return (value + 180) % 360 - 180 end
+
+function App:rotationInfo()
+    local key = self.selection[1]
+    local record = key and self.discovery:get(key)
+    if not record then return nil end
+    local angle = record.object.Rotation or 0
+    local original = record.baseline.rotation or 0
+    local group = #self.selection > 1
+    if group then angle, original = angle - original, 0 end
+    local gesture = self.gesture
+    if gesture and gesture.appearanceKind == "rotation" then angle = gesture.appearanceValue end
+    angle = signedAngle(angle)
+    return {value = angle, angle = angle, original = signedAngle(original), minimum = -180, maximum = 180,
+        min = -180, max = 180, group = group}
+end
+
+function App:rotationSnapshot()
+    if #self.selection == 0 then return nil, "Select a control to rotate." end
+    local _, roots = self.transform:selectionRects(self.selection, false)
+    local operation = #roots > 1 and "groupRotate" or "rotationHandle"
+    for _, key in ipairs(roots) do
+        local capability = self:capability(key, operation)
+        if not capability.supported then return nil, capability.reason end
+    end
+    return self.transform:rotationSnapshot(roots)
+end
+
+function App:opacityInfo(scope)
+    if #self.selection == 0 then return nil end
+    scope = scope or "element"
+    local gesture = self.gesture
+    local value, mixed
+    if gesture and gesture.appearanceKind == "opacity" and gesture.appearanceScope == scope then value = gesture.appearanceValue
+    else
+        for _, key in ipairs(self.selection) do
+            local entry = self.layout[key]
+            local opacity = entry and entry.opacity
+            local fraction = (opacity and opacity.scope == scope and opacity.factor or 1) * 100
+            if value == nil then value = fraction elseif value ~= fraction then mixed = true end
+        end
+    end
+    return {value = value or 100, percent = value or 100, minimum = 0, maximum = 100,
+        mixed = mixed, scope = scope}
+end
+
+function App:appearanceInfo(kind, scope)
+    if kind == "rotation" then
+        local snapshot, reason = self:rotationSnapshot()
+        if not snapshot then return nil, reason end
+        local info = self:rotationInfo()
+        info.snapshot, info.keys, info.pivot, info.skipped = snapshot, snapshot.keys, snapshot.pivot, 0
+        return info
+    end
+    if kind ~= "opacity" then return nil end
+    scope = scope == "contents" and "contents" or "element"
+    local operation = scope == "contents" and "opacityContents" or "opacity"
+    local keys, firstReason = {}, nil
+    for _, key in ipairs(self.selection) do
+        local capability = self:capability(key, operation)
+        if capability.supported then keys[#keys + 1] = key else firstReason = firstReason or capability.reason end
+    end
+    if #keys == 0 then return nil, firstReason or "Select a layer with supported visual properties." end
+    local snapshot, reason = self.transform:opacitySnapshot(keys, scope, function(record, usesGroup)
+        return not self:layerState(record.key).locked and (not usesGroup or not self.lockedAncestors[record.key])
+    end)
+    if not snapshot then return nil, reason end
+    local info = self:opacityInfo(scope)
+    info.snapshot, info.keys = snapshot, snapshot.keys
+    info.value, info.percent = snapshot.factor * 100, snapshot.factor * 100
+    info.mixed = snapshot.mixed
+    info.skipped = #self.selection - #(snapshot.keys or keys)
+    return info
+end
+
+function App:updateAppearance(kind, value, model)
+    if not self.gesture or not model or not Util.finite(value) then return false end
+    local ok, reason
+    if kind == "rotation" then ok, reason = self.transform:setRotation(model.snapshot, value - model.value)
+    elseif kind == "opacity" then ok, reason = self.transform:setOpacity(model.snapshot, math.max(0, math.min(1, value / 100)))
+    else return false end
+    if not ok then
+        self:status(reason or "The adjustment could not be applied.", {kind = "warning", title = "Adjustment unavailable"})
+        return false
+    end
+    self.gesture.appearanceKind, self.gesture.appearanceValue = kind, value
+    self.gesture.appearanceScope = model.scope
+    if self.ui then
+        if self.ui.requestSelectionUpdate then self.ui:requestSelectionUpdate() else self.ui:updateSelection() end
+    end
+    return true
+end
+
+function App:updateRotation(snapshot, delta)
+    if not snapshot then return false end
+    local info = self:rotationInfo()
+    local start = snapshot.editorAngle or (info and info.value) or 0
+    snapshot.editorAngle = start
+    return self:updateAppearance("rotation", start + delta, {snapshot = snapshot, value = start})
+end
+
+function App:_appearanceAction(kind, value, scope)
+    if not Util.finite(value) then return false end
+    local model, reason = self:appearanceInfo(kind, scope)
+    if not model then
+        self:status(reason or "The selection does not support this adjustment.", {kind = "warning", title = "Adjustment unavailable"})
+        return false
+    end
+    if not self:beginGesture(kind == "rotation" and "Rotate" or "Opacity", model.skipped) then return false end
+    if self:updateAppearance(kind, value, model) then return self:endGesture() end
+    self:cancelGesture()
+    return false
+end
+
+function App:setRotation(degrees)
+    if not Util.finite(degrees) then return false end
+    return self:_appearanceAction("rotation", signedAngle(degrees))
+end
+
+function App:stepRotation(delta)
+    local info = self:rotationInfo()
+    if info and Util.finite(delta) then return self:setRotation(info.value + delta) end
+end
+
+function App:resetRotation()
+    if #self.selection == 0 or not self:beginGesture("Reset rotation") then return false end
+    local keys = {}
+    for _, key in ipairs(self.selection) do
+        if self:capability(key, "rotation").supported then keys[#keys + 1] = key end
+    end
+    local _, skipped = self.transform:resetRotation(keys)
+    self.gesture.skipped = #self.selection - #keys + (skipped or 0)
+    return self:endGesture()
+end
+
+function App:setOpacity(percent, scope)
+    if not Util.finite(percent) then return false end
+    return self:_appearanceAction("opacity", math.max(0, math.min(100, percent)), scope)
+end
+
+function App:resetOpacity(scope) return self:setOpacity(100, scope) end
+
 function App:geometry(mode, value)
     if mode == "position" then
         local bounds = self:currentBounds(true, "move")
@@ -751,8 +941,8 @@ function App:geometry(mode, value)
         end
     elseif mode == "rotation" or mode == "transparency" then
         if not Util.finite(value) then return self:status("Enter a finite number.") end
-        if mode == "rotation" and (value < -360 or value > 360) then return self:status("Rotation range: -360 to 360.") end
-        if mode == "transparency" and (value < 0 or value > 1) then return self:status("Transparency range: 0 to 1.") end
+        if mode == "rotation" then value = signedAngle(value)
+        elseif value < 0 or value > 1 then return self:status("Transparency range: 0 to 1.") end
         local keys = {}
         for _, key in ipairs(self.selection) do
             if self:capability(key, mode).supported then keys[#keys + 1] = key end
@@ -779,6 +969,46 @@ function App:reset()
     local _, skipped = self.transform:restore(keys)
     self.gesture.skipped = #self.selection - #keys + (skipped or 0)
     self:endGesture()
+end
+
+function App:_resettable(key)
+    local record = self.discovery:get(key)
+    if not record then return not self.layerPolicy.locked[key] end
+    return self:capability(key, "reset").supported
+end
+
+function App:resetAllSummary(state)
+    local layout = state and state.layout or self:getState().layout
+    local summary = {count = 0, protected = 0, missing = 0}
+    for key in pairs(layout) do
+        if self:_resettable(key) then
+            summary.count = summary.count + 1
+            if not self.discovery:get(key) then summary.missing = summary.missing + 1 end
+        else summary.protected = summary.protected + 1 end
+    end
+    local context = self:_currentEditContext()
+    local profile = self.profiles:resetTarget(context)
+    summary.context = context.device .. " · " .. context.orientation
+    summary.profile = profile and profile.name or nil
+    return summary
+end
+
+function App:resetAll()
+    if self.previewState then return self:status("Apply or cancel the preview before resetting the layout.") end
+    if self.profiles.suspended then return self:status("Resume the profile before resetting its layout.") end
+    if self.finishingGesture or self.saving then return self:status("Wait for the current adjustment to finish.") end
+    if self.input then self.input:cancel() else self:cancelGesture() end
+    local before = self:getState()
+    local summary = self:resetAllSummary(before)
+    if summary.count == 0 then
+        return self:status(summary.protected > 0 and "Only protected or unavailable edits remain." or "There are no changes to reset.")
+    end
+    local state = Util.copy(before)
+    for key in pairs(state.layout) do if self:_resettable(key) then state.layout[key] = nil end end
+    state.resetAll = true
+    local note = "Save to keep the original layout for this device and orientation."
+    if summary.protected > 0 then note = note .. " Protected layers were kept." end
+    self:_commitLayoutEdit(state, before, "Reset All Changes", note, {kind = "success", title = "Original layout restored"})
 end
 function App:recover()
     self:_rectAction("Recover offscreen selection", "move", function(rects)
@@ -877,8 +1107,15 @@ function App:save(onComplete)
     local state = self:getState()
     local context = Util.copy(self:_currentEditContext())
     self.saving = true
-    local ok, message, accepted = self.profiles:save(state.layout, state.groups, state.preferences, self.editBaseline, context)
+    local options = state.resetAll and {resetAll = true} or nil
+    local ok, message, accepted = self.profiles:save(state.layout, state.groups, state.preferences, self.editBaseline, context, options)
     if self.alive and (ok or accepted) then
+        if state.resetAll then
+            self.resetAllPending, state.resetAll = nil, nil
+            for _, stack in ipairs({self.history.past, self.history.future}) do
+                for _, action in ipairs(stack) do action.before.resetAll, action.after.resetAll = nil, nil end
+            end
+        end
         self.history:checkpoint(state)
         self.profileChanged = false
         self.savedProfilesData = Util.copy(self.profiles.data)
@@ -992,13 +1229,7 @@ function App:setPreference(name, value)
     self:changed()
 end
 function App:setLauncherPosition(x, y)
-    if self.previewState or self.profiles.suspended or self.saving or self.finishingGesture then return end
-    if not Util.finite(x) or not Util.finite(y) or x < 0 or x > 1 or y < 0 or y > 1 then return end
-    if self.preferences.launcherX == x and self.preferences.launcherY == y then return end
-    self.launcherOverrides = self.launcherOverrides or {}
-    self.launcherOverrides.launcherX, self.launcherOverrides.launcherY = x, y
-    self.preferences.launcherX, self.preferences.launcherY = x, y
-    self:changed()
+    return self:setEditorPlacement("launcher", {x = x, y = y})
 end
 
 function App:siblingKeys(key)
@@ -1295,7 +1526,7 @@ function App:import(text, overwriteConfirmed)
     self:changed()
     return true
 end
-function App:_commitLayoutEdit(state, before, label, message)
+function App:_commitLayoutEdit(state, before, label, message, notification)
     local job = {}
     self.finishingGesture = job
     local function complete(ok, reason)
@@ -1305,7 +1536,7 @@ function App:_commitLayoutEdit(state, before, label, message)
         if ok then
             self:_setState(state, true)
             self.history:push(before, self:getState(), label)
-            self:status(message)
+            self:status(message, notification)
         else self:status(reason or "The requested change could not be verified.") end
         self:_afterInteraction(ok, reason)
     end
@@ -1346,6 +1577,11 @@ function App:remap(oldKey, newKey)
     local state = Util.copy(before)
     local entry = Util.copy(old)
     entry.descriptor, entry.experimental = Util.copy(target.descriptor), false
+    if entry.opacity and entry.opacity.targets then
+        for index, targetKey in ipairs(entry.opacity.targets) do
+            entry.opacity.targets[index] = newKey .. targetKey:sub(#oldKey + 1)
+        end
+    end
     state.layout[oldKey], state.layout[newKey] = nil, entry
     for name, members in pairs(state.groups) do
         local remapped, seen = {}, {}

@@ -14,6 +14,33 @@ function Geometry.translate(rect, dx, dy)
     return { x = rect.x + dx, y = rect.y + dy, w = rect.w, h = rect.h }
 end
 
+function Geometry.center(rect)
+    return {x = rect.x + rect.w / 2, y = rect.y + rect.h / 2}
+end
+
+function Geometry.angle(pivot, point)
+    return math.deg((math.atan2 or math.atan)(point.y - pivot.y, point.x - pivot.x))
+end
+
+function Geometry.angleDelta(from, to)
+    return (to - from + 180) % 360 - 180
+end
+
+function Geometry.rotatePoint(point, pivot, degrees)
+    local radians = math.rad(degrees)
+    local sine, cosine = math.sin(radians), math.cos(radians)
+    local x, y = point.x - pivot.x, point.y - pivot.y
+    return {x = pivot.x + cosine * x - sine * y, y = pivot.y + sine * x + cosine * y}
+end
+
+function Geometry.rotatedBounds(rect, degrees)
+    local radians = math.rad(degrees)
+    local sine, cosine = math.abs(math.sin(radians)), math.abs(math.cos(radians))
+    local center = Geometry.center(rect)
+    local width, height = rect.w * cosine + rect.h * sine, rect.w * sine + rect.h * cosine
+    return {x = center.x - width / 2, y = center.y - height / 2, w = width, h = height}
+end
+
 function Geometry.bounds(rects)
     if #rects == 0 then return nil end
     local left, top, right, bottom = math.huge, math.huge, -math.huge, -math.huge

@@ -5,7 +5,7 @@ local Util = require("Util")
 local EditorPreferences = {}
 EditorPreferences.__index = EditorPreferences
 
-local booleanPreferences = {smartSelection = true, skipTransparent = true, onboardingCompleted = true}
+local booleanPreferences = {smartSelection = true, skipTransparent = true, onboardingCompleted = true, panelDocking = true}
 local layerFlags = {ignored = true, locked = true}
 
 function EditorPreferences.new(storage, context, log)
@@ -16,7 +16,7 @@ function EditorPreferences.new(storage, context, log)
     if reason and log then log(reason) end
     if not Config.validateEditorPreferences(data) then data = Config.emptyEditorPreferences() end
     return setmetatable({storage = storage, data = data, persistedData = data,
-        scope = Config.editorScope(context), localRules = {}}, EditorPreferences)
+        context = context, scope = Config.editorScope(context), localRules = {}}, EditorPreferences)
 end
 
 function EditorPreferences:_commit(candidate)
@@ -48,9 +48,53 @@ end
 
 function EditorPreferences:setPreference(name, value)
     if not booleanPreferences[name] or type(value) ~= "boolean" then return false, "Invalid editor preference.", false end
-    if self.data[name] == value then return self:_unchanged() end
+    if (self.data[name] == true) == value then return self:_unchanged() end
     local candidate = Util.copy(self.data)
     candidate[name] = value
+    return self:_commit(candidate)
+end
+
+function EditorPreferences:panelPlacement(name, context)
+    local mode = Config.editorPanelMode(context or self.context)
+    local placements = mode and self.data.panels and self.data.panels[mode]
+    return placements and Util.copy(placements[name]) or nil
+end
+
+function EditorPreferences:setPanelPlacement(name, placement, context)
+    local mode = Config.editorPanelMode(context or self.context)
+    if not mode or not Config.EDITOR_PANELS[name] or not Config.validatePanelPlacement(placement) then
+        return false, "Invalid editor panel position.", false
+    end
+    if Util.equal(self:panelPlacement(name, context), placement) then return self:_unchanged() end
+    local candidate = Util.copy(self.data)
+    candidate.panels = candidate.panels or {}
+    local placements = candidate.panels[mode] or {}
+    placements[name] = Util.copy(placement)
+    candidate.panels[mode] = placements
+    return self:_commit(candidate)
+end
+
+function EditorPreferences:resetPanelLayout()
+    if self.data.panelLayoutReset and not self.data.panels and not self.data.panelDocking then return self:_unchanged() end
+    local candidate = Util.copy(self.data)
+    candidate.panels, candidate.panelDocking, candidate.panelLayoutReset = nil, nil, true
+    return self:_commit(candidate)
+end
+
+function EditorPreferences:tutorialProgress(mode)
+    local progress = self.data.tutorialProgress
+    return progress and progress[mode] or nil
+end
+
+function EditorPreferences:setTutorialProgress(mode, step)
+    if not Config.EDITOR_TUTORIAL_MODES[mode] or not Config.validateTutorialStep(step) then
+        return false, "Invalid lesson progress.", false
+    end
+    if self:tutorialProgress(mode) == step then return self:_unchanged() end
+    local candidate = Util.copy(self.data)
+    local progress = candidate.tutorialProgress or {}
+    progress[mode] = step
+    candidate.tutorialProgress = next(progress) and progress or nil
     return self:_commit(candidate)
 end
 

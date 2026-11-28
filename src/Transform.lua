@@ -3,6 +3,7 @@ local Util = require("Util")
 local Discovery = require("Discovery")
 local Coordinates = require("Coordinates")
 local Geometry = require("Geometry")
+local TransformOpacity = require("TransformOpacity")
 
 local Transform = {}
 Transform.__index = Transform
@@ -13,7 +14,8 @@ local propertyNames = {"position", "size", "rotation", "transparency"}
 local rectKeys = {"x", "y", "w", "h"}
 local propertyOperations = {position = "move", size = "resize", rotation = "rotation", transparency = "transparency"}
 local operationProperties = {move = "position", groupMove = "position", resize = "size", groupResize = "size",
-    position = "position", size = "size", rotation = "rotation", transparency = "transparency"}
+    position = "position", size = "size", rotation = "rotation", rotationHandle = "rotation",
+    groupRotate = "rotation", transparency = "transparency"}
 local cached = {cached = true}
 local integerOffsets
 
@@ -44,6 +46,9 @@ local function validEntry(entry)
     if type(entry) ~= "table" or not validDimension(entry.position) or not validDimension(entry.size) then return false end
     if entry.rotation ~= nil and (not Util.finite(entry.rotation) or math.abs(entry.rotation) > 36000) then return false end
     if entry.transparency ~= nil and (not Util.finite(entry.transparency) or entry.transparency < 0 or entry.transparency > 1) then return false end
+    if entry.opacity ~= nil and (type(entry.opacity) ~= "table" or not Util.finite(entry.opacity.factor)
+        or entry.opacity.factor < 0 or entry.opacity.factor > 1
+        or (entry.opacity.scope ~= "element" and entry.opacity.scope ~= "contents")) then return false end
     return true
 end
 
@@ -188,8 +193,13 @@ local function fitRect(reference, target, after)
 end
 
 function Transform.new(discovery, log)
-    return setmetatable({discovery = discovery, log = log or function() end, tracked = {}, pendingByObject = {},
+    local self = setmetatable({discovery = discovery, log = log or function() end, tracked = {}, pendingByObject = {},
         receipts = setmetatable({}, {__mode = "k"}), safe = false, destroyed = false}, Transform)
+    self.opacity = TransformOpacity.new(discovery, function(key)
+        local entry = self.tracked[key]
+        return entry and entry.transparency
+    end)
+    return self
 end
 
 function Transform:_record(key, entry)
@@ -281,6 +291,7 @@ function Transform:_rollback(operations)
             restored = false
             self.log("Original properties could not be restored for " .. tostring(object.Name))
         end
+        if operation.appearance and not self.opacity:rollback(operation.appearance) then restored = false end
         self.tracked[record.key] = operation.previousTracked
         self.receipts[object] = operation.previousReceipt
         if operation.setApproval and self.discovery.approved[record.key] ~= operation.previousApproval then
@@ -297,6 +308,7 @@ function Transform:_store(operation)
     local portable = operation.portable or operation.after
     self.tracked[record.key] = not operation.removeTracked and portable or nil
     self.receipts[record.object] = operation.receipt or portable
+    if operation.appearance then self.opacity:commit(operation.appearance) end
     if operation.setApproval then
         self.discovery.approved[record.key] = operation.setApproval == "grant" and true or nil
         self.discovery:_classify(record)
@@ -317,6 +329,18 @@ function Transform:_writeBatch(operations, deferStore)
             return false, restored and "Transform rejected. The selection was restored." or "Transform rejected. Some original properties could not be restored."
         end
     end
+    for _, operation in ipairs(operations) do
+        if operation.appearance then
+            local ok, problem = pcall(self.opacity.write, self.opacity, operation.appearance)
+            if not ok then
+                self.opacity:markFailed(operation.appearance)
+                self:_failed(operation.record, problem, {})
+                local _, restored = self:_rollback(operations)
+                return false, restored and "The appearance adjustment was rejected. The previous appearance was restored."
+                    or "The appearance adjustment was rejected and could not be fully restored."
+            end
+        end
+    end
     if not deferStore then
         for _, operation in ipairs(operations) do self:_store(operation) end
     end
@@ -328,14 +352,29 @@ function Transform:_observation(operation)
     if not object.Parent then return "An element disappeared during editing.", {}, "environment" end
     local observed = Discovery.serialize(object)
     if not observed then return "The resulting GUI properties could not be read.", {}, "environment" end
+    local appearance = operation.appearanceExpected or operation.appearance
+    if self.opacity:property(appearance, object, "BackgroundTransparency") then
+        observed.transparency = operation.after.transparency
+    end
+    if operation.appearance and not self.opacity:matches(operation.appearance) then
+        self.opacity:markFailed(operation.appearance)
+        return "The game replaced an opacity adjustment.", {}, "appearance"
+    end
     local changed = changedProperties(observed, operation.after)
     if next(changed) then
         return "The game replaced the requested properties.", changed, "overwrite", operation.expectedRect and Coordinates.rect(object)
     end
-    if operation.expectedRect and math.abs(object.Rotation % 360) > 0.001 then
+    local expectedAngle = operation.after.rotation or (reference and reference.before.rotation)
+    if operation.expectedRect and expectedAngle and math.abs(Geometry.angleDelta(expectedAngle, object.Rotation)) > 0.001 then
         return "The element rotated during editing.", {}, "environment"
     end
     local actual, expected = Coordinates.rect(object), operation.expectedRect
+    if expected and operation.after.rotation then
+        local angle = object.AbsoluteRotation
+        if Util.finite(angle) and math.abs(Geometry.angleDelta(operation.after.rotation, angle)) > 0.05 then
+            return "The rendered angle did not match the requested rotation.", {rotation = true}, "geometry", actual
+        end
+    end
     if expected and operation.verify == "position" and actual then
         expected = {x = expected.x - reference.anchorX * (actual.w - expected.w),
             y = expected.y - reference.anchorY * (actual.h - expected.h), w = actual.w, h = actual.h}
@@ -478,7 +517,8 @@ function Transform:_recordUpdates(operations)
             transaction.operations[#transaction.operations + 1] = initial
         else
             initial.after, initial.expectedRect, initial.verify = operation.after, operation.expectedRect, operation.verify
-            initial.portable, initial.checkSize = operation.portable, operation.checkSize
+            initial.portable, initial.checkSize, initial.forcePortable = operation.portable, operation.checkSize, operation.forcePortable
+            initial.appearance = self.opacity:merge(initial.appearance, operation.appearance)
         end
     end
 end
@@ -489,7 +529,9 @@ function Transform:endTransaction(callback)
     if not transaction then return false end
     local operations = {}
     for _, operation in ipairs(transaction.operations) do
-        if matchesProperties(operation.before, operation.after)
+        local meaningfulOpacity = self.opacity:changed(operation.appearance)
+            or (operation.forcePortable and not Util.equal(operation.previousTracked, operation.portable))
+        if not meaningfulOpacity and matchesProperties(operation.before, operation.after)
             and (not operation.previousTracked or Util.equal(operation.previousTracked, operation.portable or operation.after))
             and matchesProperties(Discovery.serialize(operation.record.object), operation.after) then
             local record = operation.record
@@ -662,6 +704,148 @@ function Transform:setRects(keys, rects, operation)
     return true
 end
 
+function Transform:rotationSnapshot(keys)
+    local rects, roots, skipped = self:selectionRects(keys)
+    if #roots == 0 or skipped > 0 then return nil, "Select available layers to rotate." end
+    local isGroup, members, visual = #roots > 1, {}, {}
+    for index, key in ipairs(roots) do
+        local record = self.discovery:get(key)
+        local pending = self.pendingByObject[record.object]
+        if pending then self:_finish(pending) end
+        local allowed, reason = self:_allowed(record, isGroup and "groupRotate" or "rotationHandle")
+        if not allowed then return nil, reason or "A selected layer cannot rotate here." end
+        local before = Discovery.serialize(record.object)
+        local ok, reference = pcall(frameReference, record.object, before, self.discovery.root)
+        if not before or not ok then return nil, "A selected layer's rotation center is unavailable." end
+        rects[index] = reference.rect
+        members[index] = {record = record, reference = reference, center = Geometry.center(reference.rect)}
+        visual[index] = Geometry.rotatedBounds(reference.rect, before.rotation)
+    end
+    return {keys = roots, members = members, pivot = Geometry.center(Geometry.bounds(visual)),
+        isGroup = isGroup, angle = isGroup and 0 or members[1].reference.before.rotation,
+        classificationRevision = self.discovery.classificationRevision}
+end
+
+function Transform:setRotation(snapshot, delta)
+    if not self.transaction then return false, "Start a rotation gesture first." end
+    if type(snapshot) ~= "table" or not Util.finite(delta) then return false, "The requested angle is unavailable." end
+    local operations = {}
+    local revision = self.discovery.classificationRevision
+    local options = {cached = snapshot.classificationRevision == revision}
+    delta = Geometry.angleDelta(0, delta)
+    for _, member in ipairs(snapshot.members) do
+        local record, reference = member.record, member.reference
+        local object = record.object
+        local current = self.discovery:get(record.key)
+        if not current or current.object ~= object or object.Parent ~= reference.parent then
+            return false, "A layer changed during rotation."
+        end
+        local allowed, reason = self:_allowed(current, snapshot.isGroup and "groupRotate" or "rotationHandle", nil, options)
+        if not allowed then return false, reason or "A layer cannot rotate here." end
+        local before = Discovery.serialize(object)
+        if not before then return false, "The current angle is unavailable." end
+        local prior = self.transaction.initial[object]
+        if not prior and (not matchesProperty(before, reference.before, "rotation")
+            or (snapshot.isGroup and not matchesProperty(before, reference.before, "position"))) then
+            return false, "A layer changed before rotation began. Try again."
+        end
+        if prior and not matchesProperties(before, prior.after) then
+            local message = "The game replaced the adjustment during editing."
+            self:_failed(current, message, changedProperties(before, prior.after), true)
+            return false, message
+        end
+        local original, rect = reference.before, reference.rect
+        local angle = original.rotation + delta
+        if math.abs(angle) > 360 then angle = Geometry.angleDelta(0, angle) end
+        local after, expected = {rotation = angle}, rect
+        if snapshot.isGroup then
+            local center = Geometry.rotatePoint(member.center, snapshot.pivot, delta)
+            local dx, dy = center.x - member.center.x, center.y - member.center.y
+            local position, scale = Util.copy(original.position), reference.positionScale
+            position.xo = normalizedOffset(position.xo + dx / scale)
+            position.yo = normalizedOffset(position.yo + dy / scale)
+            if not validDimension(position) or math.abs((position.xo - original.position.xo) * scale - dx) > MAX_RECT_ERROR
+                or math.abs((position.yo - original.position.yo) * scale - dy) > MAX_RECT_ERROR then
+                return false, "A layer's scale cannot represent this group rotation accurately."
+            end
+            after.position, expected = position, Geometry.translate(rect, dx, dy)
+        end
+        local mutation = self:_operation(current, before, after)
+        local previous = mutation.previousTracked
+        if prior then previous = prior.previousTracked end
+        local portable = portableEntry(current, original, previous)
+        if angle ~= original.rotation then portable.rotation = angle end
+        if after.position and not matchesProperty(original, after, "position") then portable.position = after.position end
+        mutation.portable = portable
+        mutation.reference, mutation.expectedRect, mutation.verify = reference, expected, "position"
+        if not matchesProperties(before, after) then operations[#operations + 1] = mutation end
+    end
+    snapshot.classificationRevision = revision
+    local ok, reason = self:_writeBatch(operations)
+    if ok then self:_recordUpdates(operations) end
+    return ok, reason
+end
+
+function Transform:opacitySnapshot(keys, scope, canEdit)
+    return self.opacity:snapshot(keys, scope, canEdit)
+end
+
+function Transform:opacityTargets(key)
+    return self.opacity:targets(key)
+end
+
+function Transform:setOpacity(snapshot, factor)
+    if not self.transaction then return false, "Start an opacity gesture first." end
+    if type(snapshot) ~= "table" or not Util.finite(factor) or factor < 0 or factor > 1 then
+        return false, "Choose an opacity from 0 to 100 percent."
+    end
+    local operations, edits = {}, {}
+    local revision = self.discovery.revision
+    local recheck = snapshot.revision ~= revision
+    for _, group in ipairs(snapshot.groups) do
+        local record = self.discovery:get(group.record.key)
+        if not record or record.object ~= group.record.object or not record.object.Parent then return false, "A layer changed during editing." end
+        local pending = self.pendingByObject[record.object]
+        if pending then self:_finish(pending) end
+        local before = Discovery.serialize(record.object)
+        if not before then return false, "The selected layer is unavailable." end
+        local prior = self.transaction.initial[record.object]
+        if prior and prior.appearance and not self.opacity:matches(prior.appearance) then
+            self.opacity:markFailed(prior.appearance)
+            return false, "The game replaced an opacity adjustment."
+        end
+        if recheck then
+            for _, target in ipairs(group.targets) do
+                local owner = self.discovery:get(target.key)
+                if not owner or owner.object ~= target.record.object or not target.object.Parent then
+                    return false, "An appearance layer changed during editing."
+                end
+            end
+        end
+        local opacity = {factor = factor, scope = snapshot.scope, targets = group.keys}
+        local operation = self:_operation(record, before, {})
+        operation.portable = portableEntry(record, before, operation.previousTracked)
+        operation.portable.opacity, operation.forcePortable = opacity, true
+        operations[#operations + 1] = operation
+        edits[#edits + 1] = {record = record, spec = opacity, targets = group.targets}
+    end
+    snapshot.revision = revision
+    local change = self.opacity:prepare(edits)
+    if not change or #operations == 0 then return false, "There are no supported opacity surfaces." end
+    if not self.opacity:changed(change) then return true end
+    if not self.opacity:surfaceChanged(change) and factor == 1 then
+        local existing = false
+        for _, operation in ipairs(operations) do
+            if operation.previousTracked and operation.previousTracked.opacity then existing = true; break end
+        end
+        if not existing then return true end
+    end
+    operations[1].appearance = change
+    local ok, reason = self:_writeBatch(operations)
+    if ok then self:_recordUpdates(operations) end
+    return ok, reason
+end
+
 function Transform:_savedFields(record, before, entry, previous, options)
     local portable = normalizeEntry(entry or record.baseline)
     local raw, blocked = {}, nil
@@ -713,8 +897,12 @@ function Transform:apply(layout, options)
                     if before then
                         self.discovery:_classify(record)
                         local original = self:_savedFields(record, before, nil, entry, {replace = true, delta = true})
-                        if restoreProperties(record.object, original) then self.receipts[record.object] = record.baseline
-                        else self.log("Original properties could not be restored for " .. tostring(record.object.Name)) end
+                        local operation = self:_operation(record, before, original)
+                        operation.removeTracked, operation.receipt = true, record.baseline
+                        if self.opacity:hasScope(record.key) or original.transparency then
+                            operation.appearance = self.opacity:prepare({{record = record, legacy = false}})
+                        end
+                        if not self:_writeBatch({operation}) then self.log("Original properties could not be restored for " .. tostring(record.object.Name)) end
                     end
                 end
             end
@@ -725,6 +913,7 @@ function Transform:apply(layout, options)
         local record = self:_record(key, entry)
         if options.onlyNew and record and Util.equal(self.receipts[record.object], entry) then
             -- The same request already ran for this instance.
+            if entry.opacity then pending[#pending + 1] = {record = record, entry = entry, appearanceOnly = true} end
         elseif not validEntry(entry) then
             skipped = skipped + 1
             self.log("Skipped invalid layout properties")
@@ -740,7 +929,10 @@ function Transform:apply(layout, options)
         self.discovery:_classify(record)
         local before = Discovery.serialize(object)
         local after, portable, reason
-        if before then after, portable, reason = self:_savedFields(record, before, entry, self.tracked[record.key], options) end
+        if before then
+            if item.appearanceOnly then after, portable = {}, normalizeEntry(entry)
+            else after, portable, reason = self:_savedFields(record, before, entry, self.tracked[record.key], options) end
+        end
         local width, height
         local checkSize = after and after.size ~= nil and not Util.equal(after.size, record.baseline.size)
         if after then
@@ -759,9 +951,16 @@ function Transform:apply(layout, options)
             end
         end
         if reason then skipped = skipped + 1; self.log("Skipped part of " .. tostring(object.Name) .. ": " .. reason) end
-        if before and (not reason or not matchesProperties(before, after)) then
+        local appearance
+        if before and (entry.opacity or self.opacity:hasScope(record.key) or after.transparency ~= nil) then
+            appearance = self.opacity:prepare({{record = record, spec = entry.opacity,
+                legacy = entry.transparency ~= nil and entry.transparency or false}}, options.onlyNew)
+        end
+        local changedAppearance = appearance and (#appearance.writes > 0 or self.opacity:changed(appearance))
+        if before and ((not reason and not item.appearanceOnly) or not matchesProperties(before, after) or changedAppearance) then
             local operation = self:_operation(record, before, after)
             operation.receipt, operation.checkSize, operation.portable = Util.copy(entry), checkSize, portable
+            operation.appearance = appearance
             if entry.experimental == false then operation.setApproval = "revoke"
             elseif options.experimental and entry.experimental == true then operation.setApproval = "grant" end
             local ok, message = self:_writeBatch({operation})
@@ -798,7 +997,7 @@ function Transform:applyHistory(previous, desired, callback)
         if not Util.equal(entry, desired[key]) then changed[key] = true end
     end
     for key in pairs(desired) do if not previous[key] then changed[key] = true end end
-    local operations, skipped = {}, 0
+    local operations, opacityEdits, skipped = {}, {}, 0
     for key in pairs(changed) do
         local entry = desired[key]
         local record = self:_record(key, entry or previous[key])
@@ -825,10 +1024,19 @@ function Transform:applyHistory(previous, desired, callback)
             end
             operation.receipt = entry and Util.copy(entry) or operation.after
             operations[#operations + 1] = operation
+            if (entry and entry.opacity) or self.opacity:hasScope(record.key) or raw.transparency ~= nil then
+                opacityEdits[#opacityEdits + 1] = {record = record, spec = entry and entry.opacity,
+                    legacy = entry and entry.transparency ~= nil and entry.transparency or false}
+            end
         end
     end
     if #operations == 0 then callback(true, nil, skipped); return true end
     table.sort(operations, function(a, b) return #a.record.descriptor.path < #b.record.descriptor.path end)
+    if #opacityEdits > 0 then
+        local appearance = self.opacity:prepare(opacityEdits)
+        operations[1].appearance = appearance
+        for _, operation in ipairs(operations) do operation.appearanceExpected = appearance end
+    end
     local ok, problem = self:_writeBatch(operations, true)
     if not ok then callback(false, problem, skipped); return true end
     local job = {operations = operations, replay = true,
@@ -851,10 +1059,10 @@ function Transform:_editProperties(keys, createEntry, capability, rootOnly)
             if previous then self:_finish(previous) end
             local before = Discovery.serialize(object)
             if before then
-                local after, portable = createEntry(record, before)
+                local after, portable, appearance = createEntry(record, before)
                 if after and validEntry(portable or after) then
                     local operation = self:_operation(record, before, after)
-                    operation.portable = portable
+                    operation.portable, operation.appearanceEdit = portable, appearance
                     operations[#operations + 1] = operation
                 else failed = failed + 1 end
             else failed = failed + 1 end
@@ -872,9 +1080,18 @@ function Transform:_editProperties(keys, createEntry, capability, rootOnly)
         end
     end
     if #operations == 0 then return 0, failed end
-    if self.transaction then
+    local appearanceEdits = {}
+    for _, operation in ipairs(operations) do
+        if operation.appearanceEdit then appearanceEdits[#appearanceEdits + 1] = operation.appearanceEdit end
+    end
+    if #appearanceEdits > 0 then
+        local appearance = self.opacity:prepare(appearanceEdits)
+        operations[1].appearance = appearance
+        for _, operation in ipairs(operations) do operation.appearanceExpected = appearance end
+    end
+    if self.transaction or #appearanceEdits > 0 then
         if not self:_writeBatch(operations) then return 0, failed + #operations end
-        self:_recordUpdates(operations)
+        if self.transaction then self:_recordUpdates(operations) end
         return #operations, failed
     end
     local applied = 0
@@ -894,8 +1111,18 @@ function Transform:setProperty(keys, property, value)
         if not matchesProperty(before, after, property) or (previous and previous[property] ~= nil) then
             portable[property] = value
         end
-        return after, portable
+        local appearance
+        if property == "transparency" then appearance = {record = record, legacy = value, keep = true} end
+        return after, portable, appearance
     end, property, property == "rotation")
+end
+
+function Transform:resetRotation(keys)
+    return self:_editProperties(keys, function(record, before)
+        local portable = portableEntry(record, before, self.tracked[record.key])
+        portable.rotation = nil
+        return {rotation = record.baseline.rotation}, portable
+    end, "rotation", true)
 end
 
 function Transform:restore(keys)
@@ -918,7 +1145,12 @@ function Transform:restore(keys)
             end
         end
         if record.experimental then portable.experimental = record.experimentalApproved == true end
-        return after, portable
+        portable.opacity = nil
+        local appearance
+        if self.opacity:hasScope(record.key) or after.transparency ~= nil then
+            appearance = {record = record, legacy = portable.transparency or false}
+        end
+        return after, portable, appearance
     end, false)
     if failed > 0 then self.log(tostring(failed) .. " original elements unavailable during restoration") end
     return restored, failed

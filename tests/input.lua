@@ -35,7 +35,7 @@ local function pointer(kind, x, y)
     end
     return input
 end
-local function setup()
+local function setup(configure)
     local ui = {visible = true, handles = {}, gui = {AbsoluteSize = {X = 800, Y = 600}}}
     local function button(x, y, w, h)
         return {InputBegan = signal(), AbsolutePosition = {X = x, Y = y}, AbsoluteSize = {X = w, Y = h}, Visible = true}
@@ -102,6 +102,7 @@ local function setup()
         self.alignmentCalls = self.alignmentCalls + 1
         return {}
     end
+    if configure then configure(app, ui, button) end
     local input = Input.new(app, ui, {UserInputService = uis})
     return app, ui, uis, input
 end
@@ -720,5 +721,172 @@ uis.InputEnded:Fire(finger)
 check(app.starts == 1 and app.ends == 1 and not controller:isBusy(), "mixed compatibility group drag commits once")
 controller:destroy()
 task = nil
+
+local function setupAppearance()
+    return setup(function(app, ui, button)
+        ui.activeTool, ui.opacityScope = "rotate", "element"
+        ui.rotationHandle = {gui = button(68, 28, 44, 44), marker = button(84, 44, 12, 12)}
+        ui.visualSliders = {rotation = button(300, 500, 200, 30), opacity = button(300, 550, 200, 30)}
+        function ui:getTransformTool() return self.activeTool end
+        function ui:visualSliderTrackRect(mode)
+            local rect = self.visualSliders[mode]
+            return {x = rect.AbsolutePosition.X, y = rect.AbsolutePosition.Y, w = rect.AbsoluteSize.X, h = 30}
+        end
+        function ui:setSliderDragging(active, mode) self.sliderDragging, self.sliderMode = active, mode end
+        app.values = {rotation = 15, opacity = 100}
+        function app:appearanceInfo(mode, scope)
+            return {value = self.values[mode], minimum = mode == "rotation" and -180 or 0,
+                maximum = mode == "rotation" and 180 or 100, keys = {"a"}, skipped = 0,
+                pivot = {x = 50, y = 50}, snapshot = {}, scope = scope}
+        end
+        function app:updateAppearance(mode, value, model)
+            self.values[mode], self.appearanceScope, self.appearanceStart = value, model.scope, model.value
+            self.appearanceUpdates = (self.appearanceUpdates or 0) + 1
+            return true
+        end
+        local begin = app.beginGesture
+        function app:beginGesture(label, ...)
+            begin(self, ...)
+            self.title = label
+            self.previousAppearance = {rotation = self.values.rotation, opacity = self.values.opacity}
+        end
+        local cancel = app.cancelGesture
+        function app:cancelGesture()
+            cancel(self)
+            self.values = self.previousAppearance
+        end
+    end)
+end
+
+app, ui, uis, controller = setupAppearance()
+finger = pointer("touch", 90, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.rotationHandle.gui.InputBegan:Fire(finger)
+local other = pointer("touch", 48, 80)
+ui.canvas.InputBegan:Fire(other)
+uis.InputEnded:Fire(other)
+check(app.starts == 0 and controller:isBusy(), "a second canvas touch cannot join a rotation handle press")
+finger.Position = {X = 50, Y = 90}
+uis.InputChanged:Fire(finger)
+check(close(app.values.rotation, 105) and app.appearanceStart == 15 and app.starts == 1 and app.title == "Rotate selection",
+    "rotation follows the clockwise arc around the unchanged snapshot pivot")
+finger.Position = {X = 50, Y = 10}
+uis.InputChanged:Fire(finger)
+check(close(app.values.rotation, 105), "sparse samples straddling a tiny pivot rebase the arc instead of jumping")
+finger.Position = {X = 50, Y = 50}
+uis.InputChanged:Fire(finger)
+finger.Position = {X = 10, Y = 50}
+uis.InputChanged:Fire(finger)
+check(close(app.values.rotation, 105), "crossing the rotation pivot does not introduce a half-turn jump")
+finger.Position = {X = 50, Y = 8}
+uis.InputEnded:Fire(finger)
+check(close(app.values.rotation, 195) and app.ends == 1 and app.rects.a.x == 0 and app.rects.a.w == 100,
+    "final release outside the handle adds the final arc sample and commits only rotation")
+controller:destroy()
+
+app, ui, uis, controller = setupAppearance()
+local rotationHandle = ui.rotationHandle.gui
+rotationHandle.AbsolutePosition = {X = 0, Y = 32}
+finger = pointer("touch", 20, 55)
+rotationHandle.InputBegan:Fire(finger)
+finger.Position = {X = 20, Y = 44}
+uis.InputChanged:Fire(finger)
+check(app.values.rotation > 25 and app.values.rotation < 50, "crossing the signed angle seam advances by the short arc")
+controller:cancel()
+check(app.values.rotation == 15 and app.cancels == 1 and app.ends == 0 and not controller:isBusy(),
+    "an interrupted rotation restores the previous appearance without committing")
+controller:destroy()
+
+app, ui, uis, controller = setupAppearance()
+finger = pointer("touch", 20, 20)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 30, Y = 55}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.starts == 0 and app.rects.a.x == 0, "canvas swipes in Rotate mode can't translate the selected HUD")
+finger = pointer("touch", 420, 512)
+ui.visualSliders.rotation.InputBegan:Fire(finger)
+local min, max = controller:sliderRange("rotation")
+check(min == -180 and max == 180 and controller:sliderRange() == nil, "rotation slider publishes its own frozen range")
+finger.Position = {X = 470, Y = 512}
+uis.InputChanged:Fire(finger)
+check(close(app.values.rotation, 105) and ui.sliderDragging and ui.sliderMode == "rotation", "angle slider preserves thumb offset and pauses its scroller")
+uis.InputEnded:Fire(finger)
+check(app.ends == 1 and ui.sliderDragging == false, "angle slider commits once and restores native scrolling")
+controller:destroy()
+
+app, ui, uis, controller = setupAppearance()
+ui.activeTool, ui.opacityScope = "opacity", "contents"
+finger = pointer("touch", 350, 560)
+ui.visualSliders.opacity.InputBegan:Fire(finger)
+finger.Position = {X = 354, Y = 610}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.values.opacity == 100 and app.starts == 0 and ui.sliderDragging == nil, "vertical swipes over opacity retain native scrolling and don't edit")
+finger = pointer("touch", 480, 560)
+ui.visualSliders.opacity.InputBegan:Fire(finger)
+ui.opacityScope = "element"
+finger.Position = {X = 380, Y = 563}
+uis.InputChanged:Fire(finger)
+check(close(app.values.opacity, 50) and app.appearanceScope == "contents" and ui.sliderMode == "opacity",
+    "horizontal opacity capture uses the chosen scope and stable unfaded reference")
+uis.WindowFocusReleased:Fire()
+check(app.values.opacity == 100 and app.cancels == 1 and app.ends == 0 and ui.sliderDragging == false,
+    "focus or viewport interruption restores opacity and reenables the scroller")
+finger = pointer("touch", 300, 560)
+ui.visualSliders.opacity.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.values.opacity == 0 and app.ends == 1 and app.appearanceScope == "element",
+    "a direct tap can fade to exactly zero with no interfering gesture")
+controller:destroy()
+
+app, ui, uis, controller = setupAppearance()
+ui.activeTool = "opacity"
+function app:updateAppearance() return false end
+finger = pointer("touch", 484, 560)
+ui.visualSliders.opacity.InputBegan:Fire(finger)
+finger.Position = {X = 388, Y = 565}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.cancels == 1 and app.ends == 0 and ui.sliderDragging == false and not controller:isBusy(),
+    "a rejected appearance write restores scrolling and ignores the old pointer's release")
+controller:destroy()
+
+app, ui, uis, controller = setup(function(_, ui, button)
+    ui.toolbarGrip = button(200, 5, 44, 44)
+    ui.workspaceGrip = button(500, 450, 140, 44)
+    local pointInPanel = ui.pointInPanel
+    function ui:pointInPanel(x, y)
+        return pointInPanel(self, x, y) or (x >= 200 and x <= 244 and y >= 5 and y <= 49)
+    end
+    function ui:surfacePosition(kind)
+        if kind == "toolbar" then return 190, 5 end
+        if kind == "workspace" then return 500, 420 end
+    end
+    function ui:moveSurface(kind, x, y) self.lastSurface = {kind = kind, x = x, y = y} end
+    function ui:finishSurfaceMove(kind, aborted) self.finishedSurface = {kind = kind, aborted = aborted} end
+end)
+finger = pointer("touch", 220, 20)
+ui.canvas.InputBegan:Fire(finger)
+ui.toolbarGrip.InputBegan:Fire(finger)
+other = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(other)
+other.Position = {X = 70, Y = 70}
+uis.InputChanged:Fire(other)
+uis.InputEnded:Fire(other)
+finger.Position = {X = 261, Y = 50}
+uis.InputEnded:Fire(finger)
+check(ui.lastSurface.kind == "toolbar" and ui.lastSurface.x == 231 and ui.lastSurface.y == 35
+    and not ui.finishedSurface.aborted and app.starts == 0 and app.selection[1] == "a",
+    "toolbar gripping owns its touch, preserves selection, and commits only UI placement")
+finger = pointer("touch", 620, 460)
+ui.workspaceGrip.InputBegan:Fire(finger)
+finger.Position = {X = 550, Y = 410}
+uis.InputChanged:Fire(finger)
+controller:cancel()
+check(ui.lastSurface.kind == "workspace" and ui.lastSurface.x == 430 and ui.lastSurface.y == 370
+    and ui.finishedSurface.aborted and not controller:isBusy() and app.starts == 0,
+    "workspace grip cancels its preview position without touching game geometry or history")
+controller:destroy()
 
 return checks
