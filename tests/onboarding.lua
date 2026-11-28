@@ -1,6 +1,7 @@
 -- The practice pad uses production Input with a model that owns only synthetic controls.
 local mock = require("support/Roblox").new(640, 360)
 local Coordinates = require("Coordinates")
+local Design = require("Design")
 local Onboarding = require("Onboarding")
 local Reference = require("ActionReference")
 local checks = 0
@@ -62,6 +63,8 @@ end
 
 session:layout(landscape)
 check(session:start() and session:isActive() and session.mode == "quick" and session.next.Text == "Start", "first open shows short Quick Start with Start or Skip")
+check(session.coach.BackgroundColor3 == Design.colors.surface and session.next.BackgroundColor3 == Design.colors.cyan
+    and session.next.AbsoluteSize.Y >= Design.touch.minimum, "tutorial uses the shared surface, primary action and touch target tokens")
 check(session.highlightFrames[1].Visible and session.highlightRects[1].x == realToolbar.AbsolutePosition.X,
     "welcome highlights the actual toolbar bounds without invoking it")
 check(not session:start(), "a second start cannot duplicate the active tutorial")
@@ -111,6 +114,10 @@ check(inside(portrait, session.coachRect) and inside(portrait, session.padRect)
 
 advance()
 check(session.lesson.id == "resize" and session.slider.Visible and session.handle.Visible, "size practice exposes the handle, slider and pinch")
+check(session.description.Text:find("Spread to grow", 1, true) and session.description.Text:find("Lift either finger", 1, true),
+    "practice explains pinch direction and release consistently with the shared gesture owner")
+check(session.description.AbsoluteSize.Y > Design.text.body and session.instructions.CanvasSize.Y.Offset >= session.description.AbsoluteSize.Y,
+    "wrapped teaching copy has its full measured height and remains scrollable")
 local width = session.rects.Jump.w
 finger = press(session.handle)
 move(finger, 17, 17)
@@ -201,6 +208,7 @@ check(mock.activeConnections == 0, "completion releases every practice connectio
 local opacity = Reference.get("opacity")
 check(opacity.label == "Opacity" and opacity.how:find("100%", 1, true) and opacity.effect and opacity.note,
     "reference states activation, saved-layout effect and limits")
+check(Reference.get("size").how:find("on or near the selection", 1, true), "Help explains the broader near-selection pinch area")
 check(#Reference.search("Rotate") > 0 and #Reference.search("   ") == #Reference.sections and #Reference.search("[[[no action]]]" ) == 0,
     "reference groups literal case-insensitive search results by category")
 session:start()

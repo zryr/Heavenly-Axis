@@ -6,6 +6,7 @@ local Input = {}
 Input.__index = Input
 local HOLD_SECONDS = 0.5
 local ROTATION_DEAD_ZONE = 6
+local PINCH_DISTANCE_FLOOR = 12
 local APPEARANCE_LABELS = {rotation = "Rotate selection", opacity = "Adjust opacity"}
 
 local function touch(input)
@@ -51,6 +52,14 @@ local function contains(rect, p, margin)
     margin = margin or 0
     return rect and p.x >= rect.x - margin and p.y >= rect.y - margin
         and p.x <= rect.x + rect.w + margin and p.y <= rect.y + rect.h + margin
+end
+
+local function nearPinchTarget(bounds, p)
+    if not bounds then return false end
+    local margin = math.max(18, math.min(44, 48 - math.min(bounds.w, bounds.h) / 2))
+    local dx = math.max(bounds.x - p.x, p.x - bounds.x - bounds.w, 0)
+    local dy = math.max(bounds.y - p.y, p.y - bounds.y - bounds.h, 0)
+    return dx * dx + dy * dy <= margin * margin
 end
 
 local function boxBetween(a, b)
@@ -235,10 +244,10 @@ function Input:_handleAt(p, tool)
 end
 
 function Input:_canvasHits(p, explicit)
-    local hits, preferred
-    if self.app.canvasHits then hits, preferred = self.app:canvasHits(p.x, p.y, explicit)
-    else hits, preferred = self.app.discovery:hit(p.x, p.y) end
-    return hits, preferred == nil and hits[1] or (preferred or nil)
+    local hits, preferred, dragEligible
+    if self.app.canvasHits then hits, preferred, dragEligible = self.app:canvasHits(p.x, p.y, explicit)
+    else hits, preferred, dragEligible = self.app.discovery:hit(p.x, p.y) end
+    return hits, preferred == nil and hits[1] or (preferred or nil), dragEligible
 end
 
 function Input:_operation(mode)
@@ -316,38 +325,57 @@ function Input:_prepareTransform(gesture, mode)
     return self:_snapshot(gesture, mode)
 end
 
+function Input:_freezePinch(gesture, first, second)
+    local span = distance(first, second)
+    local sizeInfo = self.app:sizeInfo(gesture.bounds, gesture.rects, gesture.keys)
+    local size = sizeInfo and sizeInfo.size or gesture.bounds
+    local prefs = self.app.preferences
+    local individual = prefs.equalSize == true and #gesture.rects > 1
+    local minimum = 0
+    for _, rect in ipairs(gesture.rects) do
+        local factor = math.max(Geometry.minimumSize(rect.w) / rect.w, Geometry.minimumSize(rect.h) / rect.h)
+        if individual then factor = 1 + (rect.w * factor - rect.w) / size.w end
+        minimum = math.max(minimum, factor)
+    end
+    return {
+        span = span, denominator = math.max(PINCH_DISTANCE_FLOOR, span), center = midpoint(first, second),
+        slop = math.max(3, math.min(gesture.threshold, span * .08)),
+        minimum = minimum, maximum = sizeInfo and math.max(1, sizeInfo.maximum / sizeInfo.scale) or 4,
+        size = size, individual = individual, centerScale = prefs.centerScale == true,
+    }
+end
+
 function Input:_pinchBegin(gesture, input, p)
+    local paddedHandle = gesture.kind == "resize" and gesture.tapThrough and not gesture.moved
     if not touch(input) or not touch(gesture.primary) or input == gesture.primary or gesture.secondary
-        or (gesture.kind ~= "canvas" and gesture.kind ~= "drag" and gesture.kind ~= "pinchPending") then return end
-    if not gesture.pinchKey and not gesture.resizeGap then return end
-    if gesture.additive and not gesture.resizeGap and not selected(self.app, gesture.pinchKey) then return end
-    if distance(gesture.latest, p) < 12 then return end
+        or cancelled(gesture.primary) or released(gesture.primary)
+        or (gesture.kind ~= "canvas" and gesture.kind ~= "drag" and gesture.kind ~= "pinchPending" and not paddedHandle) then return end
+    local currentSelection = gesture.resizeGap or gesture.pinchNear or paddedHandle
+    if not gesture.pinchKey and not currentSelection then return end
+    if gesture.additive and not currentSelection and not selected(self.app, gesture.pinchKey) then return end
     local operation = self:_operation("resize")
     local bounds = gesture.lastRects and Geometry.bounds(gesture.lastRects) or self.app:currentBounds(true, operation)
     if gesture.kind ~= "drag" and gesture.pinchKey and not selected(self.app, gesture.pinchKey) then
         local record = self.app.discovery:get(gesture.pinchKey)
         bounds = record and Coordinates.rect(record.object) or nil
     end
-    if not contains(bounds, p, 16) then return end
+    local first = Coordinates.point(gesture.primary)
+    if not nearPinchTarget(bounds, first) or not nearPinchTarget(bounds, p) then return end
     if gesture.lastRects then
         local _, keys = self.app:getRects(true, operation)
         -- A running drag may already have moved roots that a group resize must
         -- leave alone. Preserve the existing drag in that case.
         if not keys or not sameKeys(gesture.keys, keys) then return end
+        gesture.rects, gesture.bounds = gesture.lastRects, bounds
+        gesture.operation = operation
+    elseif not self:_prepareTransform(gesture, "resize") then
+        return
     end
     self:_cancelHold(gesture)
-    gesture.secondStart = p
-    gesture.pinchStart = gesture.latest
-    gesture.pinchDistance = distance(gesture.latest, p)
-    gesture.pinchCenter = midpoint(gesture.latest, p)
-    gesture.secondary, gesture.secondLatest = input, p
+    gesture.pinch = self:_freezePinch(gesture, first, p)
+    gesture.secondary = input
+    gesture.tapThrough = nil
     gesture.kind = "pinch"
-    if gesture.lastRects then
-        gesture.rects = gesture.lastRects
-        gesture.bounds = Geometry.bounds(gesture.rects)
-        gesture.operation = operation
-        gesture.pinchReady = true
-    end
     self:_own(gesture, input)
     self.ui:setGuides({})
 end
@@ -389,7 +417,7 @@ function Input:_canvasBegin(input)
         self:_claim(input, "box", p).additive = additive
         return
     end
-    local hits, record = self:_canvasHits(p)
+    local hits, record, dragEligible = self:_canvasHits(p)
     if #hits > 0 and not touch(input) and (self:_modifier("LeftAlt") or self:_modifier("RightAlt")) then
         record = hits[1]
         for i, hit in ipairs(hits) do
@@ -402,24 +430,28 @@ function Input:_canvasBegin(input)
     if self:_supports(record, selected(self.app, record and record.key) and resizeOperation or "resize") then pinchKey = record.key end
     local selectedDrag, selectedPinch
     for _, hit in ipairs(hits) do
-        if selected(self.app, hit.key) then
+        if selected(self.app, hit.key) and (not dragEligible or dragEligible[hit.key]) then
             if not selectedDrag and self:_supports(hit, moveOperation) then selectedDrag = hit.key end
             if not selectedPinch and self:_supports(hit, resizeOperation) then selectedPinch = hit.key end
             if selectedDrag and selectedPinch then break end
         end
     end
     dragKey, pinchKey = selectedDrag or dragKey, selectedPinch or pinchKey
-    local moveGap, resizeGap
-    if not record and #self.app.selection > 1 then
-        moveGap = contains(self.app:currentBounds(true, moveOperation), p)
-        resizeGap = contains(self.app:currentBounds(true, resizeOperation), p)
+    local moveGap, resizeGap, pinchNear
+    if not record and #self.app.selection > 0 then
+        local resizeBounds = self.app:currentBounds(true, resizeOperation)
+        if #self.app.selection > 1 then
+            moveGap = contains(self.app:currentBounds(true, moveOperation), p)
+            resizeGap = contains(resizeBounds, p)
+        end
+        if touch(input) and not pinchKey then pinchNear = nearPinchTarget(resizeBounds, p) end
     end
-    if tool == "rotate" or tool == "opacity" then dragKey, pinchKey, moveGap, resizeGap = nil, nil, nil, nil end
+    if tool == "rotate" or tool == "opacity" then dragKey, pinchKey, moveGap, resizeGap, pinchNear = nil, nil, nil, nil, nil end
     local kind = (record or dragKey or moveGap or resizeGap or touch(input)) and "canvas" or "box"
     local gesture = self:_claim(input, kind, p)
     gesture.selectionOnly = tool == "rotate" or tool == "opacity"
     gesture.additive, gesture.record, gesture.dragKey, gesture.pinchKey = additive, record, dragKey, pinchKey
-    gesture.moveGap, gesture.resizeGap = moveGap, resizeGap
+    gesture.moveGap, gesture.resizeGap, gesture.pinchNear = moveGap, resizeGap, pinchNear
     gesture.hits = hits
     if kind == "canvas" then self:_startHold(gesture) end
 end
@@ -534,35 +566,30 @@ function Input:_updateSlider(gesture, p)
 end
 
 function Input:_updatePinch(gesture)
-    local a, b = gesture.latest, gesture.secondLatest
-    if not gesture.pinchReady then
-        if math.max(distance(gesture.pinchStart, a), distance(gesture.secondStart, b)) < gesture.threshold then return end
-        if not self:_prepareTransform(gesture, "resize") then self:cancel(); return end
-        gesture.pinchReady = true
-    end
+    -- A Roblox input object already has its current position when either
+    -- Changed callback is dispatched. Read the pair together to avoid treating
+    -- the intermediate half of a two-finger pan as a scale change.
+    local a, b = Coordinates.point(gesture.primary), Coordinates.point(gesture.secondary)
     local center, bounds = midpoint(a, b), gesture.bounds
-    if not gesture.pinchModel then
-        local model = self.app:sizeInfo(bounds, gesture.rects, gesture.keys)
-        gesture.pinchModel = {maximum = model and math.max(1, model.maximum / model.scale) or math.huge,
-            size = model and model.size or bounds}
+    local pinch = gesture.pinch
+    local spanDelta = distance(a, b) - pinch.span
+    if not pinch.active then
+        if math.abs(spanDelta) < pinch.slop and distance(pinch.center, center) < gesture.threshold then return end
+        pinch.active = true
     end
-    local scale = math.min(distance(a, b) / gesture.pinchDistance, gesture.pinchModel.maximum)
-    local prefs = self.app.preferences
+    local scale = math.max(pinch.minimum, math.min(pinch.maximum, 1 + spanDelta / pinch.denominator))
     local rects
-    if prefs.equalSize and #gesture.rects > 1 then
-        local size = gesture.pinchModel.size
+    if pinch.individual then
+        local size = pinch.size
         local w, h = size.w * (scale - 1), size.h * (scale - 1)
         local target = {x = bounds.x, y = bounds.y, w = bounds.w + w, h = bounds.h + h}
-        rects = Geometry.adjustMembers(gesture.rects, bounds, target, prefs.centerScale == true, true, "x")
+        rects = Geometry.adjustMembers(gesture.rects, bounds, target, pinch.centerScale, true, "x")
         for i, rect in ipairs(rects) do
-            rects[i] = Geometry.translate(rect, center.x - gesture.pinchCenter.x, center.y - gesture.pinchCenter.y)
+            rects[i] = Geometry.translate(rect, center.x - pinch.center.x, center.y - pinch.center.y)
         end
     else
-        for _, rect in ipairs(gesture.rects) do
-            scale = math.max(scale, Geometry.MIN_SIZE / rect.w, Geometry.MIN_SIZE / rect.h)
-        end
-        local target = {x = center.x + (bounds.x - gesture.pinchCenter.x) * scale,
-            y = center.y + (bounds.y - gesture.pinchCenter.y) * scale, w = bounds.w * scale, h = bounds.h * scale}
+        local target = {x = center.x + (bounds.x - pinch.center.x) * scale,
+            y = center.y + (bounds.y - pinch.center.y) * scale, w = bounds.w * scale, h = bounds.h * scale}
         rects = Geometry.scale(gesture.rects, target, false)
     end
     self:_apply(gesture, rects, "Pinch resize")
@@ -597,9 +624,9 @@ function Input:_changed(input)
     if not owner and not mouseMove then return end
     if cancelled(input) then self:_ended(input); return end
     if self:_blocked() or (gesture.surface ~= "launcher" and not self.app.editing) then self:cancel(); return end
-    local p = Coordinates.point(input)
-    if input == gesture.secondary then gesture.secondLatest = p else gesture.latest = p end
     if gesture.kind == "pinch" then self:_updatePinch(gesture); return end
+    local p = Coordinates.point(input)
+    gesture.latest = p
     if not gesture.moved and distance(gesture.start, p) >= gesture.threshold then
         gesture.moved = true
         self:_cancelHold(gesture)
@@ -612,7 +639,7 @@ function Input:_changed(input)
                 local capability = self.app:capability(gesture.record.key, "move")
                 if capability and not capability.supported and capability.reason then self.app:status(capability.reason) end
             end
-            gesture.kind = (gesture.pinchKey or gesture.resizeGap) and "pinchPending" or "passive"
+            gesture.kind = (gesture.pinchKey or gesture.resizeGap or gesture.pinchNear) and "pinchPending" or "passive"
             return
         end
         gesture.kind = "drag"
@@ -693,7 +720,6 @@ function Input:_finish(gesture, cancelledGesture)
         local hits = self:_canvasHits(gesture.start, true)
         self:_showThrough(hits, gesture.start)
     elseif gesture.kind == "canvas" and not gesture.moved then self:_tap(gesture)
-    elseif gesture.kind == "pinch" and not gesture.pinchReady and not gesture.moved then self:_tap(gesture)
     elseif gesture.tapThrough and not gesture.moved then
         gesture.hits, gesture.record = self:_canvasHits(gesture.start)
         if gesture.record then self:_tap(gesture) end
@@ -714,8 +740,7 @@ function Input:_ended(input)
     local wasCancelled = cancelled(input) or self:_blocked() or (gesture.surface ~= "launcher" and not self.app.editing)
         or (gesture.transaction == true and not self:_targetsValid(gesture))
     if not wasCancelled and touch(input) then
-        local latest = input == gesture.secondary and gesture.secondLatest or gesture.latest
-        if distance(Coordinates.point(input), latest) > 0 then
+        if gesture.kind == "pinch" or distance(Coordinates.point(input), gesture.latest) > 0 then
             self:_changed(input)
             if self.gesture ~= gesture then return end
         end

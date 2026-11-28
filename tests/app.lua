@@ -473,12 +473,19 @@ do
         "resetting editor placement leaves the HUD checkpoint intact")
 
     editor:move(9, 0)
+    editor:group("create", "Keep this group")
+    editor:setPreference("multiSelect", true)
+    editor:setPreference("boxSelect", true)
     editor:resetAll()
-    check(x(editor) == 0 and editor.resetAllPending and #editor.history.past == 2, "Reset All restores original geometry in one history entry")
+    check(x(editor) == 0 and editor.resetAllPending and #editor.history.past == 3, "Reset All restores original geometry in one history entry")
+    check(#editor.selection == 0 and not editor.groupFocus and not editor.preferences.multiSelect
+        and not editor.preferences.boxSelect and editor.groups["Keep this group"], "Reset All clears live selection tools and keeps named groups")
     editor:undo()
-    check(x(editor) == 19 and not editor.resetAllPending, "undo restores the layout and clears the pending reset destination")
+    check(x(editor) == 19 and not editor.resetAllPending and #editor.selection == 0,
+        "undo restores the layout without reselecting the group")
+    editor:select(key)
     editor:redo()
-    check(x(editor) == 0 and editor.resetAllPending, "redo restores originals and the pending reset destination")
+    check(x(editor) == 0 and editor.resetAllPending and #editor.selection == 0, "redo returns to the neutral reset state")
     editor:cancel()
     check(x(editor) == 10 and not editor.resetAllPending and not editor.dirty, "discard after Reset All returns to the saved checkpoint")
     editor:resetAll()
@@ -498,6 +505,15 @@ do
     editor:resetAll()
     check(x(editor) == 10 and not editor.dirty and editor:resetAllSummary().protected == 1,
         "Reset All skips the editor's locked controls")
+
+    editor = setup({deferGesture = true})
+    editor:resetAll()
+    check(editor.resettingLayout and #editor.selection == 0, "reset stays neutral during verification")
+    editor:select(key)
+    check(#editor.selection == 0, "input cannot restore selection while the reset is verifying")
+    editor.transform.complete(false)
+    check(x(editor) == 10 and #editor.selection == 0 and not editor.resettingLayout and #editor.history.past == 0,
+        "failed reset preserves the verified layout and clears transient selection without adding history")
 end
 
 do

@@ -1,5 +1,6 @@
 -- An isolated practice canvas uses the editor's pointer controller without any real HUD or profile references.
 local Coordinates = require("Coordinates")
+local Design = require("Design")
 local Geometry = require("Geometry")
 local Input = require("Input")
 local Layout = require("UILayout")
@@ -17,14 +18,14 @@ local panel = lesson("panel", "Make room to edit", "dragPanel", "Drag the sample
 local selectJump = lesson("select", "Tap to select", "select", "Tap practice Jump. Its outline shows which control will change.",
     "Jump is selected. The outline follows the control.")
 local moveJump = lesson("move", "Drag to move", "move", "Drag the selected button to an open spot in the practice area.", "You moved Jump without changing its size.")
-local resizeJump = lesson("resize", "Make it fit", "size", "Drag the size slider, use the corner handle, or pinch Jump with two fingers.",
-    "You resized Jump. Choose the method that feels easiest.")
+local resizeJump = lesson("resize", "Resize a control", "size", "Start with two fingers on or near Jump. Spread to grow, pinch together to shrink. Lift either finger to finish.",
+    "You resized Jump. The Size slider and corner handle work too.")
 local save = lesson("finish", "Save and return to play", "save",
     "Save keeps your edits when storage is available. Done returns to play, and the Axis mark reopens the editor. Help covers separate automatic startup setup.",
     nil, {"save", "done"})
 
 local quick = {
-    lesson("welcome", "Make your HUD your own", "launcher", "Practice moving and resizing a control, then learn how to save and get back to the game.", nil, {"launcher", "toolbar"}),
+    lesson("welcome", "Practice editing a control", "launcher", "Try moving and resizing a practice control. Then save and return to gameplay.", nil, {"launcher", "toolbar"}),
     panel, selectJump, moveJump, resizeJump, save,
 }
 
@@ -51,6 +52,8 @@ local tour = {
 local chapterNames = {"Editor navigation", "Selection", "Moving and resizing", "Rotation and opacity", "Groups", "Saving and recovery", "Compatibility"}
 
 local layer = 89
+local C, F, T = Design.colors, Design.font, Design.text
+local touch = Design.touch.minimum
 local function make(class, props, parent)
     local object = Instance.new(class)
     for name, value in pairs(props) do object[name] = value end
@@ -59,17 +62,9 @@ local function make(class, props, parent)
     return object
 end
 
-local function round(parent, radius)
-    make("UICorner", {CornerRadius = UDim.new(0, radius)}, parent)
-end
-
-local function stroke(parent, color, thickness)
-    return make("UIStroke", {Color = color, Thickness = thickness or 1, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, parent)
-end
-
 local function label(parent, name, size, color, bold, z)
     return make("TextLabel", {Name = name, Text = "", BackgroundTransparency = 1, BorderSizePixel = 0,
-        Font = bold and Enum.Font.GothamBold or Enum.Font.Gotham, TextSize = size, TextColor3 = color,
+        Font = bold and F.strong or F.body, TextSize = size, TextColor3 = color,
         TextWrapped = true, TextTruncate = Enum.TextTruncate.AtEnd, TextXAlignment = Enum.TextXAlignment.Left,
         TextYAlignment = Enum.TextYAlignment.Top, ZIndex = z}, parent)
 end
@@ -119,11 +114,10 @@ function Onboarding:_connect(signal, callback)
 end
 
 function Onboarding:_button(parent, name, text, primary, callback)
-    local p = self.palette
-    local button = make("TextButton", {Name = name, Text = text, BorderSizePixel = 0, TextSize = 13,
-        TextColor3 = primary and p.ink or p.text, BackgroundColor3 = primary and p.accent or p.raised,
-        AutoButtonColor = true, TextTruncate = Enum.TextTruncate.AtEnd, Font = Enum.Font.GothamBold, ZIndex = layer + 4}, parent)
-    round(button, 9)
+    local button = make("TextButton", {Name = name, Text = text, BorderSizePixel = 0, TextSize = T.control,
+        TextColor3 = primary and C.ink or C.text, BackgroundColor3 = primary and C.cyan or C.raised,
+        AutoButtonColor = true, TextTruncate = Enum.TextTruncate.AtEnd, Font = F.strong, ZIndex = layer + 4}, parent)
+    Design.round(button)
     if callback then self:_connect(button.Activated, function()
         if self.active and (button == self.skip or not self.input or not self.input:isBusy()) then callback() end
     end) end
@@ -131,107 +125,98 @@ function Onboarding:_button(parent, name, text, primary, callback)
 end
 
 function Onboarding:_target(name)
-    local p = self.palette
-    local frame = make("Frame", {Name = "Practice" .. name, BackgroundColor3 = p.control, BorderSizePixel = 0,
+    local frame = make("Frame", {Name = "Practice" .. name, BackgroundColor3 = C.control, BorderSizePixel = 0,
         ZIndex = layer + 3, Active = false}, self.canvas)
     pcall(function() frame.Interactable = false end)
-    round(frame, 14)
-    local edge = stroke(frame, p.border, 2)
-    local text = label(frame, "Name", 14, p.text, true, layer + 4)
+    Design.round(frame, Design.radius.surface)
+    local edge = Design.stroke(frame, C.border, 2, .16)
+    local text = label(frame, "Name", T.body, C.text, true, layer + 4)
     text.Size, text.Text = UDim2.fromScale(1, 1), name
     text.TextXAlignment, text.TextYAlignment = Enum.TextXAlignment.Center, Enum.TextYAlignment.Center
     return {key = name, object = frame, edge = edge, text = text, editable = true}
 end
 
 function Onboarding:_meter(name, caption)
-    local p = self.palette
     local slider = self:_button(self.controls, name, "", false)
     slider.Size = UDim2.fromScale(1, 1)
-    local title = label(slider, "Label", 12, p.text, true, layer + 5)
+    local title = label(slider, "Label", T.control, C.text, true, layer + 5)
     title.Text, title.Position, title.Size = caption, UDim2.fromOffset(10, 15), UDim2.fromOffset(50, 18)
-    local track = make("Frame", {Name = "Track", BackgroundColor3 = p.border, BorderSizePixel = 0,
+    local track = make("Frame", {Name = "Track", BackgroundColor3 = C.border, BorderSizePixel = 0,
         Position = UDim2.fromOffset(64, 20), Size = UDim2.new(1, -78, 0, 4), ZIndex = layer + 5}, slider)
-    round(track, 2)
+    Design.round(track, 2)
     local thumb = make("Frame", {Name = "Thumb", AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.4, .5),
-        Size = UDim2.fromOffset(15, 15), BackgroundColor3 = p.accent, ZIndex = layer + 6}, track)
-    round(thumb, 8)
+        Size = UDim2.fromOffset(15, 15), BackgroundColor3 = C.cyan, ZIndex = layer + 6}, track)
+    Design.round(thumb, 8)
     return slider, track, thumb, title
 end
 
 function Onboarding:_mount()
-    local p = {surface = Color3.fromRGB(15, 26, 36), raised = Color3.fromRGB(29, 47, 59),
-        ink = Color3.fromRGB(8, 30, 39), text = Color3.fromRGB(239, 247, 250),
-        body = Color3.fromRGB(183, 204, 216), accent = Color3.fromRGB(116, 233, 236),
-        border = Color3.fromRGB(59, 87, 105), control = Color3.fromRGB(39, 83, 99)}
-    self.palette = p
     self.shield = make("TextButton", {Name = "PracticeShield", Text = "", Active = true, AutoButtonColor = false,
-        BackgroundColor3 = Color3.fromRGB(4, 13, 20), BackgroundTransparency = .31,
+        BackgroundColor3 = C.scrim, BackgroundTransparency = .31,
         BorderSizePixel = 0, Size = UDim2.fromScale(1, 1), ZIndex = layer}, self.parent)
-    self.coach = make("Frame", {Name = "TutorialCoach", BackgroundColor3 = p.surface, BorderSizePixel = 0,
+    self.coach = make("Frame", {Name = "TutorialCoach", BackgroundColor3 = C.surface, BorderSizePixel = 0,
         ClipsDescendants = true, ZIndex = layer + 1}, self.shield)
-    round(self.coach, 14)
-    stroke(self.coach, p.border)
-    self.progress = label(self.coach, "Progress", 11, p.accent, true, layer + 2)
+    Design.round(self.coach, Design.radius.dialog)
+    Design.stroke(self.coach, C.border)
+    self.progress = label(self.coach, "Progress", T.caption, C.cyan, true, layer + 2)
     self.progress.Position, self.progress.Size = UDim2.fromOffset(14, 12), UDim2.new(1, -28, 0, 16)
-    self.heading = label(self.coach, "Heading", 20, p.text, true, layer + 2)
+    self.heading = label(self.coach, "Heading", T.title, C.text, true, layer + 2)
     self.heading.Position, self.heading.Size = UDim2.fromOffset(14, 32), UDim2.new(1, -28, 0, 28)
     self.heading.TextWrapped = false
     self.instructions = make("ScrollingFrame", {Name = "Instructions", Position = UDim2.fromOffset(14, 62),
         Size = UDim2.new(1, -28, 1, -120), BackgroundTransparency = 1, BorderSizePixel = 0,
-        ScrollBarThickness = 2, CanvasSize = UDim2.new(), AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ScrollBarThickness = 2, CanvasSize = UDim2.new(),
         ScrollingDirection = Enum.ScrollingDirection.Y, ZIndex = layer + 2}, self.coach)
-    self.description = label(self.instructions, "Description", 13, p.body, false, layer + 3)
-    self.description.Size = UDim2.new(1, -6, 0, 18)
-    self.description.AutomaticSize = Enum.AutomaticSize.Y
+    self.description = label(self.instructions, "Description", T.body, C.subtleText, false, layer + 3)
     self.description.TextTruncate = Enum.TextTruncate.None
     self.skip = self:_button(self.coach, "Skip", "Skip", false, function() self:_finish("skipped") end)
-    self.skip.Position, self.skip.Size = UDim2.new(0, 14, 1, -53), UDim2.fromOffset(70, 44)
+    self.skip.Position, self.skip.Size = UDim2.new(0, 14, 1, -53), UDim2.fromOffset(70, touch)
     self.back = self:_button(self.coach, "Back", "Back", false, function() self:_go(self.step - 1) end)
     self.next = self:_button(self.coach, "Next", "Start", true, function() self:_advance() end)
-    self.next.Position, self.next.Size = UDim2.new(1, -108, 1, -53), UDim2.fromOffset(94, 44)
+    self.next.Position, self.next.Size = UDim2.new(1, -108, 1, -53), UDim2.fromOffset(94, touch)
     self.tour = self:_button(self.coach, "GuidedTour", "Open Guided Tour", false, function()
         self:_finish("completed")
         self:start("tour", true)
     end)
-    self.tour.Position, self.tour.Size = UDim2.new(0, 12, 1, -100), UDim2.new(1, -24, 0, 44)
+    self.tour.Position, self.tour.Size = UDim2.new(0, 12, 1, -100), UDim2.new(1, -24, 0, touch)
     self.highlightFrames = {}
 
-    self.pad = make("Frame", {Name = "PracticePad", BackgroundColor3 = p.surface, BorderSizePixel = 0, ZIndex = layer + 1}, self.shield)
-    round(self.pad, 14)
-    stroke(self.pad, p.border)
-    local padTitle = label(self.pad, "PracticeLabel", 12, p.body, true, layer + 2)
+    self.pad = make("Frame", {Name = "PracticePad", BackgroundColor3 = C.surface, BorderSizePixel = 0, ZIndex = layer + 1}, self.shield)
+    Design.round(self.pad, Design.radius.dialog)
+    Design.stroke(self.pad, C.border)
+    local padTitle = label(self.pad, "PracticeLabel", T.control, C.subtleText, true, layer + 2)
     padTitle.Text, padTitle.Position, padTitle.Size = "Practice canvas", UDim2.fromOffset(12, 9), UDim2.new(1, -24, 0, 16)
     self.canvas = make("TextButton", {Name = "PracticeSurface", Text = "", Active = true, AutoButtonColor = false,
-        BackgroundColor3 = p.ink, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = layer + 2}, self.pad)
-    round(self.canvas, 10)
+        BackgroundColor3 = C.field, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = layer + 2}, self.pad)
+    Design.round(self.canvas, Design.radius.surface)
     self.targets = {Jump = self:_target("Jump"), Move = self:_target("Move")}
-    self.overlay = make("Frame", {Name = "TransparentPracticeLayer", BackgroundColor3 = p.accent,
+    self.overlay = make("Frame", {Name = "TransparentPracticeLayer", BackgroundColor3 = C.cyan,
         BackgroundTransparency = .91, BorderSizePixel = 0, ZIndex = layer + 5, Visible = false}, self.canvas)
     pcall(function() self.overlay.Interactable = false end)
-    round(self.overlay, 8)
-    stroke(self.overlay, p.border)
+    Design.round(self.overlay)
+    Design.stroke(self.overlay, C.border)
     self.overlayRecord = {key = "Overlay", object = self.overlay, editable = false}
     self.handle = make("TextButton", {Name = "PracticeResize", Text = "", AutoButtonColor = false,
         BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = layer + 6, Visible = false}, self.canvas)
     self.marker = make("Frame", {Name = "Marker", AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5),
-        Size = UDim2.fromOffset(13, 13), BorderSizePixel = 0, BackgroundColor3 = p.accent, ZIndex = layer + 7}, self.handle)
-    round(self.marker, 3)
+        Size = UDim2.fromOffset(13, 13), BorderSizePixel = 0, BackgroundColor3 = C.cyan, ZIndex = layer + 7}, self.handle)
+    Design.round(self.marker, Design.radius.marker)
     local rotate = self:_button(self.canvas, "PracticeRotation", "", false)
     rotate.BackgroundTransparency = 1
-    local rotateMarker = make("TextLabel", {Name = "RotationMarker", Font = Enum.Font.GothamBold, Text = "R",
-        TextSize = 14, TextColor3 = p.ink, BackgroundColor3 = p.accent, BorderSizePixel = 0,
+    local rotateMarker = make("TextLabel", {Name = "RotationMarker", Font = F.strong, Text = "R",
+        TextSize = T.body, TextColor3 = C.ink, BackgroundColor3 = C.cyan, BorderSizePixel = 0,
         AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(23, 23), ZIndex = layer + 7}, rotate)
-    round(rotateMarker, 12)
+    Design.round(rotateMarker, 12)
     self.rotationHandle = {gui = rotate, marker = rotateMarker}
 
-    self.practicePanel = make("Frame", {Name = "PracticeInspector", BackgroundColor3 = p.raised,
+    self.practicePanel = make("Frame", {Name = "PracticeInspector", BackgroundColor3 = C.raised,
         BorderSizePixel = 0, ZIndex = layer + 6}, self.canvas)
-    round(self.practicePanel, 10)
-    stroke(self.practicePanel, p.border)
+    Design.round(self.practicePanel, Design.radius.surface)
+    Design.stroke(self.practicePanel, C.border)
     self.practiceGrip = self:_button(self.practicePanel, "PracticeGrip", "Grab inspector", false)
     self.practiceGrip.Size, self.practiceGrip.ZIndex = UDim2.fromScale(1, 1), layer + 7
     self.controls = make("Frame", {Name = "PracticeTools", BackgroundTransparency = 1, ZIndex = layer + 2}, self.pad)
-    self.controls.Position, self.controls.Size = UDim2.new(0, 10, 1, -52), UDim2.new(1, -20, 0, 44)
+    self.controls.Position, self.controls.Size = UDim2.new(0, 10, 1, -52), UDim2.new(1, -20, 0, touch)
     self.slider, self.track, self.thumb = self:_meter("PracticeSize", "Size")
     self.angleSlider, self.angleTrack, self.angleThumb, self.angleLabel = self:_meter("PracticeAngle", "Angle")
     self.opacitySlider, self.opacityTrack, self.opacityThumb, self.opacityLabel = self:_meter("PracticeOpacity", "Opacity")
@@ -242,7 +227,7 @@ function Onboarding:_mount()
         self.scopeButton.Text = contents and "Contents" or "This element"
         self:_drawTargets()
     end)
-    self.scopeButton.Position, self.scopeButton.Size = UDim2.new(1, -90, 0, 0), UDim2.fromOffset(90, 44)
+    self.scopeButton.Position, self.scopeButton.Size = UDim2.new(1, -90, 0, 0), UDim2.fromOffset(90, touch)
     self.resetButton = self:_button(self.controls, "ResetPractice", "Reset practice", true, function()
         self.angle, self.opacity = 0, 100
         self:_relocate()
@@ -254,7 +239,7 @@ function Onboarding:_mount()
     end)
     self.layers.Size = UDim2.fromScale(1, 1)
     self.chooseOverlay = self:_button(self.controls, "ChooseOverlay", "Overlay", false, function()
-        self.description.Text = "Pick Jump to select the control beneath that layer."
+        self:_describe("Pick Jump to select the control beneath that layer.")
     end)
     self.chooseJump = self:_button(self.controls, "ChooseJump", "Jump", true, function()
         self:_select("Jump")
@@ -268,7 +253,7 @@ function Onboarding:_mount()
     end)
     self.group = self:_button(self.controls, "PracticeGroup", "Group", true, function()
         if #self.app.selection > 1 then self:_completeLesson()
-        else self.description.Text = "Tap Multi, then tap both practice controls before grouping them." end
+        else self:_describe("Tap Multi, then tap both practice controls before grouping them.") end
     end)
     for _, button in ipairs({self.chooseOverlay, self.multi}) do button.Size = UDim2.new(.5, -3, 1, 0) end
     for _, button in ipairs({self.chooseJump, self.group}) do
@@ -276,12 +261,35 @@ function Onboarding:_mount()
     end
 end
 
+function Onboarding:_describe(text)
+    self.description.Text = text
+    local width = self.descriptionWidth
+    if not width then return end
+    if width == self.measuredDescriptionWidth and text == self.measuredDescription then return end
+    self.measuredDescriptionWidth, self.measuredDescription = width, text
+    local textService = self.services.TextService
+    local ok, measured = pcall(function()
+        return textService:GetTextSize(text, T.body, F.body, Vector2.new(width, 10000)).Y
+    end)
+    local height = ok and type(measured) == "number" and measured >= 0 and measured < 10000 and math.ceil(measured) + 4
+    if not height then
+        local lines, used, capacity = 1, 0, math.max(1, math.floor(width / (T.body * .55)))
+        for word in text:gmatch("%S+") do
+            if used > 0 and used + #word + 1 > capacity then lines, used = lines + 1, 0 end
+            used = used + #word + 1
+        end
+        height = lines * (T.body + 4)
+    end
+    self.description.Size = UDim2.fromOffset(width, height)
+    self.instructions.CanvasSize = UDim2.fromOffset(0, height)
+end
+
 function Onboarding:_completeLesson()
     local lesson = self.lesson
     if not self.lessonComplete and lesson.done then
         self.lessonComplete = true
-        self.description.Text = lesson.done
-        self.description.TextColor3 = self.palette.accent
+        self:_describe(lesson.done)
+        self.description.TextColor3 = C.cyan
     end
 end
 
@@ -299,7 +307,7 @@ end
 function Onboarding:_showLayers(hits)
     if self.lesson.id ~= "layers" or #hits < 2 then return false end
     self.layerPicker = true
-    self.description.Text = "Choose the control you want to edit."
+    self:_describe("Choose the control you want to edit.")
     self:_drawTools()
     return true
 end
@@ -328,13 +336,13 @@ end
 function Onboarding:_drawTargets()
     local canvas = self.canvasRect
     if not canvas then return end
-    local p, keys = self.palette, self.app.selection
+    local keys = self.app.selection
     for key, target in pairs(self.targets) do
         local rect = self.rects[key]
         target.object.Visible = rect ~= nil
         if rect then
             target.object.Position, target.object.Size = UDim2.fromOffset(rect.x - canvas.x, rect.y - canvas.y), UDim2.fromOffset(rect.w, rect.h)
-            target.edge.Color = selected(keys, key) and p.accent or p.border
+            target.edge.Color = selected(keys, key) and C.cyan or C.border
             target.object.Rotation = key == "Jump" and self.angle or 0
             target.object.BackgroundTransparency = key == "Jump" and 1 - self.opacity / 100 or 0
             target.text.TextTransparency = key == "Jump" and self.practiceUI.opacityScope == "contents" and 1 - self.opacity / 100 or 0
@@ -350,8 +358,8 @@ function Onboarding:_drawTargets()
     self.handle.Visible = false
     if resize then
         local x, y = jump.x + jump.w + 2, jump.y + jump.h - 26
-        if x + 44 <= canvas.x + canvas.w and y >= canvas.y and y + 44 <= canvas.y + canvas.h then
-            self.handle.Position, self.handle.Size = UDim2.fromOffset(x - canvas.x, y - canvas.y), UDim2.fromOffset(44, 44)
+        if x + touch <= canvas.x + canvas.w and y >= canvas.y and y + touch <= canvas.y + canvas.h then
+            self.handle.Position, self.handle.Size = UDim2.fromOffset(x - canvas.x, y - canvas.y), UDim2.fromOffset(touch, touch)
             self.handle.Visible = true
         end
     end
@@ -359,9 +367,9 @@ function Onboarding:_drawTargets()
     rotate.Visible = false
     if self.lesson.id == "rotate" and selected(keys, "Jump") and jump then
         local x, y = jump.x + jump.w + 6, jump.y - 16
-        if x + 44 <= canvas.x + canvas.w then
-            y = math.max(canvas.y, math.min(y, canvas.y + canvas.h - 44))
-            rotate.Position, rotate.Size = UDim2.fromOffset(x - canvas.x, y - canvas.y), UDim2.fromOffset(44, 44)
+        if x + touch <= canvas.x + canvas.w then
+            y = math.max(canvas.y, math.min(y, canvas.y + canvas.h - touch))
+            rotate.Position, rotate.Size = UDim2.fromOffset(x - canvas.x, y - canvas.y), UDim2.fromOffset(touch, touch)
             rotate.Visible = true
         end
     end
@@ -508,8 +516,8 @@ function Onboarding:_highlightTargets(area)
         if not object then
             object = make("Frame", {Name = "EditorHighlight", BackgroundTransparency = 1, Active = false, ZIndex = layer + 1}, self.shield)
             pcall(function() object.Interactable = false end)
-            stroke(object, self.palette.accent, 2)
-            round(object, 8)
+            Design.stroke(object, C.cyan, 2, .14)
+            Design.round(object, 8)
             self.highlightFrames[index] = object
         end
         place(object, rect)
@@ -526,7 +534,7 @@ function Onboarding:_layout()
     local landscape = area.w >= 466 and area.w >= area.h * 1.12
     local practice = self.lesson.done ~= nil and area.h >= (landscape and 190 or 278)
     if self.lesson.done and practice ~= self.practiceAvailable and not self.lessonComplete then
-        self.description.Text = practice and self.lesson.body or "Make more room to try this exercise, or tap Next to continue."
+        self:_describe(practice and self.lesson.body or "Make more room to try this exercise, or tap Next to continue.")
     end
     self.practiceAvailable = practice
     landscape = landscape and practice
@@ -553,11 +561,13 @@ function Onboarding:_layout()
     end
     place(self.coach, self.coachRect)
     local width = math.min(88, math.floor((coachWidth - 20 - 8) / 3))
-    self.skip.Position, self.skip.Size = UDim2.new(0, 10, 1, -53), UDim2.fromOffset(width, 44)
-    self.back.Position, self.back.Size = UDim2.new(.5, -width / 2, 1, -53), UDim2.fromOffset(width, 44)
-    self.next.Position, self.next.Size = UDim2.new(1, -10 - width, 1, -53), UDim2.fromOffset(width, 44)
+    self.skip.Position, self.skip.Size = UDim2.new(0, 10, 1, -53), UDim2.fromOffset(width, touch)
+    self.back.Position, self.back.Size = UDim2.new(.5, -width / 2, 1, -53), UDim2.fromOffset(width, touch)
+    self.next.Position, self.next.Size = UDim2.new(1, -10 - width, 1, -53), UDim2.fromOffset(width, touch)
     self.tour.Visible, self.back.Visible = offerTour, self.step > 1
     self.instructions.Size = UDim2.new(1, -28, 1, offerTour and -166 or -120)
+    self.descriptionWidth = math.max(1, coachWidth - 34)
+    self:_describe(self.description.Text)
     self.progress.Visible, self.heading.Visible, self.instructions.Visible = coachHeight >= 108, coachHeight >= 108, coachHeight >= 140
     self.pad.Visible = practice
     self.padRect, self.canvasRect = nil, nil
@@ -594,7 +604,7 @@ function Onboarding:_relocate(oldCanvas)
         local jump = nextRects.Jump
         local x, y = jump.x - 24, jump.y - 30
         if sample then x, y = canvas.x + (sample.x - oldCanvas.x), canvas.y + (sample.y - oldCanvas.y) end
-        self.sampleRect = Layout.place(sample or {w = 118, h = 44}, canvas, x, y)
+        self.sampleRect = Layout.place(sample or {w = 118, h = touch}, canvas, x, y)
     end
     self:_drawTargets()
 end
@@ -618,9 +628,10 @@ function Onboarding:_go(step)
     local action = Reference.get(lesson.action)
     self.progress.Text = chapter and string.format("%d / 7  •  %s", chapter, chapterNames[chapter])
         or string.format("QUICK START  %d / %d", step, #self.route)
-    self.heading.Text, self.description.Text = lesson.title or action.label, lesson.body or action.how
+    self.heading.Text = lesson.title or action.label
+    self:_describe(lesson.body or action.how)
     self.instructions.CanvasPosition = Vector2.new(0, 0)
-    self.description.TextColor3 = self.palette.body
+    self.description.TextColor3 = C.subtleText
     self.next.Text = self.mode == "quick" and step == 1 and "Start" or (step == #self.route and "Finish" or "Next")
     self.app.preferences.multiSelect, self.multi.Text = false, "Multi"
     self.app.openSelectThrough = lesson.id == "layers" and function(_, hits) return self:_showLayers(hits) end or nil
@@ -640,6 +651,7 @@ function Onboarding:start(mode, resume)
     self.route = self.mode == "tour" and tour or quick
     local step = resume and self:_resumeStep(self.mode) or 1
     self.active, self.rects = true, {}
+    self.descriptionWidth, self.measuredDescriptionWidth, self.measuredDescription = nil, nil, nil
     self:_mount()
     self:_createInput()
     self:_go(step or 1)

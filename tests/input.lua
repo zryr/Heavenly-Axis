@@ -165,6 +165,97 @@ uis.InputEnded:Fire(finger)
 controller:destroy()
 
 app, ui, uis, controller = setup()
+local modelCalls = 0
+local sizeInfo = app.sizeInfo
+function app:sizeInfo(...)
+    modelCalls = modelCalls + 1
+    return sizeInfo(self, ...)
+end
+finger, second = pointer("touch", 10, 50), pointer("touch", 90, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+check(modelCalls == 1 and app.starts == 0 and app.rects.a.w == 100, "pinch freezes geometry and range at join without a jump")
+finger.Position, second.Position = {X = 15, Y = 50}, {X = 85, Y = 50}
+uis.InputChanged:Fire(finger)
+check(close(app.rects.a.w, 87.5) and close(app.rects.a.x, 6.25) and close(app.rects.a.y, 6.25),
+    "symmetric inward movement crosses the span threshold even when each finger travels less than the drag slop")
+finger.Position, second.Position = {X = 0, Y = 50}, {X = 100, Y = 50}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 125) and close(app.rects.a.x, -12.5), "reversing direction expands around the same frozen midpoint")
+finger.Position, second.Position = {X = 10, Y = 50}, {X = 90, Y = 50}
+uis.InputChanged:Fire(finger)
+check(app.rects.a.w == 100 and app.rects.a.x == 0 and app.rects.a.y == 0 and modelCalls == 1,
+    "returning the fingers to their starting span restores geometry without cumulative drift")
+finger.Position, second.Position = {X = 22, Y = 63}, {X = 102, Y = 63}
+uis.InputChanged:Fire(finger)
+check(app.rects.a.w == 100 and app.rects.a.x == 12 and app.rects.a.y == 13,
+    "a co-dispatched two-finger pan samples both contacts and does not momentarily resize")
+second.Position = {X = 82, Y = 63}
+uis.InputEnded:Fire(finger)
+check(close(app.rects.a.w, 75) and app.starts == 1 and app.ends == 1 and not controller:isBusy(),
+    "first release finalizes the latest pair sample and commits the pinch exactly once")
+uis.InputEnded:Fire(second)
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.rects.a = {x = 40, y = 40, w = 20, h = 20}
+local original = app.discovery:get("a")
+function app.discovery:hit(x, y)
+    if x >= 40 and x <= 60 and y >= 40 and y <= 60 then return {original}, original end
+    return {}, false
+end
+finger, second = pointer("touch", 20, 50), pointer("touch", 80, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+check(app.rects.a.w == 20 and app.starts == 0, "two contacts beside a tiny control join without changing its size")
+finger.Position, second.Position = {X = 32, Y = 50}, {X = 68, Y = 50}
+uis.InputChanged:Fire(second)
+check(app.rects.a.w == 16 and app.rects.a.h == 16 and app.starts == 1, "inward motion beside a tiny control clamps at the minimum")
+ui.modalOpen = true
+uis.InputEnded:Fire(second)
+check(app.rects.a.w == 20 and app.cancels == 1 and app.ends == 0 and not controller:isBusy(), "modal interruption rolls an active pinch back")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.rects.a = {x = 40, y = 40, w = 12, h = 10}
+finger, second = pointer("touch", 10, 45), pointer("touch", 82, 45)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+finger.Position, second.Position = {X = 20, Y = 45}, {X = 72, Y = 45}
+uis.InputChanged:Fire(finger)
+check(app.rects.a.w == 12 and app.rects.a.h == 10 and app.starts == 0,
+    "contracting a pre-existing subminimum control neither enlarges it nor starts history")
+finger.Position, second.Position = {X = 0, Y = 45}, {X = 92, Y = 45}
+uis.InputChanged:Fire(second)
+check(app.rects.a.w > 12 and app.rects.a.w < 16 and app.starts == 1, "an existing subminimum control can still grow gradually")
+uis.InputEnded:Fire(second)
+controller:destroy()
+
+app, ui, uis, controller = setup()
+finger, second = pointer("touch", 46, 50), pointer("touch", 54, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+uis.InputChanged:Fire(second)
+check(app.starts == 0 and app.rects.a.w == 100, "very close contacts calibrate their span without an initial scale jump")
+finger.Position, second.Position = {X = 48, Y = 50}, {X = 52, Y = 50}
+uis.InputChanged:Fire(finger)
+check(app.rects.a.w < 100 and app.rects.a.w > 50, "closely spaced contacts can contract without an unstable denominator")
+uis.InputEnded:Fire(second)
+controller:destroy()
+
+app, ui, uis, controller = setup()
+local padded = ui.handles[1]
+padded.marker = {AbsolutePosition = {X = 123, Y = 123}, AbsoluteSize = {X = 12, Y = 12}}
+finger, second = pointer("touch", 110, 110), pointer("touch", 80, 80)
+padded.gui.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+second.Position = {X = 90, Y = 90}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 100 * 2 / 3) and app.starts == 1, "only the transparent padding of a pending handle can yield to pinch")
+uis.InputEnded:Fire(second)
+controller:destroy()
+
+app, ui, uis, controller = setup()
 finger = pointer("touch", 10, 10)
 ui.canvas.InputBegan:Fire(finger)
 finger.Position = {X = 50, Y = 50}
@@ -282,6 +373,25 @@ check(app.rects.a.w >= 16 and app.rects.a.h >= 16, "pinch cannot produce impract
 controller:destroy()
 
 app, ui, uis, controller = setup()
+app.selection = {"a", "b"}
+app.rects.b = {x = 150, y = 30, w = 50, h = 50}
+function app:sizeInfo(bounds) return {maximum = 400, scale = 200, size = bounds} end
+finger, second = pointer("touch", 10, 50), pointer("touch", 90, 50)
+ui.canvas.InputBegan:Fire(finger)
+ui.canvas.InputBegan:Fire(second)
+finger.Position, second.Position = {X = 30, Y = 50}, {X = 70, Y = 50}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 50) and close(app.rects.b.w, 25) and close(app.rects.b.x - app.rects.a.x, 75),
+    "group contraction preserves proportional root sizes and spacing")
+finger.Position, second.Position = {X = -10, Y = 50}, {X = 110, Y = 50}
+uis.InputChanged:Fire(finger)
+check(close(app.rects.a.w, 150) and close(app.rects.b.w, 75) and close(app.rects.b.x - app.rects.a.x, 225),
+    "the same proportional group pinch can reverse from contraction to expansion without drift")
+uis.InputEnded:Fire(second)
+check(app.starts == 1 and app.ends == 1, "bidirectional group pinch records one transaction")
+controller:destroy()
+
+app, ui, uis, controller = setup()
 app.preferences.equalSize = true
 app.selection = {"a", "b"}
 app.rects.b = {x = 560, y = 0, w = 60, h = 160}
@@ -289,6 +399,10 @@ function app:sizeInfo() return {minimum = 50, maximum = 200, scale = 100, size =
 finger, second = pointer("touch", 10, 10), pointer("touch", 50, 50)
 ui.canvas.InputBegan:Fire(finger)
 ui.canvas.InputBegan:Fire(second)
+second.Position = {X = 30, Y = 30}
+uis.InputChanged:Fire(second)
+check(close(app.rects.a.w, 56) and close(app.rects.b.w, 16),
+    "independent group contraction applies an equal decrement and respects the smallest member's floor")
 second.Position = {X = 70, Y = 70}
 uis.InputChanged:Fire(second)
 uis.InputEnded:Fire(second)
@@ -326,6 +440,19 @@ mouse = pointer("mouse1", 30, 25)
 ui.canvas.InputBegan:Fire(mouse)
 uis.InputEnded:Fire(mouse)
 check(app.selection[1] == "a", "desktop Alt can explicitly select a transparent structural candidate")
+controller:destroy()
+
+app, ui, uis, controller = setup()
+app.rects.b = {x = 10, y = 10, w = 50, h = 50}
+local faded, visible = app.discovery:get("a"), {key = "b", editable = true}
+function app.discovery:hit() return {visible, faded}, visible, {b = true} end
+finger = pointer("touch", 30, 30)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 45, Y = 45}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "b" and app.rects.b.x == 25 and app.rects.a.x == 0 and app.ends == 1,
+    "a selected faded or ignored layer cannot capture a drag intended for the exposed control")
 controller:destroy()
 
 app, ui, uis, controller = setup()

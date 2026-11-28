@@ -241,6 +241,7 @@ function Discovery:_classify(record, childCache)
     local rotationHandle = geometryReason and {supported = false, reason = geometryReason} or rotation
     local transparency = propertyCapability(record, "transparency", inaccessible and geometryReason or nil)
     local ownOpacity, groupOpacity, originallyHiddenGroup = self.appearance:available(record, own.strokes)
+    record.originalOpacityPaint = ownOpacity
     local opacity = propertyCapability(record, "opacity", inaccessible and geometryReason
         or not ownOpacity and "This layer has no visible appearance of its own." or nil)
     local opacityContents = propertyCapability(record, "opacity", inaccessible and geometryReason
@@ -539,7 +540,8 @@ function Discovery:get(key)
     if not record or not self:_attached(record) then return nil end
     if not record.baselineRect then record.visible = self:_visible(record) end
     local angle = record.object.Rotation
-    if record.classificationRevision ~= self.classificationRevision or Util.finite(angle) and rotated(angle) ~= record.localRotated then
+    if record.classificationRevision ~= self.classificationRevision or Util.finite(angle) and rotated(angle) ~= record.localRotated
+        or self.appearance:hasNewContent(record) then
         self:_classify(record)
     end
     self:_layerPolicy(record)
@@ -624,7 +626,7 @@ function Discovery:_painted(record)
     return SmartLayers.painted(record.object, self:_metadata(record.object).strokes)
 end
 
-function Discovery:_hasVisibleContent(record, deviceArea)
+function Discovery:_hasVisibleContent(record, deviceArea, original)
     local pending = {record}
     local nextRecord, inspected = 1, 0
     while pending[nextRecord] do
@@ -633,7 +635,7 @@ function Discovery:_hasVisibleContent(record, deviceArea)
         for _, key in ipairs(current.childKeys) do
             local child = self.records[key]
             if child and self:_visible(child) then
-                if self:_painted(child) then
+                if original and child.originalOpacityPaint or not original and self:_painted(child) then
                     local bounds = Coordinates.rect(child.object)
                     if bounds and self:_clip(child, visualBounds(bounds, rotation(child.object)), deviceArea) then return true end
                 end
@@ -719,7 +721,7 @@ local function frontmost(a, b)
 end
 
 function Discovery:_hits(x, y, selectedKeys, through)
-    if not Util.finite(x) or not Util.finite(y) then return {}, false end
+    if not Util.finite(x) or not Util.finite(y) then return {}, false, {} end
     local hitX, hitY = Coordinates.hitPoint(x, y)
     local ok, objects = pcall(function() return self.root:GetGuiObjectsAtPosition(hitX, hitY) end)
     local native = ok and type(objects) == "table"
@@ -752,8 +754,10 @@ function Discovery:_hits(x, y, selectedKeys, through)
             paintedAtPoint = edgeDistance <= borderWidth + 1
         end
         local actionable = SmartLayers.actionable(record)
+        local faded = visibility == "transparent" and (record.originalOpacityPaint
+            or #record.childKeys > 0 and self:_hasVisibleContent(record, deviceArea, true))
         local candidate = {record = record, nativeIndex = index, actionable = actionable, broad = broad,
-            shown = shown, painted = paintedAtPoint, container = visibility == "container", compact = compact,
+            shown = shown, painted = paintedAtPoint, container = visibility == "container", compact = compact, faded = faded,
             drawPath = not index and self:_drawPath(record) or nil}
         candidates[#candidates + 1] = candidate
         byKey[record.key] = candidate
@@ -795,7 +799,7 @@ function Discovery:_hits(x, y, selectedKeys, through)
         end
         local dynamic = record.builtin == "DynamicThumbstickFrame"
         local transparent = not candidate.painted and not (candidate.actionable and candidate.compact) and not (record.builtin and not dynamic)
-        candidate.skip = not candidate.shown or record.ignored or policy.skipTransparent and (dynamic or transparent)
+        candidate.skip = not candidate.shown or record.ignored or policy.skipTransparent and (dynamic or transparent or candidate.faded)
             or policy.smartSelection and actionParent and actionParent.record.ignored
         local priority = 7
         if not candidate.shown then priority = 9
@@ -814,13 +818,16 @@ function Discovery:_hits(x, y, selectedKeys, through)
         if a.nativeIndex or b.nativeIndex then return a.nativeIndex ~= nil end
         return frontmost(a, b)
     end)
-    local result, primary = {}, false
+    local result, primary, dragEligible = {}, false, {}
     for index, candidate in ipairs(candidates) do
         result[index] = candidate.record
         if not primary and not candidate.skip then primary = candidate.record end
+        if candidate.shown and not candidate.record.ignored and not (policy.skipTransparent and candidate.faded) then
+            dragEligible[candidate.record.key] = true
+        end
     end
     -- Transparent gameplay containers remain available through explicit overlap selection.
-    return result, primary
+    return result, primary, dragEligible
 end
 
 function Discovery:hit(x, y, selectedKeys)

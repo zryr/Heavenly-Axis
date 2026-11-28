@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.3.0**
+**Roblox HUD & Interface Editor · V3.4.0**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -21,13 +21,13 @@ The legacy [`Source`](Source) path contains the identical generated script. Do n
 ## Editing on Android
 
 1. Open the editor and take or skip the practice tutorial. Tap **Jump** in Layers or tap the jump button on the canvas. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
-2. Choose **Move**, **Size**, **Rotate**, or **Opacity** in Quick Edit. Drag to move. Resize with the handle, pinch, slider, or size stepper. To rotate, pull the exterior handle around the selection, use the angle slider, or tap a quarter-turn button. Compatible groups rotate around their combined center.
+2. Choose **Move**, **Size**, **Rotate**, or **Opacity** in Quick Edit. Drag to move. To pinch, start two fingers on or just outside the selection. Spread them to enlarge or bring them together to shrink, then lift either finger to finish. The handle, slider, and size stepper are also available. To rotate, pull the exterior handle around the selection, use the angle slider, or tap a quarter-turn button. Compatible groups rotate around their combined center.
 3. Hold a spot to **Select Through**, or arm the tool in **Layers** and tap the spot. Layers also offers search, filters, hierarchy navigation, and per-layer Details. Toggle **Multi** to add or remove targets by touch.
-4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Return to the canvas to continue with the same selection.
+4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Tools remembers the last destination, and the canvas keeps your selection. Use the **Quick Edit** action menu for related layers, Select Through, grouping, and restoring the selected control.
 
-Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing enforces a 16-unit minimum. The grid starts on and snapping starts off, with alignment guides available in either mode.
+Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing normally has a 16-unit floor per axis. An authored dimension already below that floor can grow from its original size. The grid starts on and snapping starts off, with alignment guides available in either mode.
 
-**Opacity** is relative to the original appearance. At 50%, each supported visual surface has half its original opacity. A transparent background stays transparent. **Element only** edits the selection itself. **Include contents** can fade supported descendants or an existing compatible CanvasGroup. Layers can recover a fully faded control, which may still respond to gameplay input.
+**Opacity** is relative to the original appearance. At 50%, each supported visual surface has half its original opacity. A transparent background stays transparent. **Element only** edits the selection itself. **Include contents** can fade supported descendants or an existing compatible CanvasGroup. A separately edited descendant takes precedence for its own supported surfaces. At 0%, find the control in **Layers** or **Select Through**. It may still respond to gameplay input. Older BackgroundTransparency edits remain available in saved profiles and resume when the relative scope is cleared.
 
 Drag the grips on the toolbar, Quick Edit, and Tools panels, or drag the launcher itself. Positions are saved separately from HUD edits and adapt to the current orientation and safe area. Edge docking is optional. **Reset Editor Layout** in Settings moves the editor surfaces back to their defaults.
 
@@ -68,7 +68,7 @@ Proportional scaling resizes the selection as a unit. **Equal size change** appl
 
 ## Save, history, and Cancel
 
-**Reset All Changes** in Tools and Recovery restores supported HUD edits to their original values in one undoable action. Locked edits are kept. Save makes the reset effective for this device and orientation, including adjustments inherited from broader profiles. Saved profiles remain available. **Discard Unsaved Changes** returns to the current checkpoint, and **Reset Editor Layout** only moves the editor's own panels.
+**Reset All Changes** in the Tools **Actions** menu and Recovery restores supported HUD edits to their original values in one undoable action. It clears the selection, handles, guides, and temporary selection modes. Undo restores the previous edits with the canvas still deselected. Locked edits are kept and reported. Save makes the reset effective for this device and orientation, including adjustments inherited from broader profiles. Saved profiles and named groups remain available. **Discard Unsaved Changes** returns to the current checkpoint. **Reset Editor Layout** moves the editor's own panels back to their defaults.
 
 One verified drag, pinch, slider adjustment, or group operation is one history action. History holds up to 80 completed actions. **Save** waits for pending geometry verification and establishes a checkpoint, while keeping undo history for the active layout. Undo after Save changes the live layout and marks it unsaved. Choose Save again to persist it.
 
@@ -90,7 +90,7 @@ Deleting the active profile resolves the remaining scope defaults immediately. G
 
 **Export** includes the latest accepted checkpoint. Press **Save** first to include current edits. Export also works with a memory-only checkpoint. **Import** validates JSON, previews it before activation, and asks for confirmation before replacing conflicting profiles. Save pending work before applying a different profile. Apply activates the selected profile in its own scope. More-specific active overrides retain precedence. If one masks an edit, choose that profile as the save target. Save writes the changes made in the current scope and keeps inherited properties at their source.
 
-When file APIs are supported, saved profiles, staging/backup data, and unsaved recovery drafts are separate local JSON files. A corrupt existing save is preserved and blocks destructive replacement. Save reports actual write/readback success or a memory-only/manual-export fallback. An available API alone is shown as unverified.
+When file APIs are supported, saved profiles, staging/backup data, and unsaved recovery drafts are separate local JSON files. A corrupt existing save is preserved and blocks destructive replacement. If the primary is missing, startup can read the last verified backup. An unchanged save preserves the previous checkpoint backup. Save reports actual write/readback success or a memory-only/manual-export fallback. An available API alone is shown as unverified.
 
 Unsaved drafts are written separately and offered on the next matching session. Recovery opens a preview for confirmation. If the original saved profile changed, Recovery preserves the draft file and reports the mismatch. Rotating with pending changes keeps those changes assigned to the original orientation until Save or Discard, then loads the current orientation's layout.
 

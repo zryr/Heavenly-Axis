@@ -564,8 +564,16 @@ near(sparse.AbsolutePosition.X, 22, "Cancellation restores the edited position")
 
 check(transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 8, h = 8}}), "A small original control is still movable")
 flush()
-check(not transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 12, h = 12}}), "Resizing to a new subminimum size is rejected")
+check(not transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 7, h = 7}}), "An existing tiny control cannot shrink below its baseline")
+check(not transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 12, h = 12}}), "Unscoped direct writes cannot request a new subminimum size")
 near(tiny.AbsolutePosition.X, 2, "Small moved control remains at the last valid adjustment")
+check(transform:setRects({key(tiny)}, {{x = 2, y = 4, w = 12, h = 12}}, "resize"), "A previously tiny control can grow gradually without jumping to sixteen")
+flush()
+local expandedTiny = transform:capture()[key(tiny)]
+transform:restore({key(tiny)})
+check(transform:apply({[key(tiny)] = expandedTiny}) == 1, "An intermediate tiny resize remains restorable")
+flush()
+near(tiny.AbsoluteSize.X, 12, "Replaying the saved tiny size passes the geometry check")
 
 local historyBefore = {[deferredKey] = verified, [cleanKey] = Discovery.serialize(clean)}
 historyBefore[cleanKey].position.xo = 35

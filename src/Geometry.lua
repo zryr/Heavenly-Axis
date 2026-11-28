@@ -2,8 +2,11 @@
 local Util = require("Util")
 local Geometry = { MIN_SIZE = 16, MAX_SIZE = 1000000 }
 local function copy(rect) return { x = rect.x, y = rect.y, w = rect.w, h = rect.h } end
-local function clampSize(value) return math.max(Geometry.MIN_SIZE, value) end
 local function same(a, b) return math.abs(a - b) < 0.000001 end
+
+function Geometry.minimumSize(original)
+    return math.min(Geometry.MIN_SIZE, original)
+end
 
 function Geometry.valid(rect)
     return type(rect) == "table" and Util.finite(rect.x) and Util.finite(rect.y)
@@ -63,10 +66,10 @@ function Geometry.resize(rect, handle, dx, dy, lockAspect, center)
         if not (west or east) then factor = fy
         elseif not (north or south) then factor = fx
         else factor = math.abs(fx - 1) >= math.abs(fy - 1) and fx or fy end
-        factor = math.max(factor, Geometry.MIN_SIZE / rect.w, Geometry.MIN_SIZE / rect.h)
+        factor = math.max(factor, Geometry.minimumSize(rect.w) / rect.w, Geometry.minimumSize(rect.h) / rect.h)
         width, height = rect.w * factor, rect.h * factor
     else
-        width, height = clampSize(width), clampSize(height)
+        width, height = math.max(Geometry.minimumSize(rect.w), width), math.max(Geometry.minimumSize(rect.h), height)
     end
     local x = center and rect.x + (rect.w - width) / 2 or (west and rect.x + rect.w - width or rect.x)
     local y = center and rect.y + (rect.h - height) / 2 or (north and rect.y + rect.h - height or rect.y)
@@ -98,7 +101,8 @@ function Geometry.scale(rects, newBounds, center)
     local uniform = same(sx, sy)
     -- Raise the factors, rather than clamping individual rectangles: relative layout stays intact.
     for _, rect in ipairs(rects) do
-        sx, sy = math.max(sx, Geometry.MIN_SIZE / rect.w), math.max(sy, Geometry.MIN_SIZE / rect.h)
+        sx = math.max(sx, Geometry.minimumSize(rect.w) / rect.w)
+        sy = math.max(sy, Geometry.minimumSize(rect.h) / rect.h)
     end
     if uniform then sx, sy = math.max(sx, sy), math.max(sx, sy) end
     local x = leadingEdge(old.x, old.w, newBounds.x, newBounds.w, old.w * sx, center)
@@ -122,14 +126,14 @@ function Geometry.adjustMembers(rects, oldBounds, newBounds, center, lockAspect,
     if center then dx, dy = 0, 0 else dx, dy = dx + dw * anchorX, dy + dh * anchorY end
     for _, rect in ipairs(rects) do
         if lockX then
-            local minimum = Geometry.MIN_SIZE * math.max(1, rect.w / rect.h)
+            local minimum = math.max(Geometry.minimumSize(rect.w), Geometry.minimumSize(rect.h) * rect.w / rect.h)
             dw = math.max(dw, minimum - rect.w)
         elseif lockY then
-            local minimum = Geometry.MIN_SIZE * math.max(1, rect.h / rect.w)
+            local minimum = math.max(Geometry.minimumSize(rect.h), Geometry.minimumSize(rect.w) * rect.h / rect.w)
             dh = math.max(dh, minimum - rect.h)
         else
-            if not same(dw, 0) then dw = math.max(dw, Geometry.MIN_SIZE - rect.w) end
-            if not same(dh, 0) then dh = math.max(dh, Geometry.MIN_SIZE - rect.h) end
+            if not same(dw, 0) then dw = math.max(dw, Geometry.minimumSize(rect.w) - rect.w) end
+            if not same(dh, 0) then dh = math.max(dh, Geometry.minimumSize(rect.h) - rect.h) end
         end
     end
     local result = {}

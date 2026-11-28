@@ -14,7 +14,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.3.0"
+App.VERSION = "3.4.0"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -457,6 +457,9 @@ function App:capability(key, operation)
         and record.layoutController and self.lockedControllers[record.layoutController] then
         return {supported = false, locked = true, reason = "Resizing would rearrange a locked control in this row."}
     end
+    if operation == "transparency" and self.transform.opacityOwnsBackground and self.transform:opacityOwnsBackground(key) then
+        return {supported = false, reason = "Opacity currently controls this background."}
+    end
     local operations = record.capabilities
     if operations then
         if operation == "reset" then
@@ -543,6 +546,7 @@ function App:copyLayerDetails(key)
     return ok, message, details
 end
 function App:select(key, toggle)
+    if self.resettingLayout then return end
     if not key then return self:clearSelection() end
     local record = self.discovery:get(key)
     if not record then return self:status("Element no longer available. Use the list to select another.") end
@@ -559,6 +563,7 @@ function App:select(key, toggle)
     self:_selectionChanged()
 end
 function App:selectMany(keys, keepGroup)
+    if self.resettingLayout then return false end
     local selection, seen = {}, {}
     for _, key in ipairs(keys) do
         if not seen[key] and self.discovery:get(key) then selection[#selection + 1] = key; seen[key] = true end
@@ -746,9 +751,14 @@ function App:sizeInfo(bounds, rects, keys)
     local scale = 100 * size.w / reference.w
     local minimumFactor = 0
     for _, rect in ipairs(rects) do
-        local fx, fy = Geometry.MIN_SIZE / rect.w, Geometry.MIN_SIZE / rect.h
+        local minWidth, minHeight = Geometry.minimumSize(rect.w), Geometry.minimumSize(rect.h)
+        local fx, fy = minWidth / rect.w, minHeight / rect.h
         if individual then
-            fx, fy = 1 + (Geometry.MIN_SIZE - rect.w) / size.w, 1 + (Geometry.MIN_SIZE - rect.h) / size.h
+            if self.preferences.aspectLock then
+                fx, fy = 1 + (math.max(minWidth, minHeight * rect.w / rect.h) - rect.w) / size.w, 0
+            else
+                fx, fy = 1 + (minWidth - rect.w) / size.w, 1 + (minHeight - rect.h) / size.h
+            end
         end
         minimumFactor = math.max(minimumFactor, fx, fy)
     end
@@ -776,9 +786,9 @@ function App:stepSize(delta)
 end
 
 function App:resize(width, height, center, aspectAxis)
-    if not Util.finite(width) or not Util.finite(height) or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE
+    if not Util.finite(width) or not Util.finite(height) or width < 1 or height < 1
         or width > 100000 or height > 100000 then
-        return self:status("Enter width and height between 16 and 100000 pixels.")
+        return self:status("Enter width and height between 1 and 100000 pixels.")
     end
     if center == nil then center = self.preferences.centerScale end
     self:_rectAction("Resize", "resize", function(rects)
@@ -971,18 +981,21 @@ function App:reset()
     self:endGesture()
 end
 
-function App:_resettable(key)
+function App:_resettable(key, entry)
     local record = self.discovery:get(key)
     if not record then return not self.layerPolicy.locked[key] end
-    return self:capability(key, "reset").supported
+    if not self:capability(key, "reset").supported then return false end
+    if self.transform.canResetEntry then return self.transform:canResetEntry(key, entry) end
+    return true
 end
 
 function App:resetAllSummary(state)
     local layout = state and state.layout or self:getState().layout
-    local summary = {count = 0, protected = 0, missing = 0}
-    for key in pairs(layout) do
-        if self:_resettable(key) then
+    local summary = {count = 0, protected = 0, missing = 0, keys = {}}
+    for key, entry in pairs(layout) do
+        if self:_resettable(key, entry) then
             summary.count = summary.count + 1
+            summary.keys[#summary.keys + 1] = key
             if not self.discovery:get(key) then summary.missing = summary.missing + 1 end
         else summary.protected = summary.protected + 1 end
     end
@@ -993,6 +1006,19 @@ function App:resetAllSummary(state)
     return summary
 end
 
+function App:_neutralSelection()
+    self.selection, self.groupFocus = {}, nil
+    for _, name in ipairs({"multiSelect", "boxSelect"}) do
+        if self.preferences[name] then
+            self.toolModes, self.toolDefaults = self.toolModes or {}, self.toolDefaults or {}
+            if self.toolDefaults[name] == nil then self.toolDefaults[name] = self.preferences[name] end
+            self.toolModes[name], self.preferences[name] = false, false
+        end
+    end
+    self:_selectionChanged()
+    if self.ui and self.ui.clearSelectionFeedback then self.ui:clearSelectionFeedback() end
+end
+
 function App:resetAll()
     if self.previewState then return self:status("Apply or cancel the preview before resetting the layout.") end
     if self.profiles.suspended then return self:status("Resume the profile before resetting its layout.") end
@@ -1000,15 +1026,20 @@ function App:resetAll()
     if self.input then self.input:cancel() else self:cancelGesture() end
     local before = self:getState()
     local summary = self:resetAllSummary(before)
+    self:_neutralSelection()
     if summary.count == 0 then
-        return self:status(summary.protected > 0 and "Only protected or unavailable edits remain." or "There are no changes to reset.")
+        return self:status(summary.protected > 0 and "Only protected edits remain." or "The layout is already at its original settings.",
+            {kind = summary.protected > 0 and "warning" or "info", title = summary.protected > 0 and "Reset unavailable" or "Nothing to reset"})
     end
     local state = Util.copy(before)
-    for key in pairs(state.layout) do if self:_resettable(key) then state.layout[key] = nil end end
+    for _, key in ipairs(summary.keys) do state.layout[key] = nil end
     state.resetAll = true
-    local note = "Save to keep the original layout for this device and orientation."
-    if summary.protected > 0 then note = note .. " Protected layers were kept." end
-    self:_commitLayoutEdit(state, before, "Reset All Changes", note, {kind = "success", title = "Original layout restored"})
+    local partial = summary.protected > 0
+    local note = partial and (summary.protected .. " protected layers kept. Save to keep this reset.") or "Save to keep this reset for this device and orientation."
+    self.resettingLayout = true
+    self:_commitLayoutEdit(state, before, "Reset All Changes", note,
+        {kind = partial and "warning" or "success", title = partial and "Some changes reset" or "All changes reset", replace = true},
+        function() self.resettingLayout = nil end)
 end
 function App:recover()
     self:_rectAction("Recover offscreen selection", "move", function(rects)
@@ -1043,6 +1074,7 @@ function App:_replay(direction)
         if ok then
             local state, label = self.history[direction](self.history)
             self:_setState(state, true)
+            if not undoing and label == "Reset All Changes" then self:_neutralSelection() end
             local note = (undoing and "Undid " or "Redid ") .. tostring(label)
             if (skipped or 0) > 0 then note = note .. ". " .. skipped .. " missing elements skipped." end
             self:status(note, {kind = "info", title = "History"})
@@ -1327,6 +1359,7 @@ function App:_groupKeys(name)
 end
 
 function App:group(action, name, extra)
+    if self.resettingLayout then return end
     if self.previewState then return self:status("Apply or cancel the preview first.") end
     if action ~= "select" and self.profiles.suspended then return self:status("Resume the profile before editing groups.") end
     if action ~= "select" and (self.finishingGesture or self.saving) then return end
@@ -1526,7 +1559,7 @@ function App:import(text, overwriteConfirmed)
     self:changed()
     return true
 end
-function App:_commitLayoutEdit(state, before, label, message, notification)
+function App:_commitLayoutEdit(state, before, label, message, notification, onComplete)
     local job = {}
     self.finishingGesture = job
     local function complete(ok, reason)
@@ -1537,7 +1570,8 @@ function App:_commitLayoutEdit(state, before, label, message, notification)
             self:_setState(state, true)
             self.history:push(before, self:getState(), label)
             self:status(message, notification)
-        else self:status(reason or "The requested change could not be verified.") end
+        else self:status(reason or "The prior layout was kept.", {kind = "error", title = "Adjustment could not finish"}) end
+        if onComplete then onComplete(ok) end
         self:_afterInteraction(ok, reason)
     end
     if not self.transform:applyHistory(before.layout, state.layout, complete) then
@@ -1630,6 +1664,7 @@ function App:safeMode()
     if self.input then self.input:cancel() else self:cancelGesture() end
     if self.finishingGesture then
         self.finishingGesture, self.gestureSave, self.doneWaiting = nil, nil, nil
+        self.resettingLayout = nil
         self.transform:cancelTransaction()
     end
     if self.previewState then self:profile("cancel") end

@@ -1,14 +1,16 @@
 local Coordinates = require("Coordinates")
+local Design = require("Design")
 local Util = require("Util")
 
 local Notifications = {}
 Notifications.__index = Notifications
 
 local LAYER = 55
-local TEXT_LEFT, TEXT_RIGHT = 48, 12
-local TITLE_TOP, BODY_TOP, BOTTOM = 8, 28, 10
-local BODY_SIZE, BODY_LINE, BODY_MAX = 13, 17, 68
+local TEXT_LEFT, TEXT_RIGHT = Design.touch.comfortable, Design.space.medium
+local TITLE_TOP, BODY_TOP, BOTTOM = Design.space.small, 28, 10
+local BODY_SIZE, BODY_LINE, BODY_MAX = Design.text.control, 17, 68
 local GUTTER = 6
+local C, F = Design.colors, Design.font
 
 local function make(class, properties, parent)
     local object = Instance.new(class)
@@ -20,10 +22,6 @@ local function make(class, properties, parent)
     end
     object.Parent = parent
     return object
-end
-
-local function round(parent, radius)
-    make("UICorner", {CornerRadius = UDim.new(0, radius)}, parent)
 end
 
 local function label(parent, name, size, font, layer)
@@ -86,26 +84,25 @@ end
 function Notifications.new(parent, services)
     local self = setmetatable({parent = parent, services = services or {}, generation = 0, obstacles = {}}, Notifications)
     self.styles = {
-        info = {accent = Color3.fromRGB(112, 229, 236), title = "", glyph = "i", duration = 3.0},
-        success = {accent = Color3.fromRGB(138, 233, 197), title = "Complete", glyph = "", duration = 3.2},
-        warning = {accent = Color3.fromRGB(255, 201, 122), title = "Needs attention", glyph = "!", duration = 4.7, important = true},
-        error = {accent = Color3.fromRGB(255, 155, 156), title = "Action failed", glyph = "X", duration = 5.2, important = true},
+        info = {accent = C.cyan, title = "", glyph = "i", duration = 3.0},
+        success = {accent = C.success, title = "Complete", glyph = "", duration = 3.2},
+        warning = {accent = C.warning, title = "Needs attention", glyph = "!", duration = 4.7, important = true},
+        error = {accent = C.danger, title = "Action failed", glyph = "X", duration = 5.2, important = true},
     }
     self.frame = make("Frame", {
         Name = "Toast", Visible = false, ClipsDescendants = true, BorderSizePixel = 0,
-        BackgroundColor3 = Color3.fromRGB(14, 23, 32), BackgroundTransparency = .04, ZIndex = LAYER,
+        BackgroundColor3 = C.surface, BackgroundTransparency = .04, ZIndex = LAYER,
     }, parent)
-    round(self.frame, 11)
-    make("UIStroke", {Color = Color3.fromRGB(57, 79, 96), Thickness = 1,
-        Transparency = .25, ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, self.frame)
+    Design.round(self.frame, Design.radius.surface)
+    Design.stroke(self.frame, nil, nil, .25)
 
     local badge = make("Frame", {
         Name = "Severity", Size = UDim2.fromOffset(28, 28), Position = UDim2.fromOffset(10, 10), BorderSizePixel = 0,
         BackgroundColor3 = self.styles.info.accent, BackgroundTransparency = .86, ZIndex = LAYER + 1,
     }, self.frame)
-    round(badge, 14)
+    Design.round(badge, 14)
     self.badge = badge
-    self.glyph = label(badge, "Glyph", 17, Enum.Font.GothamBold, LAYER + 2)
+    self.glyph = label(badge, "Glyph", Design.text.section, F.strong, LAYER + 2)
     self.glyph.Size = UDim2.fromScale(1, 1)
     self.glyph.TextXAlignment, self.glyph.TextYAlignment = Enum.TextXAlignment.Center, Enum.TextYAlignment.Center
 
@@ -114,15 +111,15 @@ function Notifications.new(parent, services)
     for _, segment in ipairs({{6, 15, 7, 44}, {10, 12, 13, -44}}) do
         local line = make("Frame", {Position = UDim2.fromOffset(segment[1], segment[2]), Size = UDim2.fromOffset(segment[3], 2),
             BackgroundColor3 = self.styles.success.accent, BorderSizePixel = 0, Rotation = segment[4], ZIndex = LAYER + 3}, self.tick)
-        round(line, 1)
+        Design.round(line, 1)
     end
 
-    self.title = label(self.frame, "Title", 14, Enum.Font.GothamBold, LAYER + 1)
+    self.title = label(self.frame, "Title", Design.text.body, F.strong, LAYER + 1)
     self.title.Position = UDim2.fromOffset(TEXT_LEFT, TITLE_TOP)
     self.title.Size = UDim2.new(1, -TEXT_LEFT - TEXT_RIGHT, 0, 18)
-    self.body = label(self.frame, "Body", BODY_SIZE, Enum.Font.Gotham, LAYER + 1)
+    self.body = label(self.frame, "Body", BODY_SIZE, F.body, LAYER + 1)
     self.body.Position = UDim2.fromOffset(TEXT_LEFT, BODY_TOP)
-    self.body.TextColor3 = Color3.fromRGB(218, 230, 237)
+    self.body.TextColor3 = C.subtleText
     self.body.TextWrapped = true
     return self
 end
@@ -138,7 +135,7 @@ function Notifications:_dimensions(area)
         local measured
         local textService = self.services.TextService
         if textService then
-            local ok, bounds = pcall(textService.GetTextSize, textService, message.body, BODY_SIZE, Enum.Font.Gotham,
+            local ok, bounds = pcall(textService.GetTextSize, textService, message.body, BODY_SIZE, F.body,
                 Vector2.new(bodyWidth, 10000))
             if ok and bounds and Util.finite(bounds.Y) then measured = math.ceil(bounds.Y) + 3 end
         end
@@ -223,7 +220,7 @@ function Notifications:show(message, options)
     local keep = options.keepOnClose == true
     local current = self.current
     if current then
-        if current.style.important and not style.important and not keep then return false end
+        if current.style.important and not style.important and not keep and options.replace ~= true then return false end
         if current.kind == kind and current.title == title and current.body == body and current.keepOnClose == keep then return false end
     end
     self:_cancelExpiry()
@@ -238,7 +235,7 @@ function Notifications:show(message, options)
     self.body.Text = body
     self:layout(self.area, self.obstacles)
     self.frame.BackgroundTransparency = .24
-    if not self:_fade(.04, .16) then self.frame.BackgroundTransparency = .04 end
+    if not self:_fade(.04, Design.motion.enter) then self.frame.BackgroundTransparency = .04 end
     if task and task.delay then
         local function expire()
             if self.dead or generation ~= self.generation then return end
@@ -247,7 +244,7 @@ function Notifications:show(message, options)
         end
         self.timer = task.delay(style.duration, function()
             if self.dead or generation ~= self.generation then return end
-            if self:_fade(.24, .12) then self.timer = task.delay(.12, expire) else expire() end
+            if self:_fade(.24, Design.motion.exit) then self.timer = task.delay(Design.motion.exit, expire) else expire() end
         end)
     end
     return true

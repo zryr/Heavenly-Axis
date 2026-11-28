@@ -218,6 +218,15 @@ releasePointer(secondPointer)
 releasePointer(pointer)
 check(jump.AbsoluteSize.X > savedSize and app.dirty and #app.history.past == 3,
     "two owned touches verify a single pinch resize in the bundled editor")
+pinchOrigin = jump.AbsolutePosition
+local enlargedWidth = jump.AbsoluteSize.X
+pointer = begin(ui.canvas, pinchOrigin.X + enlargedWidth * .27, pinchOrigin.Y + enlargedWidth * .27)
+secondPointer = begin(ui.canvas, pinchOrigin.X + enlargedWidth * .71, pinchOrigin.Y + enlargedWidth * .71)
+move(secondPointer, -24, -24)
+releasePointer(pointer)
+releasePointer(secondPointer)
+check(jump.AbsoluteSize.X < enlargedWidth and jump.AbsoluteSize.X == jump.AbsoluteSize.Y and #app.history.past == 4,
+    "pinching inward contracts the control with aspect lock and either release order commits once")
 ui.doneButton.Activated:Fire()
 check(app.editing and app.dirty and ui.modalOpen, "dirty Done offers a save/discard dialog before closing")
 action("Continue editing")
@@ -240,6 +249,24 @@ do
     mock:flush()
     check(jump.AbsolutePosition.X == editedPosition.X - 18 and auxiliary.AbsolutePosition.X == before.X - 18,
         "temporary grouping transforms both selected controls")
+    local function centerX(object) return object.AbsolutePosition.X + object.AbsoluteSize.X / 2 end
+    local gap = centerX(jump) - centerX(auxiliary)
+    local width, auxiliaryWidth = jump.AbsoluteSize.X, auxiliary.AbsoluteSize.X
+    local position = jump.AbsolutePosition
+    local first = begin(ui.canvas, position.X + width * .25, position.Y + width * .25)
+    local second = begin(ui.canvas, position.X + width * .70, position.Y + width * .70)
+    move(second, 14, 14)
+    releasePointer(first)
+    releasePointer(second)
+    local scale = jump.AbsoluteSize.X / width
+    check(scale > 1 and math.abs(auxiliary.AbsoluteSize.X / auxiliaryWidth - scale) < .02
+        and math.abs((centerX(jump) - centerX(auxiliary)) / gap - scale) < .02 and #app.history.past == 2,
+        "one bundled group pinch enlarges both roots and preserves their proportional spacing")
+    app:undo()
+    mock:flush()
+    check(jump.AbsoluteSize.X == width and auxiliary.AbsoluteSize.X == auxiliaryWidth
+        and math.abs(centerX(jump) - centerX(auxiliary) - gap) < .01,
+        "one undo restores the previous group dimensions and spacing")
     app:group("create", "Gameplay")
     check(#app.groups.Gameplay == 2 and app:enterGroupMember(secondKey) and app:returnToGroup(),
         "a named group can temporarily focus one member and return to both")
@@ -320,24 +347,40 @@ do
     check(badgeKey ~= nil, "image button is available for property-aware opacity")
     app:selectMany({badgeKey})
     ui:setTransformTool("opacity")
+    app:geometry("transparency", .6)
+    mock:flush()
+    check(badge.BackgroundTransparency == .6, "legacy absolute background editing still applies separately")
     app:setOpacity(25, "element")
     mock:flush()
     check(math.abs(badge.ImageTransparency - .8) < .001 and badge.BackgroundTransparency == 1,
         "quarter opacity fades the visible image relative to its original and leaves the background invisible")
+    app:setOpacity(100, "element")
+    mock:flush()
+    check(badge.ImageTransparency == .2 and badge.BackgroundTransparency == 1,
+        "100 percent relative opacity restores authored values even after a legacy background edit")
     app:setOpacity(0, "element")
     mock:flush()
     check(badge.ImageTransparency == 1 and app.discovery:get(badgeKey) ~= nil,
         "a fully faded control remains accessible by its exact layer identity")
 
+    app:setPreference("multiSelect", true)
+    app:armSelectThrough()
+    ui:setBox({x = 420, y = 60, w = 80, h = 80})
+    ui:setGuides({{axis = "x", value = 420}})
     app:resetAll()
     mock:flush()
     check(jump.Rotation == 0 and jump.AbsolutePosition.X == origin.X and jump.AbsoluteSize.X == 96
         and math.abs(badge.ImageTransparency - .2) < .001 and app.resetAllPending,
         "Reset All restores original geometry, rotation, and image opacity together")
+    check(#app.selection == 0 and not app.groupFocus and not ui.panel.Visible and not ui.selectionBounds.Visible
+        and not ui.handleBounds.Visible and not ui.rotationHandle.gui.Visible and not ui.box.Visible
+        and not ui.guideObjects[1].Visible and not app.preferences.multiSelect and not app.input:isSelectThroughArmed(),
+        "Reset All leaves a neutral canvas with no selection overlays or pending input mode")
     app:undo()
     mock:flush()
     check(math.abs(jump.Rotation - 90) < 1 and badge.ImageTransparency == 1,
         "one Undo restores both appearance changes and geometry before the reset")
+    check(#app.selection == 0 and not ui.selectionBounds.Visible, "undoing Reset All never reselects a HUD control")
     app:cancel()
     mock:flush()
     check(not app.dirty and jump.AbsolutePosition.X == editedPosition.X and jump.AbsoluteSize.X == savedSize

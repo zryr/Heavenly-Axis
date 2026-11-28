@@ -179,11 +179,12 @@ function Config.validateOpacity(value, ownerKey)
         or (value.scope ~= "element" and value.scope ~= "contents") then return false end
     if value.targets == nil then return true end
     if not array(value.targets, Config.MAX_OPACITY_TARGETS) or #value.targets == 0 then return false end
+    if value.scope == "element" and #value.targets ~= 1 then return false end
     local prefix = ownerKey and (ownerKey .. "/")
     local previous
     for _, target in ipairs(value.targets) do
         if not text(target, 8192) or (previous and target <= previous)
-            or (prefix and target ~= ownerKey and target:sub(1, #prefix) ~= prefix) then return false end
+            or (prefix and target ~= ownerKey and (value.scope == "element" or target:sub(1, #prefix) ~= prefix)) then return false end
         previous = target
     end
     return true

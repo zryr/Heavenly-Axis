@@ -96,6 +96,7 @@ check(ui.panel.Visible and ui.quickBody.Visible and not ui.workspace.Visible, "c
 check(ui.quickName.Text == "Jump Mock" and ui.percent.Text == "100%", "visual size percentage matches selected element")
 check(not ui.canvasHint.Visible and ui.sliderTitle.Text == "Size" and ui.sliderReference.Text == "100% original"
     and ui.quickSize.Text == "100 × 100", "selection replaces the empty hint with percentage and pixel size context")
+check(ui.quickHint.Text == "Pinch in or out to resize", "the active Size tool teaches bidirectional pinch at the point of use")
 check(ui.selectionBounds.AbsolutePosition.X == 50 and ui.selectionBounds.AbsolutePosition.Y == 162,
     "canonical selection placement offsets the full-screen root origin")
 check(ui.selectionBounds.Position.X.Offset == 59 and ui.selectionBounds.Position.Y.Offset == 185,
@@ -131,9 +132,9 @@ ui:finishInspectorMove(true)
 local restoredX, restoredY = ui:inspectorPosition()
 check(restoredX == oldX and restoredY == oldY, "cancelled inspector drag restores its position")
 ui:setCollapsed(true)
-check(not ui.panel.Visible and ui.selectionBounds.Visible, "hiding Quick Edit leaves selection editing active")
+check(not ui.panel.Visible and ui.selectionBounds.Visible and ui.editButton.Visible, "hiding Quick Edit leaves selection editing active and offers a direct return")
 ui.editButton.Activated:Fire()
-check(ui.panel.Visible and not ui.workspace.Visible, "Edit restores quick controls after hiding")
+check(ui.panel.Visible and not ui.workspace.Visible and not ui.editButton.Visible, "Quick Edit restores without a redundant toolbar action")
 
 for _, dims in ipairs({{1536, 695}, {960, 440}, {640, 360}, {932, 430}, {393, 852}, {360, 640},
     {1024, 768}, {1920, 1080}, {320, 240}, {240, 320}}) do
@@ -164,12 +165,42 @@ ui:layout()
 check(visibleHandles(ui) == 1, "hybrid touch input restores exterior handle")
 view.X, view.Y = 393, 852
 ui:layout()
-check(not ui.saveButton.Visible, "portrait gathers secondary toolbar actions under Tools")
+check(ui.saveButton.Visible and ui.historyButton.Visible and not ui.undoButton.Visible and not ui.redoButton.Visible,
+    "portrait keeps Save visible by grouping history tools")
+check(ui.saveButton.AbsoluteSize.X >= 44 and ui.doneButton.AbsoluteSize.X >= 44,
+    "portrait keeps separate touch-sized checkpoint and exit controls")
+ui.saveButton.Activated:Fire()
+check(app.saved, "portrait Save directly reaches the App checkpoint action")
+ui.historyButton.Activated:Fire()
+check(buttonByText(ui.modalGui, "Undo last change") and buttonByText(ui.modalGui, "Redo last change"), "compact history exposes both operations")
+ui:closeModal()
+view.X, view.Y = 360, 640
+ui:layout()
+check(ui.saveButton.Visible and ui.saveButton.AbsoluteSize.X >= 44 and ui.doneButton.AbsoluteSize.X >= 44,
+    "compact phone portrait keeps Save at one tap with touch-sized buttons")
+view.X, view.Y = 320, 640
+ui:layout()
+app.saved = false
+check(not ui.saveButton.Visible, "very narrow portrait preserves full touch targets and moves Save to layout actions")
 ui.toolsButton.Activated:Fire()
+check(ui.workspace.Visible and not ui.modalOpen, "Tools opens one workspace directly")
+ui.workspaceActions.Activated:Fire()
 local compactSave = buttonByText(ui.modalGui, "Save layout")
-check(compactSave ~= nil, "portrait toolbar exposes an explicit Save action")
+check(compactSave ~= nil, "layout actions exposes Save when the toolbar is too narrow")
 compactSave.Activated:Fire()
 check(app.saved, "compact Save reaches the App checkpoint action")
+ui:setTab("Settings")
+local movementField = ui.preferenceFields.step
+local labeled = false
+for _, object in ipairs(movementField.Parent:GetChildren()) do
+    if object:IsA("TextLabel") and object.Text == "Movement step (px)" then labeled = true end
+end
+check(labeled and movementField.AbsoluteSize.Y == 44, "settings keeps the units beside a populated numeric field")
+ui:setWorkspace(false)
+ui.toolsButton.Activated:Fire()
+check(ui.tab == "Settings" and ui.workspaceHeading.Text == "Settings" and ui.tabMarks.Settings.Visible
+    and not ui.tabMarks.Elements.Visible, "Tools restores its last destination and the workspace marks only its current section")
+ui:setWorkspace(false)
 view.X, view.Y = 800, 600
 ui:layout()
 
@@ -320,9 +351,39 @@ ui:confirmDone(function() result = "save" end, function() result = "discard" end
 buttonByText(ui.modalGui, "Discard").Activated:Fire()
 check(not ui.modalOpen and result == "discard", "discard is explicit")
 ui:setTab("Profiles")
+local sampleProfile = {id = "profile-a", name = "Gameplay", scope = "place"}
+app.profiles.list = function() return {sampleProfile} end
+app.profiles.active = function() return sampleProfile end
+ui:refreshProfiles()
+check(ui.activeProfile.Text == "Gameplay" and ui.profileSummary.Text == "This place" and not ui.previewActions.Visible,
+    "profile summary presents the active layout without idle preview controls")
+local profileItem = ui.profileList:FindFirstChild("ListItem")
+profileItem.Activated:Fire()
+buttonByText(ui.modalGui, "Preview profile").Activated:Fire()
+check(app.lastProfile[1] == "preview" and app.lastProfile[2] == sampleProfile.id, "saved profile rows expose contextual actions for that profile")
+app.previewState = {}
+ui:refreshProfiles()
+check(ui.previewActions.Visible and not ui.newProfileButton.Visible, "preview presents Apply and Cancel before other profile actions")
+app.previewState = nil
 app.draftBlocked = "Recovery draft preserved because its baseline changed."; ui:refreshProfiles()
 check(ui.draftSection.Visible and ui.previewDraft.Interactable == false,
     "recovery exposes discard for a stale draft without offering preview")
+
+app.groups.Test = {record.descriptor, record2.descriptor}
+ui:setTab("Groups")
+local savedGroup = ui.groupList:FindFirstChild("ListItem")
+savedGroup.Activated:Fire()
+buttonByText(ui.modalGui, "Select group").Activated:Fire()
+check(app.lastGroup[1] == "select" and app.lastGroup[2] == "Test" and not ui.workspace.Visible,
+    "saved group row returns directly to the editing canvas")
+
+ui:setOverlaps({record, record2})
+ui:setBox({x = 300, y = 300, w = 20, h = 20})
+ui:setGuides({{axis = "x", value = 200}})
+app:clearSelection()
+ui:clearSelectionFeedback()
+check(#ui.overlapKeys == 0 and not ui.box.Visible and not ui.guideObjects[1].Visible and not ui.selectionBounds.Visible,
+    "reset cleanup clears selection outlines, transient guides, and overlap candidates")
 
 ui:setVisible(false)
 check(not ui.modalOpen and not ui.overlay.Visible and #ui.selectionConnections == 0, "closing releases selection events and editing surfaces")

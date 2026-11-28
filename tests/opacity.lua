@@ -1,4 +1,5 @@
 local Appearance = require("Appearance")
+local SmartLayers = require("SmartLayers")
 local checks = 0
 
 local function check(value, message)
@@ -12,7 +13,11 @@ end
 
 local screen = {ZIndexBehavior = "Sibling"}
 local discovery = {records = {}}
-function discovery:get(key) return self.records[key] end
+local lookups = 0
+function discovery:get(key)
+    lookups = lookups + 1
+    return self.records[key]
+end
 function discovery:_metadata(object) return {strokes = object.strokes} end
 local appearance = Appearance.new(discovery)
 
@@ -62,6 +67,23 @@ check(image.object.ImageTransparency == 1 and image.object.Active and image.obje
     "A fully faded ability stays interactive, attached, and recoverable")
 renderPlan(imagePlan, 1)
 check(image.object.ImageTransparency == imageOriginal, "A 100-percent adjustment restores the exact original")
+image.object.Image = ""
+local clearedAsset = appearance:plan({image.key}, "element")
+check(target(clearedAsset, image.object, "ImageTransparency") ~= nil,
+    "Clearing a previously displayed texture does not drop its opacity or reset binding")
+image.object.Image = "rbxassetid://12"
+local late = record("LateImage", "ImageButton", {BackgroundTransparency = 1, Image = "", ImageTransparency = 0.2})
+check(appearance:plan({late.key}, "element") == nil, "An unbound empty image does not claim an available visible effect")
+check(target(appearance:plan({late.key}, "element", {targets = {late.key}}), late.object, "ImageTransparency") ~= nil,
+    "An exact saved opacity can bind a recreated image before the asset is populated")
+late.object.Image = "rbxassetid://13"
+check(appearance:hasNewContent(late) and appearance:plan({late.key}, "element") ~= nil,
+    "A late-loaded image makes its opacity operation available")
+local editableImage = record("PaintedAsset", "ImageLabel", {
+    BackgroundTransparency = 1, Image = "", ImageContent = {Object = {}}, ImageTransparency = 0.2,
+})
+check(SmartLayers.painted(editableImage.object) and target(appearance:plan({editableImage.key}, "element"), editableImage.object, "ImageTransparency"),
+    "ImageContent-backed artwork participates in selection and opacity even without a legacy Image URI")
 
 local childrenPlan, _, scope = appearance:plan({root.key, image.key}, "contents")
 check(scope.layers == 3 and #scope.targets == 2, "Including contents handles selected nesting without duplicate layers")
@@ -86,11 +108,21 @@ near((1 - group.object.GroupTransparency) * (1 - nestedGroup.object.GroupTranspa
     (1 - 0.2) * (1 - 0.25) * (1 - 0.4) * 0.5, "Nested group composition does not double-fade visual content")
 local lockedPlan = appearance:plan({group.key}, "contents", {canEdit = function(item) return item ~= groupMember end})
 check(lockedPlan == nil and groupMember.object.Parent == nestedGroup.object, "A compositor may not fade indirectly locked descendants")
+renderPlan(groupPlan, 1)
+local flattened = appearance:flattenGroup(group.key)
+check(target(flattened, groupMember.object, "ImageTransparency") and not target(flattened, nestedGroup.object, "GroupTransparency")
+    and not target(flattened, group.object, "GroupTransparency"), "Flattening an overlapping compositor uses authored descendant components only")
+local restrictedFlat = appearance:plan({group.key}, "contents", {targets = {group.key}, flattenGroups = {[group.key] = true}})
+check(target(restrictedFlat, groupMember.object, "ImageTransparency") ~= nil,
+    "A saved compositor's recorded owner can expand its already-authorized contents when overlap requires direct surfaces")
 screen.ZIndexBehavior = "Global"
 local individualFallback = appearance:plan({group.key}, "contents")
 check(not target(individualFallback, group.object, "GroupTransparency") and target(individualFallback, groupMember.object, "ImageTransparency"),
     "The helper falls back to property-aware contents when the CanvasGroup compositor is unavailable")
 screen.ZIndexBehavior = "Sibling"
+local priorDirect = appearance:plan({group.key}, "contents", {targets = {group.key, groupMember.key}})
+check(target(priorDirect, groupMember.object, "ImageTransparency") and not target(priorDirect, group.object, "GroupTransparency"),
+    "Exact direct members do not become a new compositor after a screen layering change")
 
 local future = record("NewPanel", "Frame", {BackgroundTransparency = 0.25}, root)
 local exact, _, exactInfo = appearance:plan({root.key}, "contents", {targets = {image.key, root.key .. "/Missing:Frame:1"}})
@@ -100,8 +132,10 @@ local vacant, _, vacancy = appearance:plan({root.key}, "contents", {targets = {r
 check(#vacant == 0 and vacancy.missing == 1, "A lost saved scope has no writes")
 for index = 1, Appearance.MAX_LAYERS do record("Extra" .. index, "Frame", {BackgroundTransparency = 0}, root) end
 check(appearance:plan({root.key}, "contents") == nil, "Large live subtrees are refused before any write")
+local beforeExact = lookups
 check(appearance:plan({root.key}, "contents", {targets = {image.key}}) ~= nil,
     "Previously recorded exact members can replay inside a now-large subtree")
+check(lookups - beforeExact == 2, "Exact replay only resolves the root and the authorized child")
 
 local recreated = record("AbilityOne", "ImageButton", {BackgroundTransparency = 1, Image = "rbxassetid://12", ImageTransparency = 0.4}, root)
 local replay = appearance:plan({root.key}, "contents", {targets = {image.key}})

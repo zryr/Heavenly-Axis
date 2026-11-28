@@ -301,6 +301,17 @@ root.GetGuiObjectsAtPosition = nil
 local smartHits, ordinary = discovery:hit(752, 180)
 check(ordinary == record(actionable) and found(smartHits, icon) and found(smartHits, invisibleText),
     "Smart Selection promotes an actionable control over its icon and skips invisible decoration")
+icon.ImageTransparency = 1
+local behindHits, behindPrimary, draggable = discovery:hit(752, 180, {record(actionable).key})
+check(behindPrimary == record(underSmart) and not draggable[record(actionable).key] and found(behindHits, actionable),
+    "The previously painted and now fully faded control does not intercept selection or drag, even when previously selected")
+check(found(discovery:hitThrough(752, 180), actionable), "Select Through can still retrieve the fully faded layer")
+icon.ImageTransparency = 0
+jump.BackgroundTransparency = 1
+local _, throughJump, jumpDrags = discovery:hit(900, 470, {record(jump).key})
+check(throughJump == record(decoration) and not jumpDrags[record(jump).key],
+    "Built-in priority also yields to painted content when the control is fully faded")
+jump.BackgroundTransparency = 0
 check(record(actionable).displayName == "Ability Icon" and record(actionable).typeIcon == "BTN"
     and record(icon).parentKey == record(actionable).key and record(actionable).childKeys[1] == record(icon).key,
     "Layers expose friendly names, type icons, and navigable parent-child relationships")

@@ -42,6 +42,10 @@ local env = {
     writefile = function(path, text)
         writes = writes + 1
         if faults.write == path then error("disk full") end
+        if faults.erase == path then
+            files[path] = nil
+            error("file replaced unsuccessfully")
+        end
         local truncate = faults.truncate == path or faults.truncateOnce == path
         if faults.truncateOnce == path then faults.truncateOnce = nil end
         files[path] = truncate and text:sub(1, 3) or text
@@ -92,15 +96,27 @@ check(storage:save(data), "subsequent save succeeds")
 check(files[Storage.FILES.backup] == firstRaw, "prior known-good configuration retained")
 check(files[Storage.FILES.pending] == nil, "staging file cleaned after successful save")
 local currentRaw = files[Storage.FILES.saved]
+do
+    local repeatedWrites = writes
+    local alreadySaved, message = storage:save(Util.copy(data))
+    check(alreadySaved and message:find("already saved") and writes == repeatedWrites
+        and files[Storage.FILES.saved] == currentRaw and files[Storage.FILES.backup] == firstRaw,
+        "repeated Save verifies the existing profile without rotating its previous backup")
+end
+data.preferences.snapping = true
 faults.write = Storage.FILES.pending
 check(not storage:save(data) and files[Storage.FILES.saved] == currentRaw, "staging write failure preserves current save")
 faults.write = Storage.FILES.backup
 check(not storage:save(data) and files[Storage.FILES.saved] == currentRaw, "backup failure never touches primary")
 faults.write = nil
+faults.truncateOnce = Storage.FILES.backup
+check(not storage:save(data) and files[Storage.FILES.saved] == currentRaw and files[Storage.FILES.backup] == firstRaw,
+    "a partial backup write restores the older backup and leaves the current save intact")
 faults.truncateOnce = Storage.FILES.saved
 local rollbackSaved, rollbackReason = storage:save(data)
-check(not rollbackSaved and rollbackReason:find("restored and verified") and files[Storage.FILES.saved] == currentRaw,
-    "a failed final write verifies restoration of the prior checkpoint when possible")
+check(not rollbackSaved and rollbackReason:find("restored and verified") and files[Storage.FILES.saved] == currentRaw
+    and files[Storage.FILES.backup] == firstRaw,
+    "a failed final write restores the prior checkpoint and keeps the older backup when possible")
 faults.truncate = Storage.FILES.saved
 check(not storage:save(data), "readback failure is reported, never false success")
 faults.truncate = nil
@@ -127,6 +143,54 @@ check(not interruptedFirstSave:save(data) and files[Storage.FILES.saved] == "dif
 files[Storage.FILES.saved] = nil
 local fresh = Storage.new(cap, http)
 check(fresh:save(data), "fresh store can be saved")
+
+local function checkCompetingSaves()
+    local paths = Storage.FILES
+    local original, backup = files[paths.saved], files[paths.backup]
+    local legacy = {version = Config.VERSION, profiles = {}, active = {}}
+    local legacyRaw = http:JSONEncode(legacy)
+    files[paths.saved] = legacyRaw
+    local firstStorage, secondStorage = Storage.new(cap, http), Storage.new(cap, http)
+    local secondContext = Util.copy(context)
+    secondContext.place = "777"
+    local first, second = Profiles.new(firstStorage:load(), firstStorage, context), Profiles.new(secondStorage:load(), secondStorage, secondContext)
+    local writesBefore = writes
+    check(first:save({}, {}, {}) and files[paths.saved] == legacyRaw and writes == writesBefore,
+        "an unchanged checkpoint with omitted legacy fields remains valid and is not rewritten")
+    check(first:save({[key] = target}, {}, {}), "the first editor can persist its game layout")
+    local newest = files[paths.saved]
+    local staleSaved, reason, accepted = second:save({[missingKey] = missingTarget}, {}, {})
+    check(not staleSaved and not accepted and reason:find("another session") and files[paths.saved] == newest,
+        "a concurrent or stale editor cannot overwrite unrelated saved layout scopes")
+    check(Util.equal(secondStorage:import(second:export()), legacy) and second:active() == nil,
+        "a stale Save preserves the local checkpoint and does not activate the rejected profile")
+
+    local external = Config.empty()
+    external.preferences.grid = false
+    local externalRaw = http:JSONEncode(external)
+    local pendingBackup = files[paths.backup]
+    local racingEnv = Util.copy(env)
+    function racingEnv.writefile(path, content)
+        env.writefile(path, content)
+        if path == paths.pending then files[paths.saved] = externalRaw end
+    end
+    local racingStorage = Storage.new(Capabilities.detect(racingEnv, {}), http)
+    local racing, racingError = racingStorage:save(Config.empty())
+    check(not racing and racingError:find("changed during Save") and files[paths.saved] == externalRaw and files[paths.backup] == pendingBackup,
+        "a primary file changed during staging is preserved along with the preceding backup")
+
+    faults.erase = paths.saved
+    check(not firstStorage:save(Config.empty()) and files[paths.saved] == nil and files[paths.backup] == externalRaw,
+        "a failed final write and rollback can leave the verified backup as the only primary recovery")
+    faults.erase = nil
+    local beforeRecovery = writes
+    local recovered, recoveryMessage = Storage.new(cap, http):load()
+    check(Util.equal(recovered, external) and recoveryMessage:find("validated backup") and writes == beforeRecovery
+        and files[paths.saved] == nil, "startup uses a verified backup when the primary disappeared without recreating files")
+    files[paths.saved], files[paths.backup], files[paths.pending] = original, backup, nil
+end
+checkCompetingSaves()
+
 faults.exists = true
 check(not fresh:save(data), "unknown file existence is treated as failure")
 faults.exists = nil
@@ -514,6 +578,13 @@ local function checkEditorPreferences()
     local _, _, retriedEditorDurable = reopened:setPreference("skipTransparent", true)
     check(retriedEditorDurable and EditorPreferences.new(oldStorage, context).data.skipTransparent,
         "repeating a preference after a transient write failure retries persistence")
+    local validPrimary, writesBeforeRecovery = files[editorFiles.saved], writes
+    files[editorFiles.saved] = nil
+    local missingPrimary, recoveredFromBackup = oldStorage:loadEditorPreferences()
+    check(missingPrimary.onboardingCompleted and recoveredFromBackup:find("validated backup")
+        and files[editorFiles.saved] == nil and writes == writesBeforeRecovery,
+        "missing editor preference files recover the prior settings without changing disk")
+    files[editorFiles.saved] = validPrimary
     local corruptEditorFile = "damaged editor preference document"
     files[editorFiles.saved] = corruptEditorFile
     local recoveryLog
@@ -573,6 +644,8 @@ local function checkResetAndOpacity()
     check(reopenedOpacity.transparency == 0.42 and reopenedOpacity.opacity.scope == "contents"
         and reopenedOpacity.opacity.targets[2] == childKey, "legacy background transparency and new contents opacity round trip independently")
     check(Config.validateOpacity({factor = 0, scope = "element"}, jumpKey)
+        and not Config.validateOpacity({factor = .5, scope = "element", targets = {childKey}}, jumpKey)
+        and not Config.validateOpacity({factor = .5, scope = "element", targets = {jumpKey, childKey}}, jumpKey)
         and not Config.validateOpacity({factor = 1.1, scope = "element"}, jumpKey)
         and not Config.validateOpacity({factor = 0.5, scope = "all"}, jumpKey)
         and not Config.validateOpacity({factor = 0.5, scope = "contents", targets = {missingKey}}, jumpKey)

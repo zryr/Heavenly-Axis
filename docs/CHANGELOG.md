@@ -1,5 +1,13 @@
 # Release changes
 
+## V3.4.0
+
+- Unified the editor, onboarding, and notifications with shared surface, type, color, and touch-target tokens. The toolbar emphasizes Save when there are edits, Tools reopens the last workspace, and Quick Edit keeps secondary actions in context. Layers, Groups, and Profiles use quieter rows and contextual management actions.
+- Pinch accepts two fingers near the selection, responds to both inward and outward movement, and completes one history action when either finger lifts. Individual and group edits share the same minimum-size rules.
+- Relative opacity uses authored appearance while a scope owns a surface. Live, restored, and recreated elements use the same precedence rules. Overlapping CanvasGroup scopes can resolve to supported individual surfaces so one scope does not fade the same surface twice.
+- Reset All cancels active transforms, restores eligible controls, and clears selection, guides, handles, and temporary modes. Partial resets report retained protected edits. Undo restores geometry and appearance with the selection clear.
+- Improved backup recovery after interrupted saves, preserved the preceding backup on unchanged saves, and blocked stale sessions from overwriting newer checkpoints.
+
 ## V3.3.0
 
 - Quick Edit groups Move, Size, Rotate, and Opacity. Direct rotation uses the selection center and supports orbital rotation for compatible groups.

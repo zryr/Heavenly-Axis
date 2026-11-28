@@ -45,7 +45,7 @@ function Roblox.new(width, height)
         DescendantAdded = true, DescendantRemoving = true,
     }
     local guiClasses = {Frame = true, TextButton = true, ImageButton = true, TextLabel = true,
-        TextBox = true, ScrollingFrame = true, ImageLabel = true}
+        TextBox = true, ScrollingFrame = true, ImageLabel = true, CanvasGroup = true}
     local function absSize(object)
         if object.ClassName == "ScreenGui" or object.ClassName == "PlayerGui" then return view end
         local parentSize = object.Parent and object.Parent.AbsoluteSize or view

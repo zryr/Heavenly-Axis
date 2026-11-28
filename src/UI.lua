@@ -6,17 +6,12 @@ local Layout = require("UILayout")
 local Notifications = require("Notifications")
 local Onboarding = require("Onboarding")
 local ActionReference = require("ActionReference")
+local Design = require("Design")
 local UI = {}
 UI.__index = UI
 
-local C = {
-    surface = Color3.fromRGB(16, 25, 36), raised = Color3.fromRGB(29, 43, 57),
-    field = Color3.fromRGB(10, 19, 28), selected = Color3.fromRGB(28, 58, 69),
-    cyan = Color3.fromRGB(123, 231, 237), ink = Color3.fromRGB(13, 37, 43),
-    text = Color3.fromRGB(240, 246, 249), muted = Color3.fromRGB(169, 188, 201),
-    border = Color3.fromRGB(62, 86, 102), quiet = Color3.fromRGB(125, 145, 159),
-    warning = Color3.fromRGB(255, 193, 106),
-}
+local C = Design.colors
+local Fonts, Text, Space, Radius, Touch = Design.font, Design.text, Design.space, Design.radius, Design.touch
 local orders = setmetatable({}, {__mode = "k"})
 local function make(class, props, parent)
     local object = Instance.new(class)
@@ -32,19 +27,18 @@ local function make(class, props, parent)
     return object
 end
 local function corners(object, radius)
-    make("UICorner", {CornerRadius = UDim.new(0, radius or 8)}, object)
+    return Design.round(object, radius or Radius.control)
 end
 local function outline(object, color, thickness)
-    return make("UIStroke", {Color = color or C.border, Thickness = thickness or 1, Transparency = .35,
-        ApplyStrokeMode = Enum.ApplyStrokeMode.Border}, object)
+    return Design.stroke(object, color or C.border, thickness or 1, .48)
 end
 local function label(parent, text, height, size)
     return make("TextLabel", {Name = "Label", BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, height or 30),
-        Text = text, Font = Enum.Font.Gotham, TextSize = size or 13, TextColor3 = C.text,
+        Text = text, Font = Fonts.body, TextSize = size or Text.body, TextColor3 = C.text,
         TextWrapped = true, TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 24}, parent)
 end
 local function frame(parent, height)
-    return make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, height or 44), ZIndex = 23}, parent)
+    return make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, height or Touch.minimum), ZIndex = 23}, parent)
 end
 local function flow(parent, spacing)
     orders[parent] = 0
@@ -90,11 +84,11 @@ function UI:connect(signal, fn, dynamic)
 end
 
 function UI:button(parent, text, callback, width, x, color, dynamic)
-    local b = make("TextButton", {Name = text:gsub("[^%w]", ""), Text = text, Size = UDim2.new(width or 1, width and -4 or 0, 0, 44),
+    local b = make("TextButton", {Name = text:gsub("[^%w]", ""), Text = text, Size = UDim2.new(width or 1, width and -Space.tight or 0, 0, Touch.minimum),
         Position = UDim2.new(x or 0, 0, 0, 0), BackgroundColor3 = color or C.raised, BorderSizePixel = 0,
-        TextColor3 = C.text, TextSize = 12, Font = Enum.Font.GothamMedium, TextWrapped = true,
+        TextColor3 = C.text, TextSize = Text.control, Font = Fonts.medium, TextWrapped = true,
         AutoButtonColor = true, ZIndex = parent.ZIndex + 1}, parent)
-    corners(b, 8)
+    corners(b, Radius.control)
     if callback then
         self:connect(b.Activated, function(...)
             local input = self.app.input
@@ -119,10 +113,10 @@ end
 
 function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
     local b = make("TextBox", {Name = placeholder:gsub("[^%w]", ""), Text = initial or "", PlaceholderText = placeholder,
-        PlaceholderColor3 = C.muted, ClearTextOnFocus = false, Size = UDim2.new(width or 1, width and -4 or 0, 0, 44),
+        PlaceholderColor3 = C.muted, ClearTextOnFocus = false, Size = UDim2.new(width or 1, width and -Space.tight or 0, 0, Touch.minimum),
         Position = UDim2.new(x or 0, 0, 0, 0), BackgroundColor3 = C.field, BorderSizePixel = 0,
-        TextColor3 = C.text, TextSize = 13, Font = Enum.Font.Gotham, ZIndex = parent.ZIndex + 1}, parent)
-    corners(b, 8)
+        TextColor3 = C.text, TextSize = Text.body, Font = Fonts.body, ZIndex = parent.ZIndex + 1}, parent)
+    corners(b, Radius.field)
     local stroke = outline(b)
     self:connect(b.Focused, function()
         local input = self.app.input
@@ -149,9 +143,8 @@ function UI:syncTextBox(box, text)
 end
 
 function UI:section(parent, title)
-    local t = label(parent, title, 26, 12)
-    t.TextColor3 = C.cyan
-    t.Font = Enum.Font.GothamBold
+    local t = label(parent, title, 28, Text.section)
+    t.TextColor3, t.Font = C.text, Fonts.strong
     return t
 end
 
@@ -162,6 +155,18 @@ function UI:row(parent, buttons)
         if i == #buttons then b.Size = UDim2.new(1 / #buttons, 0, 0, 44) end
     end
     return r
+end
+
+function UI:labeledField(parent, title, placeholder, initial, callback)
+    local row = frame(parent, Touch.minimum)
+    local caption = label(row, title, Touch.minimum, Text.control)
+    caption.Size = UDim2.new(1, -88, 1, 0)
+    caption.TextColor3 = C.muted
+    truncate(caption)
+    local field = self:textbox(row, placeholder, initial, callback)
+    field.Position = UDim2.new(1, -78, 0, 0)
+    field.Size = UDim2.fromOffset(78, Touch.minimum)
+    return field, row
 end
 
 local function preferenceValue(app, key, default, smart)
@@ -226,10 +231,10 @@ end
 function UI:dialog(title, message, text, actions)
     if self.app.input then self.app.input:cancel() end
     self:closeModal()
-    local shield = make("TextButton", {Name = "DialogShield", Text = "", AutoButtonColor = false, BackgroundColor3 = Color3.new(0, 0, 0),
+    local shield = make("TextButton", {Name = "DialogShield", Text = "", AutoButtonColor = false, BackgroundColor3 = C.scrim,
         BackgroundTransparency = .32, Size = UDim2.fromScale(1, 1), ZIndex = 70}, self.root)
     local card = make("Frame", {Name = "Dialog", BackgroundColor3 = C.surface, BorderSizePixel = 0, ZIndex = 71}, shield)
-    corners(card, 14)
+    corners(card, Radius.dialog)
     outline(card)
     self.modalGui, self.modalConnections, self.modalOpen = shield, {}, true
     self.dialogCard, self.dialogHasText = card, text ~= nil
@@ -248,12 +253,12 @@ function UI:dialog(title, message, text, actions)
     self:bindScroll(scroller, body, 8)
     local desc = label(body, message, 28, 13)
     desc.AutomaticSize, desc.TextYAlignment, desc.ZIndex = Enum.AutomaticSize.Y, Enum.TextYAlignment.Top, 73
-    desc.TextColor3 = C.muted
+    desc.TextColor3, desc.Visible = C.muted, message ~= ""
     local box
     if text ~= nil then
         box = make("TextBox", {Text = text, ClearTextOnFocus = false, MultiLine = true, TextWrapped = true,
             TextXAlignment = Enum.TextXAlignment.Left, TextYAlignment = Enum.TextYAlignment.Top, Font = Enum.Font.Code,
-            TextColor3 = C.text, TextSize = 13, BackgroundColor3 = C.field, BorderSizePixel = 0,
+            TextColor3 = C.text, TextSize = Text.body, BackgroundColor3 = C.field, BorderSizePixel = 0,
             Size = UDim2.new(1, 0, 0, 102), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 73}, body)
         corners(box, 8)
         make("UIPadding", {PaddingLeft = UDim.new(0, 7), PaddingRight = UDim.new(0, 7),
@@ -270,7 +275,7 @@ function UI:dialog(title, message, text, actions)
             if entry.closeFirst then return end
             if ok ~= false then self:closeModal()
             elseif result then
-                desc.Text, desc.TextColor3 = tostring(result), C.warning
+                desc.Text, desc.TextColor3, desc.Visible = tostring(result), C.warning, true
                 self.app:status(result)
             end
         end, 1 / #actions, (i - 1) / #actions, entry.primary and C.cyan or nil, self.modalConnections)
@@ -387,8 +392,7 @@ end
 
 function UI:makeElements()
     local body = self.pageBodies.Elements
-    self:section(body, "Smart Layers")
-    self.search = self:textbox(body, "Search names, types or paths", "")
+    self.search = self:textbox(body, "Search layers", "")
     self.search.TextXAlignment = Enum.TextXAlignment.Left
     make("UIPadding", {PaddingLeft = UDim.new(0, 12), PaddingRight = UDim.new(0, 10)}, self.search)
     self:connect(self.search:GetPropertyChangedSignal("Text"), function()
@@ -604,23 +608,14 @@ function UI:makeAdvanced()
     self.resetAdvanced = self:button(recoveryRow, "Reset selection", function() self.app:reset() end, .5, 0)
     self.recoverAdvanced = self:button(recoveryRow, "Bring into view", function() self.app:recover() end, .5, .5)
     self.recoverAdvanced.Size = UDim2.new(.5, 0, 0, 44)
-    self:section(body, "Group transformations")
-    self:toggle(body, "Scale from center", "centerScale", false)
-    self:toggle(body, "Adjust each member's size", "equalSize", false)
-    label(body, "Member size changes keep the members in place. Group scaling also changes their spacing.", 42, 12).TextColor3 = C.muted
-    self:row(body, {{"Align left", function() self.app:align("left") end}, {"Center X", function() self.app:align("centerX") end},
-        {"Align right", function() self.app:align("right") end}})
-    self:row(body, {{"Align top", function() self.app:align("top") end}, {"Center Y", function() self.app:align("centerY") end},
-        {"Align bottom", function() self.app:align("bottom") end}})
-    self:row(body, {{"Distribute X", function() self.app:distribute("x") end}, {"Distribute Y", function() self.app:distribute("y") end}})
     self:section(body, "Visual properties")
     self.visualHint = label(body, "Select one editable element.", 34, 12)
     self.visualHint.TextColor3 = C.muted
-    self.rotation = self:textbox(body, "Rotation in degrees", "", function(v)
+    self.rotation, self.rotationRow = self:labeledField(body, "Angle (degrees)", "Degrees", "", function(v)
         local n = validNumber(v)
         if n then self.app:geometry("rotation", n) else self.app:status("Enter rotation in degrees.") end
     end)
-    self.transparency = self:textbox(body, "Transparency from 0 to 1", "", function(v)
+    self.transparency, self.transparencyRow = self:labeledField(body, "Background transparency", "0–1", "", function(v)
         local n = validNumber(v)
         if n then self.app:geometry("transparency", n) else self.app:status("Enter transparency from 0 to 1.") end
     end)
@@ -664,12 +659,77 @@ function UI:showChildren()
     self:refreshElements()
 end
 
+function UI:summaryCard(parent, titleText, detailText)
+    local card = frame(parent, 62)
+    card.BackgroundTransparency, card.BackgroundColor3 = 0, C.field
+    corners(card, Radius.surface)
+    local title = label(card, titleText, 25, Text.section)
+    title.Position, title.Size, title.Font = UDim2.fromOffset(12, 6), UDim2.new(1, -24, 0, 25), Fonts.strong
+    truncate(title)
+    local detail = label(card, detailText, 22, Text.control)
+    detail.Position, detail.Size, detail.TextColor3 = UDim2.fromOffset(12, 33), UDim2.new(1, -24, 0, 22), C.muted
+    truncate(detail)
+    return title, detail
+end
+
+function UI:listItem(parent, primary, secondary, activate, connections, active)
+    local button = self:button(parent, "", activate, nil, nil, active and C.selected or C.raised, connections)
+    button.Name = "ListItem"
+    button.Size = UDim2.new(1, 0, 0, 52)
+    button.BackgroundTransparency = active and 0 or .42
+    local title = label(button, primary, 22, Text.body)
+    title.Position, title.Size, title.Font = UDim2.fromOffset(12, 4), UDim2.new(1, -53, 0, 22), Fonts.medium
+    truncate(title)
+    local caption = label(button, secondary, 17, Text.caption)
+    caption.Position, caption.Size, caption.TextColor3 = UDim2.fromOffset(12, 27), UDim2.new(1, -53, 0, 17), C.muted
+    truncate(caption)
+    local menu = label(button, "...", 44, Text.section)
+    menu.Position, menu.Size, menu.TextColor3 = UDim2.new(1, -40, 0, 2), UDim2.fromOffset(34, 44), C.quiet
+    menu.TextXAlignment = Enum.TextXAlignment.Center
+    return button
+end
+
+function UI:promptName(title, copy, initial, action, commit)
+    local input
+    local _, body = self:dialog(title, copy, nil, {{label = "Cancel"},
+        {label = action, primary = true, action = function()
+            local value = input.Text:match("^%s*(.-)%s*$")
+            if value == "" then return false, "Enter a name to continue." end
+            return commit(value)
+        end}})
+    input = self:textbox(body, "Name", initial, nil, nil, nil, self.modalConnections)
+    input.TextXAlignment = Enum.TextXAlignment.Left
+    make("UIPadding", {PaddingLeft = UDim.new(0, Space.medium), PaddingRight = UDim.new(0, Space.medium)}, input)
+    self.dialogMaxHeight = 220
+    self:layoutDialog()
+end
+
+function UI:openSavedGroup(name)
+    local actions = {
+        {"Select group", function() self.app:group("select", name); self:setWorkspace(false) end},
+        {"Rename group", function()
+            self:promptName("Rename group", "", name, "Rename", function(value) return self.app:group("rename", name, value) end)
+        end},
+        {"Add selection", function() self.app:group("add", name) end},
+        {"Remove selection", function() self.app:group("remove", name) end},
+        {"Reset members", function()
+            self:confirm("Reset group members?", "This restores the original supported properties of this group's controls.", function()
+                self.app:group("select", name)
+                self.app:reset()
+            end)
+        end},
+        {"Delete group", function()
+            self:confirm("Delete group?", "The controls keep their current properties.", function() self.app:group("delete", name) end)
+        end},
+    }
+    self:contextMenu(name, "", actions)
+end
+
 function UI:makeGroups()
     local body = self.pageBodies.Groups
-    self:section(body, "Current selection")
-    self.groupSummary = label(body, "", 35, 13)
-    self.groupSummary.TextColor3 = C.muted
+    self.groupTitle, self.groupSummary = self:summaryCard(body, "Current selection", "")
     local groupActions = frame(body, 44)
+    self.groupActions = groupActions
     self.temporaryGroup = self:button(groupActions, "Quick group", function()
         if self.app.quickGroup then self.app:quickGroup() end
     end, .5, 0, C.selected)
@@ -687,53 +747,71 @@ function UI:makeGroups()
         Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, Visible = false}, body)
     flow(self.groupMemberList, 5)
     self:section(body, "Saved groups")
-    self.groupName = self:textbox(body, "Name this group", "")
-    self:row(body, {{"Save as named group", function() self.app:group("create", self.groupName.Text) end}, {"Rename selected", function()
-        self.app:group("rename", self.chosenGroup, self.groupName.Text)
-    end}})
-    self:row(body, {{"Add selected", function() self.app:group("add", self.chosenGroup) end}, {"Remove selected", function()
-        self.app:group("remove", self.chosenGroup)
-    end}})
-    self:row(body, {{"Select group", function() self.app:group("select", self.chosenGroup) end}, {"Delete group", function()
-        if self.chosenGroup then self:confirm("Delete group", "Delete “" .. self.chosenGroup .. "”? GUI elements will remain.", function() self.app:group("delete", self.chosenGroup) end) end
-    end}})
-    self:row(body, {{"Reset members", function() self.app:group("select", self.chosenGroup); self.app:reset() end}, {"Open Layers", function() self:setTab("Elements") end}})
     self.groupList = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
-    flow(self.groupList)
+    flow(self.groupList, 5)
+    self.nameGroupButton = self:button(body, "Name this group", function()
+        self:promptName("Name this group", "Keep these controls together for future edits.", "", "Create group",
+            function(value) return self.app:group("create", value) end)
+    end, nil, nil, C.selected)
+    self:section(body, "Group transforms")
     self:toggle(body, "Adjust each member's size", "equalSize", false)
-    self:toggle(body, "Scale from center", "centerScale", false)
-    self:section(body, "GROUP ALIGNMENT")
+    label(body, "Member resizing keeps controls in place. Proportional group scaling changes their spacing.", 40, 12).TextColor3 = C.muted
+    self:section(body, "Alignment and spacing")
     self:row(body, {{"Left", function() self.app:align("left") end}, {"Center X", function() self.app:align("centerX") end}, {"Right", function() self.app:align("right") end}})
     self:row(body, {{"Top", function() self.app:align("top") end}, {"Center Y", function() self.app:align("centerY") end}, {"Bottom", function() self.app:align("bottom") end}})
     self:row(body, {{"Distribute X", function() self.app:distribute("x") end}, {"Distribute Y", function() self.app:distribute("y") end}})
 end
 
+local profileScopes = {
+    {"place", "This place"}, {"experience", "This experience"}, {"device", "This device type"},
+    {"orientation", "This orientation"}, {"global", "Built-in controls in all games"},
+}
+
+local function profileScopeLabel(scope)
+    for _, option in ipairs(profileScopes) do if option[1] == scope then return option[2] end end
+    return scope or "Saved profile"
+end
+
+function UI:newProfile()
+    local scopes = {}
+    for _, option in ipairs(profileScopes) do
+        scopes[#scopes + 1] = {option[2], function()
+            self:promptName("New profile", option[2], "", "Create profile",
+                function(value) return self.app:profile("create", value, option[1]) end)
+        end}
+    end
+    self:contextMenu("Where should this profile apply?", "More specific profiles take priority when their settings overlap.", scopes)
+end
+
+function UI:openProfileActions(profile)
+    self:contextMenu(profile.name, profileScopeLabel(profile.scope), {
+        {"Preview profile", function() self.app:profile("preview", profile.id) end},
+        {"Rename", function()
+            self:promptName("Rename profile", "", profile.name, "Rename",
+                function(value) return self.app:profile("rename", profile.id, value) end)
+        end},
+        {"Duplicate", function()
+            self:promptName("Duplicate profile", "", profile.name .. " copy", "Duplicate",
+                function(value) return self.app:profile("duplicate", profile.id, value) end)
+        end},
+        {"Delete profile", function()
+            self:confirm("Delete this profile?", "This removes the saved configuration for this profile.",
+                function() self.app:profile("delete", profile.id, true) end)
+        end},
+    })
+end
+
 function UI:makeProfiles()
     local body = self.pageBodies.Profiles
-    self:section(body, "PROFILE SCOPE & PREVIEW")
-    self.activeProfile = label(body, "No active profile", 44, 13)
-    self:button(body, "Apply preview", function() self.app:profile("apply") end)
-    self:button(body, "Cancel preview", function() self.app:profile("cancel") end)
-    self.profileName = self:textbox(body, "Profile name", "")
-    self.scope = "place"
-    self.scopeButton = self:button(body, "Scope: place", function()
-        local scopes = {"global", "experience", "place", "device", "orientation"}
-        local index = 1
-        for i, v in ipairs(scopes) do if v == self.scope then index = i end end
-        self.scope = scopes[index % #scopes + 1]; self.scopeButton.Text = "Scope: " .. self.scope
-    end)
-    label(body, "Priority: global built-ins → experience → place → device → orientation. Create, preview, Apply, then Save.", 60, 11)
-    self:row(body, {{"Create", function() self.app:profile("create", self.profileName.Text, self.scope) end},
-        {"Rename", function() self.app:profile("rename", self.chosenProfile, self.profileName.Text) end},
-        {"Duplicate", function() self.app:profile("duplicate", self.chosenProfile, self.profileName.Text) end}})
-    self:row(body, {{"Preview selected", function() self.app:profile("preview", self.chosenProfile) end}, {"Delete selected", function()
-        if self.chosenProfile then self:confirm("Delete profile", "Delete the selected saved profile? This is separate from restoring the original layout.", function()
-            self.app:profile("delete", self.chosenProfile, true)
-        end) end
-    end}})
+    self.activeProfile, self.profileSummary = self:summaryCard(body, "Current layout", "")
+    self.previewActions = self:row(body, {{"Cancel preview", function() self.app:profile("cancel") end},
+        {"Apply preview", function() self.app:profile("apply") end, C.selected}})
+    self.previewActions.Visible = false
+    self:section(body, "Saved profiles")
     self.profileList = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
-    flow(self.profileList)
-    self:section(body, "PORTABLE CONFIGURATION")
+    flow(self.profileList, 5)
+    self.newProfileButton = self:button(body, "New profile", function() self:newProfile() end, nil, nil, C.selected)
+    self:section(body, "Import and export")
     self:row(body, {{"Export JSON", function() self:showExport() end}, {"Import JSON", function()
         self:modal("Import configuration", "Paste JSON, then preview. Existing profiles require explicit overwrite approval. Imported text is never executed.", "", "Preview import", function(value)
             local ok, problem = self.app:import(value)
@@ -748,8 +826,10 @@ function UI:makeProfiles()
             return true
         end)
     end)
-    self:row(body, {{"Suspend profile", function() self.app:profile("suspend", true) end}, {"Resume profile", function() self.app:profile("suspend", false) end}})
-    self:button(body, "Restore original layout (keep profiles)", function() self.app:profile("restore") end)
+    self:section(body, "Recovery")
+    self.profileSuspend = self:button(body, "Pause saved layout", function()
+        if self.app.profiles.suspended then self.app:profile("suspend", false) else self.app:profile("restore") end
+    end)
     self.draftSection = make("Frame", {BackgroundTransparency = 1, Size = UDim2.new(1, 0, 0, 0), AutomaticSize = Enum.AutomaticSize.Y, ZIndex = 23}, body)
     flow(self.draftSection)
     self.draftLabel = label(self.draftSection, "", 48, 12)
@@ -778,9 +858,10 @@ function UI:makeSettings()
     self:section(body, "Editing")
     self:toggle(body, "Snap to grid and guides", "snapping", false)
     self:toggle(body, "Keep width and height in proportion", "aspectLock", true)
+    self:toggle(body, "Resize from center", "centerScale", false)
     self:toggle(body, "Box selection", "boxSelect", false)
     self.preferenceFields = {}
-    self.preferenceFields.step = self:textbox(body, "Movement step in pixels", tostring(self.app.preferences.step or 1), function(v)
+    self.preferenceFields.step = self:labeledField(body, "Movement step (px)", "1–64", tostring(self.app.preferences.step or 1), function(v)
         local n = tonumber(v); if n and n >= 1 and n <= 64 then self.app:setPreference("step", n) else self.app:status("Choose a step from 1 to 64 px.") end
     end)
     self:section(body, "Smart Layers")
@@ -794,10 +875,10 @@ function UI:makeSettings()
         function() if self.app.clearLayerStates then self.app:clearLayerStates("locked") end end) end}})
     self:section(body, "Appearance")
     self:toggle(body, "Canvas grid", "grid", true)
-    self.preferenceFields.gridSize = self:textbox(body, "Grid spacing (4–128 pixels)", tostring(self.app.preferences.gridSize or 24), function(v)
+    self.preferenceFields.gridSize = self:labeledField(body, "Grid spacing (px)", "4–128", tostring(self.app.preferences.gridSize or 24), function(v)
         local n = tonumber(v); if n and n >= 4 and n <= 128 then self.app:setPreference("gridSize", n) else self.app:status("Grid spacing must be 4–128 pixels.") end
     end)
-    self.preferenceFields.snapThreshold = self:textbox(body, "Guide threshold (1–32 pixels)", tostring(self.app.preferences.snapThreshold or 6), function(v)
+    self.preferenceFields.snapThreshold = self:labeledField(body, "Guide threshold (px)", "1–32", tostring(self.app.preferences.snapThreshold or 6), function(v)
         local n = tonumber(v); if n and n >= 1 and n <= 32 then self.app:setPreference("snapThreshold", n) else self.app:status("Guide threshold must be 1–32 pixels.") end
     end)
     self:section(body, "Editor panels")
@@ -806,7 +887,7 @@ function UI:makeSettings()
         if self.app.resetEditorLayout then self.app:resetEditorLayout() end
     end)
     self:section(body, "Behavior")
-    self.preferenceFields.shortcut = self:textbox(body, "Reopen key (for example F8)", self.app.preferences.shortcut or "F8", function(v)
+    self.preferenceFields.shortcut = self:labeledField(body, "Reopen shortcut", "F8", self.app.preferences.shortcut or "F8", function(v)
         local ok, key = pcall(function() return Enum.KeyCode[v] end)
         if ok and key and key ~= Enum.KeyCode.Unknown then self.app:setPreference("shortcut", v) else self.app:status("Enter a valid Roblox KeyCode name.") end
     end)
@@ -839,12 +920,13 @@ function UI:makeSettings()
         self:modal("Automatic startup", "Saving profiles does not install auto-execution. Only configure an executor you use and trust.",
             "1. Save a profile; confirm the status reports persistent storage.\n2. Put the local bundled release in the environment's documented startup folder.\n3. Before running it, set HeavenlyAxisOptions = {LoaderOnly = true}. Use getgenv().HeavenlyAxisOptions when supported.\n4. Restart/join, then call getgenv().__HEAVENLY_AXIS_V3:Open() to inspect diagnostics. In Studio use _G.__HEAVENLY_AXIS_V3:Open(). Alternatively set HeavenlyAxisOptions = {LoaderOnly = false} before rerunning the release.\n5. If the environment has no startup capability, run the release manually. No automatic installer is used.\n\nRecovery: rerun with HeavenlyAxisOptions = {SafeMode = true}; saved profiles remain intact.")
     end)
-    self.capabilityLabel = label(body, "", 168, 11)
-    self.capabilityLabel.TextYAlignment = Enum.TextYAlignment.Top
-    self:section(body, "VERSION & DIAGNOSTICS")
+    self:section(body, "Version and diagnostics")
     label(body, "Heavenly Axis " .. tostring(self.app.version or "3.0.0")
         .. "\nRoblox HUD & Interface Editor\nOriginal by Syshi. V2 inspired by Danechka.", 60, 12)
     self:button(body, "Check project releases (optional)", function() self.app:checkUpdates() end)
+    self:button(body, "Runtime capabilities", function()
+        self:modal("Runtime capabilities", "See which optional features are available in this session.", self.capabilityText or "")
+    end)
     self:button(body, "Expandable diagnostic log", function()
         local lines = {}
         local stats = self.app.discovery.stats
@@ -973,45 +1055,45 @@ function UI:confirmResetAll()
 end
 
 function UI:openToolsMenu()
+    if self.workspaceOpen then return self:setWorkspace(false) end
+    self:setTab(self.lastToolsTab or "Advanced")
+end
+
+function UI:openWorkspaceActions()
     local actions = {}
     if not self.saveButton.Visible then actions[#actions + 1] = {"Save layout", function() self.app:save() end} end
-    if self.collapsed then actions[#actions + 1] = {"Show Quick Edit", function()
-        self:setWorkspace(false)
-        self:setCollapsed(false)
-    end} end
-    local menu = {{"Edit tools", "Advanced"}, {"Layers", "Elements"}, {"Groups", "Groups"},
-        {"Profiles", "Profiles"}, {"Settings", "Settings"}, {"Help", "Help"}}
-    for _, item in ipairs(menu) do
-        actions[#actions + 1] = {item[1], function() self:setTab(item[2]) end}
-    end
     actions[#actions + 1] = {"Reset All Changes", function() self:confirmResetAll() end}
-    self:contextMenu("Tools", "", actions)
+    self:contextMenu("Layout actions", "", actions)
+end
+
+function UI:openHistory()
+    local actions = {}
+    if not self.disabled[self.undoButton] then actions[#actions + 1] = {"Undo last change", function() self.app:undo() end} end
+    if not self.disabled[self.redoButton] then actions[#actions + 1] = {"Redo last change", function() self.app:redo() end} end
+    self:contextMenu("History", #actions == 0 and "Undo and redo will appear after an edit." or "", actions)
 end
 
 function UI:makeToolbar()
     local toolbar = make("Frame", {Name = "Toolbar", BackgroundColor3 = C.surface, BackgroundTransparency = .035,
         BorderSizePixel = 0, ZIndex = 34, Visible = false, Active = true}, self.root)
     self.toolbar = toolbar
-    corners(toolbar, 12); outline(toolbar)
+    corners(toolbar, Radius.surface); outline(toolbar)
     self.toolbarGrip = self:button(toolbar, "", nil, nil, nil, C.field)
     self.toolbarGrip.Name = "MoveToolbar"
-    self.toolbarGrip.Position, self.toolbarGrip.Size = UDim2.fromOffset(2, 2), UDim2.fromOffset(42, 44)
+    self.toolbarGrip.Position, self.toolbarGrip.Size = UDim2.fromOffset(2, 2), UDim2.fromOffset(Touch.minimum, Touch.minimum)
     self.toolbarGrip.AutoButtonColor = false
     gripDots(self.toolbarGrip, 0, 14)
     self.toolbarBrand = brand(self.toolbarGrip, 36)
     self.toolbarBrand.Position = UDim2.fromOffset(15, 11)
     local actions = {
-        {"Edit", function()
-            self:setWorkspace(false)
-            self:setCollapsed(false)
-        end, 45},
         {"Elements", function()
             if self.workspaceOpen and self.tab == "Elements" then self:setWorkspace(false)
             else self:setTab("Elements") end
-        end, 58},
+        end, 54},
         {"Multi", function() self.app:setPreference("multiSelect", not self.app.preferences.multiSelect) end, 45},
         {"Undo", function() self.app:undo() end, 44},
         {"Redo", function() self.app:redo() end, 44},
+        {"History", function() self:openHistory() end, 52},
         {"Tools", function() self:openToolsMenu() end, 45},
         {"Save", function() self.app:save() end, 44},
         {"Done", function()
@@ -1029,17 +1111,22 @@ function UI:makeToolbar()
         self.toolbarButtons[#self.toolbarButtons + 1] = {name = name, button = button, width = width}
         self[name:lower() .. "Button"] = button
     end
-    self.doneButton.Font = Enum.Font.GothamBold
-    self.saveIndicator = make("Frame", {Name = "Unsaved", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
-        Position = UDim2.new(1, -9, 0, 8), Size = UDim2.fromOffset(4, 4), ZIndex = 36, Visible = false}, self.saveButton)
-    corners(self.saveIndicator, 2)
+    self.toolbarDividers = {}
+    for _, boundary in ipairs({"Undo", "Tools"}) do
+        self.toolbarDividers[boundary] = make("Frame", {Name = boundary .. "Divider", BackgroundColor3 = C.border,
+            BackgroundTransparency = .35, BorderSizePixel = 0, Size = UDim2.fromOffset(1, 19), ZIndex = 35}, toolbar)
+    end
+    self.editButton = self:button(self.root, "Show Quick Edit", function() self:setCollapsed(false) end, nil, nil, C.surface)
+    self.editButton.Visible, self.editButton.ZIndex = false, 34
+    outline(self.editButton)
+    self.doneButton.Font, self.saveButton.Font = Fonts.strong, Fonts.strong
     self.toolsSaveIndicator = make("Frame", {Name = "Unsaved", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
         Position = UDim2.new(1, -9, 0, 8), Size = UDim2.fromOffset(4, 4), ZIndex = 36, Visible = false}, self.toolsButton)
     corners(self.toolsSaveIndicator, 2)
 
     self.canvasHint = make("Frame", {Name = "SelectionHint", Active = false, BackgroundColor3 = C.surface,
         BackgroundTransparency = .1, BorderSizePixel = 0, ZIndex = 20, Visible = false}, self.root)
-    corners(self.canvasHint, 9)
+    corners(self.canvasHint, Radius.control)
     outline(self.canvasHint)
     local text = label(self.canvasHint, "Tap a control to edit", 30, 12)
     self.canvasHintText = text
@@ -1260,7 +1347,10 @@ function UI:openQuickAction()
         else self:setTab("Groups") end
         return
     end
-    self:setTab("Advanced")
+    local entries = {{"Precision and appearance", function() self:setTab("Advanced") end}}
+    if #self.app.selection == 1 then entries[#entries + 1] = {"Layer actions", function() self:openLayerActions() end} end
+    if self.app.armSelectThrough then entries[#entries + 1] = {"Select through", function() self:armSelectThrough() end} end
+    self:contextMenu("Selection tools", "", entries)
 end
 
 local destinations = {{"Elements", "Layers", 61}, {"Advanced", "Edit tools", 70}, {"Groups", "Groups", 61},
@@ -1269,15 +1359,18 @@ local destinations = {{"Elements", "Layers", 61}, {"Advanced", "Edit tools", 70}
 function UI:makeWorkspace()
     self.workspace = make("Frame", {Name = "Workspace", BackgroundColor3 = C.surface, BorderSizePixel = 0,
         ZIndex = 40, Visible = false, Active = true, ClipsDescendants = true}, self.root)
-    corners(self.workspace, 13); outline(self.workspace)
+    corners(self.workspace, Radius.surface); outline(self.workspace)
     local header = frame(self.workspace, 44)
     header.Position, header.Size, header.ZIndex = UDim2.fromOffset(8, 4), UDim2.new(1, -16, 0, 44), 41
     local back = self:button(header, "Canvas", function() self:setWorkspace(false) end)
     back.Size = UDim2.fromOffset(68, 44)
     back.BackgroundTransparency, back.TextColor3 = 1, C.cyan
-    self.workspaceHeading = label(header, "Heavenly Axis", 44, 16)
-    self.workspaceHeading.Position, self.workspaceHeading.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -132, 0, 44)
-    self.workspaceHeading.Font = Enum.Font.GothamBold
+    self.workspaceHeading = label(header, "Layers", 44, Text.title)
+    self.workspaceHeading.Position, self.workspaceHeading.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -195, 0, 44)
+    self.workspaceHeading.Font = Fonts.strong
+    truncate(self.workspaceHeading)
+    self.workspaceActions = self:button(header, "Actions", function() self:openWorkspaceActions() end, nil, nil, C.field)
+    self.workspaceActions.Position, self.workspaceActions.Size = UDim2.new(1, -110, 0, 0), UDim2.fromOffset(57, 44)
     self.workspaceMenu = self:button(header, "Choose section", function()
         local entries = {}
         for _, destination in ipairs(destinations) do
@@ -1285,7 +1378,7 @@ function UI:makeWorkspace()
         end
         self:contextMenu("Editor sections", "", entries)
     end)
-    self.workspaceMenu.Position, self.workspaceMenu.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -132, 0, 44)
+    self.workspaceMenu.Position, self.workspaceMenu.Size = UDim2.fromOffset(75, 0), UDim2.new(1, -195, 0, 44)
     self.workspaceGrip = self:button(header, "Drag", nil, nil, nil, C.field)
     self.workspaceGrip.Name, self.workspaceGrip.AutoButtonColor = "MoveTools", false
     self.workspaceGrip.Position, self.workspaceGrip.Size = UDim2.new(1, -48, 0, 0), UDim2.fromOffset(48, 44)
@@ -1299,7 +1392,7 @@ function UI:makeWorkspace()
         Active = true, ClipsDescendants = true,
         Position = UDim2.fromOffset(8, 50), Size = UDim2.new(1, -16, 0, 47),
         CanvasSize = UDim2.fromOffset(330, 0), ZIndex = 41}, self.workspace)
-    self.tabButtons, self.pages, self.pageBodies = {}, {}, {}
+    self.tabButtons, self.tabMarks, self.pages, self.pageBodies = {}, {}, {}, {}
     local navX = 0
     self.tabPositions = {}
     for _, destination in ipairs(destinations) do
@@ -1307,7 +1400,12 @@ function UI:makeWorkspace()
         local button = self:button(self.tabs, caption, function() self:setTab(name) end)
         self.tabPositions[name] = navX
         button.Position, button.Size = UDim2.fromOffset(navX, 0), UDim2.fromOffset(width, 44)
-        self.tabButtons[name] = button
+        button.BackgroundTransparency = 1
+        local mark = make("Frame", {Name = "ActiveSection", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+            AnchorPoint = Vector2.new(.5, 1), Position = UDim2.new(.5, 0, 1, -2), Size = UDim2.new(1, -16, 0, 2),
+            Visible = name == "Elements"}, button)
+        corners(mark, 1)
+        self.tabButtons[name], self.tabMarks[name] = button, mark
         navX = navX + width + 3
         local page = make("ScrollingFrame", {Name = name, BackgroundTransparency = 1, BorderSizePixel = 0,
             ScrollBarThickness = 3, ScrollBarImageColor3 = C.cyan, CanvasSize = UDim2.new(),
@@ -1492,6 +1590,9 @@ function UI:setTab(name)
     if self.tab ~= name and self.app.input then self.app.input:cancel() end
     if self.tab ~= name and name == "Elements" then self.elementRevision = nil end
     self.tab = name
+    if name ~= "Elements" then self.lastToolsTab = name end
+    self.workspaceHeading.Text = self.tabButtons[name].Text
+    self.workspaceMenu.Text = self.tabButtons[name].Text
     local tabPosition = self.tabs.CanvasPosition
     local tabX, tabW, viewW = self.tabPositions[name], self.tabButtons[name].AbsoluteSize.X, self.tabs.AbsoluteSize.X
     local offset = tabPosition and tabPosition.X or 0
@@ -1500,8 +1601,8 @@ function UI:setTab(name)
     end
     for key, page in pairs(self.pages) do page.Visible = key == name end
     for key, button in pairs(self.tabButtons) do
-        button.TextColor3 = key == name and C.cyan or C.muted
-        button.BackgroundColor3 = key == name and C.selected or C.raised
+        button.TextColor3 = key == name and C.text or C.muted
+        self.tabMarks[key].Visible = key == name
     end
     self:setWorkspace(true)
 end
@@ -1521,6 +1622,8 @@ function UI:showSurfaces()
     self.helpExit.Visible = self.toolbar.Visible and self.helpMode == true
     self.canvasHint.Visible = self.toolbar.Visible and not self.workspaceOpen and not self.helpMode
         and (#self.app.selection == 0 or self.selectThroughArmed == true)
+    self.editButton.Visible = self.toolbar.Visible and not self.workspaceOpen and self.collapsed and #self.app.selection > 0
+        and not self.selectThroughArmed and not self.helpMode
     self.launcher.Visible = not self.visible and self.app.preferences.launcherHidden ~= true
 end
 
@@ -1541,26 +1644,44 @@ function UI:placeCanvasHint()
     if y + 30 > plan.area.y + plan.area.h then y = toolbar.y - 38 end
     self.hintRect = Layout.place({w = math.min(width, plan.area.w), h = math.min(30, plan.content.h)}, plan.area, toolbar.x, y)
     localRect(self.canvasHint, self.hintRect)
+    localRect(self.editButton, Layout.place({w = 126, h = 44}, plan.area, toolbar.x, self.hintRect.y))
     local hintY = self.hintRect.y
     localRect(self.helpExit, Layout.place({w = 92, h = 44}, plan.area, toolbar.x + toolbar.w + 7, hintY))
 end
 
 function UI:layoutToolbar(plan)
-    local showSave = plan.toolbar.w >= 425
-    self.toolbarBrand.Visible = plan.toolbar.w >= 315
-    local hideEdit = plan.toolbar.w < 350
-    local x = 47
-    local total = 0
-    for _, entry in ipairs(self.toolbarButtons) do
-        if (showSave or entry.name ~= "Save") and (not hideEdit or entry.name ~= "Edit") then total = total + entry.width end
+    local compact = plan.toolbar.w < 379
+    local x, gutter = 46, not compact and 5 or 0
+    local available = plan.toolbar.w - x - 4 - gutter * 2
+    local showSave = available >= (compact and 6 or 7) * Touch.minimum
+    self.toolbarBrand.Visible = plan.toolbar.w >= 287
+    local function shown(name)
+        if name == "History" then return compact end
+        if name == "Undo" or name == "Redo" then return not compact end
+        return name ~= "Save" or showSave
     end
-    local factor = (plan.toolbar.w - x - 4) / total
+    local count, preferred = 0, 0
+    for _, entry in ipairs(self.toolbarButtons) do
+        if shown(entry.name) then count, preferred = count + 1, preferred + entry.width end
+    end
+    local minimum = math.min(Touch.minimum, math.max(1, math.floor(available / count)))
+    local extra = math.max(0, available - minimum * count)
+    local requested = preferred - Touch.minimum * count
+    local factor = math.min(1, extra / math.max(1, requested))
+    local shared = math.floor(math.max(0, extra - requested) / count)
     for _, entry in ipairs(self.toolbarButtons) do
         local button = entry.button
-        button.Visible = (showSave or entry.name ~= "Save") and (not hideEdit or entry.name ~= "Edit")
+        button.Visible = shown(entry.name)
+        local edge = self.toolbarDividers[entry.name]
+        if edge then
+            edge.Visible = gutter > 0
+            edge.Position = UDim2.fromOffset(x + 1, 14)
+            x = x + gutter
+        end
         if button.Visible then
-            local width = math.max(1, math.floor(entry.width * factor))
-            button.Position, button.Size = UDim2.fromOffset(x, 2), UDim2.fromOffset(width, math.max(1, math.min(44, plan.toolbar.h - 2)))
+            local width = minimum + math.floor((entry.width - Touch.minimum) * factor) + shared
+            button.Position = UDim2.fromOffset(x, 2)
+            button.Size = UDim2.fromOffset(width, math.max(1, math.min(Touch.minimum, plan.toolbar.h - 2)))
             x = x + width
         end
     end
@@ -1607,6 +1728,7 @@ function UI:layoutNotifications()
     local avoid = {}
     if self.toolbar.Visible then avoid[#avoid + 1] = self.surfaceRects.toolbar end
     if self.canvasHint.Visible then avoid[#avoid + 1] = self.hintRect end
+    if self.editButton.Visible then avoid[#avoid + 1] = Coordinates.rect(self.editButton) end
     if self.helpExit.Visible then avoid[#avoid + 1] = Coordinates.rect(self.helpExit) end
     if self.panel.Visible then avoid[#avoid + 1] = self.panelRect end
     if self.workspace.Visible then avoid[#avoid + 1] = self.surfaceRects.workspace end
@@ -1690,15 +1812,21 @@ function UI:layoutKeyboard(keyboard)
     elseif wasKeyboard then
         self.quickBody.CanvasPosition = Vector2.new(0, 0)
     end
-    if not keyboard or not self.workspace.Visible or self.tab ~= "Advanced" then return end
-    local page = self.pages.Advanced
-    local focused
-    for _, box in pairs(self.fields) do if box:IsFocused() then focused = box; break end end
-    if not focused then
-        if self.rotation:IsFocused() then focused = self.rotation
-        elseif self.transparency:IsFocused() then focused = self.transparency end
+    if not keyboard or not self.workspace.Visible then return end
+    local page, focused = self.pages[self.tab], self.services.UserInputService:GetFocusedTextBox()
+    if not focused and self.tab == "Advanced" then
+        for _, box in pairs(self.fields) do if box:IsFocused() then focused = box; break end end
+        if not focused then
+            if self.rotation:IsFocused() then focused = self.rotation
+            elseif self.transparency:IsFocused() then focused = self.transparency end
+        end
+    elseif not focused and self.tab == "Settings" then
+        for _, box in pairs(self.preferenceFields) do if box:IsFocused() then focused = box; break end end
     end
     if not focused then return end
+    local parent = focused.Parent
+    while parent and parent ~= page do parent = parent.Parent end
+    if not parent then return end
     local pageRect, fieldRect = Coordinates.rect(page), Coordinates.rect(focused)
     if pageRect and fieldRect then
         local scroll = page.CanvasPosition
@@ -1813,7 +1941,7 @@ function UI:drawGrid()
         count = count + 1
         local object = self.gridObjects[count]
         if not object then
-            object = make("Frame", {BackgroundColor3 = C.cyan, BackgroundTransparency = .93, BorderSizePixel = 0, ZIndex = 3}, self.gridLayer)
+            object = make("Frame", {BackgroundColor3 = C.cyan, BackgroundTransparency = .952, BorderSizePixel = 0, ZIndex = 3}, self.gridLayer)
             self.gridObjects[count] = object
         end
         object.Position, object.Size, object.Visible = UDim2.fromOffset(x, y), UDim2.fromOffset(w, h), true
@@ -1828,7 +1956,7 @@ function UI:drawGrid()
 end
 
 function UI:pointInPanel(x, y)
-    return self.onboardingOpen or self.modalOpen or self.helpMode or inside(self.toolbar, x, y) or inside(self.panel, x, y)
+    return self.onboardingOpen or self.modalOpen or self.helpMode or inside(self.editButton, x, y) or inside(self.toolbar, x, y) or inside(self.panel, x, y)
         or inside(self.workspace, x, y) or inside(self.launcher, x, y)
 end
 
@@ -2018,6 +2146,7 @@ function UI:updateSelection()
     elseif caps.locked then hint = "Contains a locked layer"
     elseif caps.parentKey and not caps.move then hint = caps.layout and "Layout sets the position" or "Try its container"
     elseif tool == "rotate" and enabled.rotate then hint = "Drag handle to rotate"
+    elseif tool == "size" and enabled.size then hint = self.mobile and "Pinch in or out to resize" or "Drag a handle to resize"
     elseif tool == "opacity" and enabled.opacity then
         if opacityInfo and (opacityInfo.percent or opacityInfo.value) == 0 then hint = "Still tappable at 0%"
         elseif not opacityInfo then hint = "Try Include contents"
@@ -2043,6 +2172,7 @@ function UI:updateSelection()
     local rotation = visualAngle(record)
     self.selectionBounds.Rotation = rotation
     self.selectionStroke.Color = hasTool and C.cyan or C.warning
+    self.selectionStroke.Transparency = group and .34 or .22
     self.selectionAccent.BackgroundColor3 = writable and hasTool and C.cyan or C.quiet
     self.touchHandleLink.Visible = false
     self.rotationHandle.gui.Visible, self.rotationLink.Visible = false, false
@@ -2069,7 +2199,7 @@ function UI:updateSelection()
         local object = self.individual[i]
         if not object and #rects > 1 then
             object = make("Frame", {Name = "ElementBoundary", BackgroundTransparency = 1, BorderSizePixel = 0, ZIndex = 5}, self.overlay)
-            outline(object, C.cyan)
+            Design.stroke(object, C.cyan, 1, .68)
             self.individual[i] = object
         end
         if object then
@@ -2120,7 +2250,7 @@ function UI:updateSelection()
             if self.opacityScope == scope and available then button.TextColor3 = C.cyan end
         end
     end
-    local more = "Edit tools"
+    local more = "More"
     if directLock then more = "Unlock"
     elseif caps.parentKey and not caps.move then more = "Select container"
     elseif focus and focus.member then more = "Back to group"
@@ -2220,9 +2350,11 @@ function UI:describeSelection()
     local writable = not (self.app.previewState or self.app.finishingGesture or self.app.saving
         or self.app.profiles and self.app.profiles.suspended)
     self.rotation.Visible, self.transparency.Visible = rotate, transparent
+    self.rotationRow.Visible, self.transparencyRow.Visible = rotate, transparent
     self.rotation.TextEditable, self.transparency.TextEditable = rotate and writable, transparent and writable
-    self.visualHint.Text = rotate and (transparent and "Rotation in degrees. Transparency from 0 to 1." or "Rotation in degrees.")
-        or (transparent and "Background transparency from 0 to 1." or "Choose one layer with editable appearance.")
+    self.visualHint.Text = transparent and "Background transparency uses 0 for solid and 1 for clear."
+        or "Choose one layer with editable appearance."
+    self.visualHint.Visible = transparent or not rotate
     local experimental = record and record.experimental == true
         and (not record.capabilities or (record.capabilities.move and record.capabilities.move.experimental)
             or (record.capabilities.resize and record.capabilities.resize.experimental))
@@ -2283,6 +2415,15 @@ function UI:selectionChanged()
     end
 end
 
+function UI:clearSelectionFeedback()
+    self:setOverlaps()
+    self:setBox()
+    self:setGuides()
+    self.selectionDockBounds = nil
+    self.dockSelection = true
+    self:selectionChanged()
+end
+
 function UI:clearDynamic(container, connections)
     for _, connection in ipairs(connections) do connection:Disconnect() end
     for _, child in ipairs(container:GetChildren()) do
@@ -2333,7 +2474,9 @@ end
 function UI:configureLayerRow(row, record)
     local active = selected(self.app.selection, record.key)
     row.button.BackgroundColor3 = active and C.selected or C.raised
+    row.button.BackgroundTransparency = active and 0 or .45
     row.title.TextColor3 = active and C.cyan or C.text
+    row.marker.Visible = active
 end
 
 function UI:elementRow(parent, record, connections, picker)
@@ -2351,6 +2494,9 @@ function UI:elementRow(parent, record, connections, picker)
         else self:chooseElement(key) end
     end, nil, nil, nil, connections)
     button.Name, button.Size = "SelectLayer", UDim2.new(1, -right, 1, 0)
+    local marker = make("Frame", {Name = "SelectedLayer", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+        Position = UDim2.fromOffset(2, 13), Size = UDim2.fromOffset(2, 26), Visible = false}, button)
+    corners(marker, 1)
     local iconX = 8 + 10 * depth
     layerGlyph(button, record.object.ClassName, iconX)
     local x = iconX + 36
@@ -2372,7 +2518,7 @@ function UI:elementRow(parent, record, connections, picker)
         end, nil, nil, nil, connections)
         action.Position, action.Size = UDim2.new(1, -right + 4, 0, 4), UDim2.fromOffset(right - 4, 44)
     end
-    local result = {root = row, button = button, title = title, record = record}
+    local result = {root = row, button = button, title = title, record = record, marker = marker}
     self:configureLayerRow(result, record)
     return result
 end
@@ -2545,11 +2691,17 @@ function UI:refreshGroups()
     local focus = self.app.groupFocus
     local members = focus and focus.keys or {}
     local count = #self.app.selection
-    self.groupSummary.Text = focus and ((focus.name or "Quick group") .. "  /  " .. #members .. " members")
-        or (count > 1 and (count .. " selected. You can edit them together.") or "Select two or more controls to group them.")
-    self:enable(self.temporaryGroup, count > 1 and focus == nil and self.app.quickGroup ~= nil)
-    self:enable(self.leaveGroup, focus ~= nil and self.app.ungroup ~= nil)
+    self.groupTitle.Text = focus and (focus.name or "Quick group") or "Current selection"
+    self.groupSummary.Text = focus and (#members .. (focus.member and " members / Editing one" or " members"))
+        or (count > 1 and (count .. " controls selected") or "Select at least two controls to group them.")
+    local canGroup = count > 1 and focus == nil and self.app.quickGroup ~= nil
+    local canLeave = focus ~= nil and self.app.ungroup ~= nil
+    self.groupActions.Visible = canGroup or canLeave
+    self.temporaryGroup.Visible, self.leaveGroup.Visible = canGroup, canLeave
+    self.temporaryGroup.Size = UDim2.new(1, 0, 0, Touch.minimum)
+    self.leaveGroup.Position, self.leaveGroup.Size = UDim2.fromOffset(0, 0), UDim2.new(1, 0, 0, Touch.minimum)
     self.leaveGroup.Text = focus and focus.member and "Back to group" or "Ungroup"
+    self.nameGroupButton.Visible = count > 1 and (not focus or not focus.name)
     self.groupMemberList.Visible = #members > 0
     local memberSignature = table.concat(members, "\n") .. tostring(focus and focus.member)
     if memberSignature ~= self.groupMemberSignature then
@@ -2573,37 +2725,40 @@ function UI:refreshGroups()
     local names, parts = {}, {}
     for name, members in pairs(self.app.groups or {}) do table.insert(names, name); table.insert(parts, name .. ":" .. tostring(#members)) end
     table.sort(names); table.sort(parts)
-    local signature = table.concat(parts, "\n") .. tostring(self.chosenGroup)
+    local signature = table.concat(parts, "\n") .. tostring(focus and focus.name)
     if signature == self.groupSignature then return end
     self.groupSignature = signature
     self:clearDynamic(self.groupList, self.groupConnections); self.groupConnections = {}
     for _, name in ipairs(names) do
-        local chosen = name
-        self:button(self.groupList, (name == self.chosenGroup and "✓ " or "") .. name .. " · " .. tostring(#self.app.groups[name]) .. " saved members", function()
-            self.chosenGroup = chosen; self.groupName.Text = chosen; self:refreshGroups()
-        end, nil, nil, nil, self.groupConnections)
+        self:listItem(self.groupList, name, tostring(#self.app.groups[name]) .. " controls", function()
+            self:openSavedGroup(name)
+        end, self.groupConnections, focus and focus.name == name)
     end
-    if #names == 0 then label(self.groupList, "Select elements, enter a name, then create a group.", 44, 12) end
+    if #names == 0 then label(self.groupList, "Named groups appear here.", 34, Text.control).TextColor3 = C.muted end
 end
 
 function UI:refreshProfiles()
     local list = self.app.profiles:list()
     local active = self.app.profiles:active()
     local preview = self.app.previewState or self.app.profiles.preview
-    self.activeProfile.Text = (preview and "PREVIEW · Apply or Cancel\n" or "") .. (active and "Active: " .. active.name .. " · " .. active.scope or "No active profile") .. (self.app.profiles.suspended and " · suspended" or "")
-    local parts = {tostring(self.chosenProfile)}
+    self.activeProfile.Text = preview and "Previewing a layout" or (active and active.name or "Current layout")
+    self.profileSummary.Text = preview and "Apply to use this layout or cancel to return."
+        or (self.app.profiles.suspended and "Saved layout paused" or (active and profileScopeLabel(active.scope) or "No saved profile selected"))
+    self.previewActions.Visible = preview ~= nil and preview ~= false
+    self.newProfileButton.Visible = not self.previewActions.Visible
+    self.profileSuspend.Text = self.app.profiles.suspended and "Resume saved layout" or "Show original layout"
+    local parts = {tostring(active and active.id)}
     for _, profile in ipairs(list) do table.insert(parts, profile.id .. ":" .. profile.name .. ":" .. profile.scope) end
     local signature = table.concat(parts, "\n")
     if signature ~= self.profileSignature then
         self.profileSignature = signature
         self:clearDynamic(self.profileList, self.profileConnections); self.profileConnections = {}
         for _, profile in ipairs(list) do
-            local id = profile.id
-            self:button(self.profileList, (profile.id == self.chosenProfile and "✓ " or "") .. profile.name .. " · " .. profile.scope, function()
-                self.chosenProfile = id; self.profileName.Text = profile.name; self:refreshProfiles()
-            end, nil, nil, nil, self.profileConnections)
+            self:listItem(self.profileList, profile.name, profileScopeLabel(profile.scope), function()
+                self:openProfileActions(profile)
+            end, self.profileConnections, active and active.id == profile.id)
         end
-        if #list == 0 then label(self.profileList, "No profiles yet. Create one to save this layout.", 44, 12) end
+        if #list == 0 then label(self.profileList, "Saved layouts appear here.", 34, Text.control).TextColor3 = C.muted end
     end
     local blocked = self.app.draftBlocked ~= nil and self.app.draftBlocked ~= false
     self.draftSection.Visible = blocked or (self.app.draft ~= nil and self.app.draft ~= false)
@@ -2618,7 +2773,6 @@ function UI:refreshToolbar()
     self:enable(self.redoButton, not history or #(history.future or {}) > 0)
     self:enable(self.saveButton, not self.app.previewState and not (self.app.profiles and self.app.profiles.suspended))
     local tabs = {
-        {self.editButton, not self.workspaceOpen and not self.collapsed},
         {self.elementsButton, self.workspaceOpen and self.tab == "Elements"},
         {self.multiButton, self.app.preferences.multiSelect},
         {self.toolsButton, self.workspaceOpen and self.tab ~= "Elements"},
@@ -2629,10 +2783,12 @@ function UI:refreshToolbar()
         button.BackgroundColor3, button.BackgroundTransparency = C.selected, active and 0 or 1
     end
     self.elementsButton.Text = "Layers"
-    self.doneButton.BackgroundColor3, self.doneButton.TextColor3 = C.cyan, C.ink
-    self.saveIndicator.Visible = self.app.dirty and not self.disabled[self.saveButton] or false
-    self.toolsSaveIndicator.Visible = self.saveIndicator.Visible and not self.saveButton.Visible
-    if self.saveIndicator.Visible then self.saveButton.TextColor3 = C.cyan end
+    self.doneButton.BackgroundColor3, self.doneButton.TextColor3 = C.raised, C.text
+    local ready = not self.disabled[self.saveButton]
+    self.saveButton.BackgroundTransparency = ready and self.app.dirty and 0 or 1
+    self.saveButton.BackgroundColor3 = C.cyan
+    self.saveButton.TextColor3 = ready and (self.app.dirty and C.ink or C.muted) or C.quiet
+    self.toolsSaveIndicator.Visible = self.app.dirty and ready and not self.saveButton.Visible or false
 end
 
 function UI:refreshPage()
@@ -2652,7 +2808,7 @@ function UI:refreshPage()
             local value = self.app.capabilities[name] or {}
             caps[#caps + 1] = name .. ": " .. tostring(value.status or "Unsupported") .. "\n" .. tostring(value.detail or "")
         end
-        self.capabilityLabel.Text = table.concat(caps, "\n")
+        self.capabilityText = table.concat(caps, "\n")
     end
 end
 

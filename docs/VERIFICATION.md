@@ -1,17 +1,31 @@
-# V3.3.0 verification
+# V3.4.0 verification
 
-Studio rendering and physical Android testing were unavailable in the Debian Linux workspace. All runtime gates that depend on those environments remain open. This report distinguishes source inspection, pure/mock execution, a Studio renderer, and physical touch measurements. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
+Roblox Studio and physical Android hardware were unavailable in the Linux workspace. The supplied attachments contained written briefs. The referenced screen recording was unavailable. The evidence below covers the bundled editor executed against API mocks and source-derived layout previews. Native rendering, simultaneous touch dispatch, and device performance require the Studio and Android runs. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
 ## Executed checks
 
 | Command | Result |
 | --- | --- |
-| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 556,256 bytes. |
-| `work/test-venv/bin/python tools/test.py` | Passed. Twelve suites, 1,170 checks, 26 Lua syntax checks, zero failures. |
-| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 39 files, including the shared Roblox test fixture. |
+| `python3 tools/build.py` and `python3 tools/build.py --check` | Passed. Both tracked release paths reproduce the same 582,091 bytes. |
+| `python3 tools/test.py` | Passed. Twelve suites, 1,283 checks, 27 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Pinned Luau 0.728 compiled 40 files, including the shared Roblox test fixture. |
 | `git diff --check` and `cmp dist/HeavenlyAxis.lua Source` | Passed. |
 
-The suites cover App orchestration (115), core geometry and history (58), direct transform integration (12), discovery (57), input (102), notifications (35), onboarding (47), opacity planning (23), persistence (179), bundled integration (68), transform and runtime adapters (329), and UI layout and interactions (145). Viewport scenarios include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and software keyboard variations.
+The suites cover App orchestration (119), core geometry and history (59), direct transform integration (49), discovery (60), input (121), notifications (37), onboarding (51), opacity planning (32), persistence (189), bundled integration (75), transform and runtime adapters (333), and UI layout and interactions (158). Viewport scenarios include 1536 × 695, 960 × 440, 640 × 360, 932 × 430, 393 × 852, 360 × 640, 1024 × 768 and 1920 × 1080, plus safe-area and software keyboard variations.
+
+## Experience overhaul
+
+| Workflow | Verified against the bundled editor or maintained modules |
+| --- | --- |
+| Toolbar and Quick Edit | Portrait groups history and keeps Save at one tap at 360 units wide. A narrower viewport keeps Save in Layout Actions. Active Size explains pinch. Quick Edit can hide without dropping the selection. Tools opens its last destination and management rows expose focused menus. |
+| Pinch | Tests cover expansion, contraction, a second touch near the selection, a distant touch, both release orders, close starting touches, an unrelated third finger, drag handoff, focus loss, menu cancellation, orientation change, and recreated controls. Bundled tests confirm one history action and proportional group spacing. |
+| Opacity | Tests compare expected property values for images, text, strokes, backgrounds, and existing CanvasGroups, including nested overrides, a 0% fade, authored recovery at 100%, legacy background overrides, undo/redo, profile switching, and exact recreation. Exact replay visits the saved branches. Faded artwork stays available through explicit selection while ordinary taps can reach layers beneath it. |
+| Reset All | Bundle restores original geometry, rotation, and image opacity and clears the selection, inspector, outlines, handles, guides, box, and Select Through. Tests cover named groups, protected and missing controls, inherited data, rollback failure, and Save/Discard. Undo restores previous edits with the canvas still deselected. |
+| Save and recovery | Tests simulate an interrupted final write, a missing primary file, backup recovery without overwriting files, repeat saves preserving the previous backup, and concurrent edits requiring a fresh checkpoint. |
+
+Reviewed the V3.4.0 bundle's mock instance geometry at 640 × 360 and 932 × 360 landscape, 393 × 852 portrait, 1024 × 768 tablet, and 1440 × 900 desktop. States included the empty and selected canvas, each Quick Edit tool, selection groups, Select Through, management pages, onboarding, Reset All and toasts. The review prompted a visible pinch hint, labeled numeric fields, and direct Save at 360 units with 44-unit buttons. Preview typography, wrapping, and stacking are approximations. Native touch and visual gates remain **Not Tested**. [Mock layout contact sheet](visual-qa-v3.4.png)
+
+Opacity uses accessible scalar properties. Video content without such a property and inaccessible, ambiguous, or blocked layers have limited support. Direct-surface plans are bounded. When nested overrides require splitting an existing CanvasGroup fade, native blending of overlapping translucent pixels still requires visual comparison in Roblox Studio. [Controlled fixture protocol](TESTING.md#controlled-studio-fixture)
 
 ## Direct tools and recovery
 
@@ -22,8 +36,6 @@ The suites cover App orchestration (115), core geometry and history (58), direct
 | Opacity | Bundle fades a visible image on a transparent background. Appearance planning covers text, stroke, group compositing, exact descendants, and scope. An exact recreated child regains its fade while a newly added sibling retains its own original appearance. |
 | Reset All | The bundle restores position, size, rotation, and a faded image together. Undo restores the edits. App and persistence tests cover Save, Discard, protected controls, scoped inheritance, and cold restore. |
 | Quick Start and Help | Isolated practice, chapter navigation, resume across instances, skip, and completion. Tutorial gestures include panel dragging, selection, resizing, rotation, opacity, grouping, and resetting. |
-
-Reviewed source-derived geometry previews showing Size, Rotate, Opacity, and the tour in landscape, plus portrait and short-landscape placement. Shortened Quick Edit labels and removed redundant reset buttons from its appearance tools after review. The previews represent mock bounds and cannot verify native wrapping, input dispatch, or renderer output. The three recordings mentioned in the brief were unavailable in the attached files.
 
 ## Master workflow coverage
 
@@ -37,11 +49,11 @@ Reviewed source-derived geometry previews showing Size, Rotate, Opacity, and the
 | Persistence and recovery | Independent editor preferences and layout saves, interrupted writes, locked parent and sibling guards, lost targets, draft recovery, cold restore and Safe Mode. |
 | PC | Mocked right-click selection, mouse input and keyboard behavior. Native dispatch in a Roblox client remains unverified. |
 
-The provided upload contained the brief only. The reported Heroes Battlegrounds behavior is consistent with layout ownership. The exact live hierarchy and game behavior remain unverified. The Studio fixture provides representative list, flex and grid bars for a supported runtime check. [Fixture protocol](TESTING.md#controlled-studio-fixture)
+The Studio fixture provides representative list, flex and grid bars for a supported runtime check. The reported Heroes Battlegrounds behavior is consistent with layout ownership. Its live hierarchy and behavior remain unverified. [Fixture protocol](TESTING.md#controlled-studio-fixture)
 
-## Final touchscreen pass
+## Existing touchscreen coverage
 
-- The toolbar marks unsaved edits with a dot. Quick Edit groups its touch stepper, indicates numeric focus, and shows which corner the resize handle controls. The invisible handle margin passes taps through to neighboring controls while remaining available for drag resizing.
+- The toolbar emphasizes Save while there are unsaved edits, or marks Tools when Save is inside Layout Actions. Quick Edit groups its touch stepper, indicates numeric focus, and shows which corner the resize handle controls. The invisible handle margin passes taps through to neighboring controls while remaining available for drag resizing.
 - Typed notifications distinguish successful saves, memory-only saves, retries, and failed adjustments. Notifications stay within the safe area, avoid the selection and inspector when possible, and leave touch interaction available. Bundled tests verify that a confirmed Save remains visible immediately after Done and then expires.
 - Fresh bundle execution covers opening the editor through the LocalScript and shared-environment paths, selecting Jump, dragging, slider resizing, pinching, Save readback, Undo, Done, reopening, and cold restore through `Source`. It also verifies the version notice, original-layout recovery, and teardown.
 - Horizontal slider ownership pauses the inspector scroller and restores it on release or cancellation. Vertical swipes remain available for scrolling. Releasing an unchanged field makes no history entry. Fine steps move a tiny selection by a visible increment. Blank taps ignore passive, transparent structural zones, which remain in the explicit element list.
@@ -61,7 +73,7 @@ The provided upload contained the brief only. The reported Heroes Battlegrounds 
 | G · Performance | Not Tested | Source audit and mocked scan, list rebuild and cleanup checks. Measure client responsiveness on the 240-element fixture and a physical Android device. |
 | H · Evidence | Passed | All gates have an explicit status. The reproducible protocol below records Studio and device evidence independently. |
 
-## Headless layout comparison
+## Historical headless layout comparison
 
 The baseline ran through the original mobile UI's layout mock. The rescue runs the pure responsive planner. Both use representative Roblox UI dimensions and a 24-unit top inset. The area figures compare the original panel with the rescue toolbar and selected Quick Edit inspector. The toolbar alone takes less space before selection.
 

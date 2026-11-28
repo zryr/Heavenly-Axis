@@ -1,5 +1,6 @@
 -- Fade supported appearance components relative to the first values seen on each instance.
 local Identity = require("Identity")
+local SmartLayers = require("SmartLayers")
 local Util = require("Util")
 
 local Appearance = {}
@@ -17,6 +18,10 @@ end
 
 local function nonempty(value)
     return type(value) == "string" and value:find("%S") ~= nil
+end
+
+local function hasText(object, class)
+    return text[class] and (nonempty(object.Text) or class == "TextBox" and nonempty(object.PlaceholderText))
 end
 
 local function siblingCompositor(record)
@@ -42,10 +47,15 @@ end
 function Appearance:remember(record, strokes)
     local object, class = record.object, record.object.ClassName
     self:_remember(object, "BackgroundTransparency", record.baseline and record.baseline.transparency)
-    if images[class] then self:_remember(object, "ImageTransparency") end
+    local originals = self.originals[object]
+    if images[class] then
+        self:_remember(object, "ImageTransparency")
+        originals.imageSeen = originals.imageSeen or SmartLayers.hasImage(object)
+    end
     if text[class] then
         self:_remember(object, "TextTransparency")
         self:_remember(object, "TextStrokeTransparency")
+        originals.textSeen = originals.textSeen or hasText(object, class)
     end
     if class == "CanvasGroup" then self:_remember(object, "GroupTransparency") end
     for _, stroke in ipairs(strokes or EMPTY) do self:_remember(stroke, "Transparency") end
@@ -65,7 +75,7 @@ local function component(record, object, property, original, relativeKey, conten
     }
 end
 
-function Appearance:_own(record, strokes)
+function Appearance:_own(record, strokes, persisted)
     local object, class = record.object, record.object.ClassName
     local originals = self.originals[object] or EMPTY
     local targets, paints = {}, false
@@ -75,13 +85,11 @@ function Appearance:_own(record, strokes)
         if original < 1 then paints = true end
     end
     add(object, "BackgroundTransparency", originals.BackgroundTransparency)
-    local hasImage = class == "ViewportFrame" and object.CurrentCamera ~= nil
-        or class ~= "ViewportFrame" and images[class] and nonempty(object.Image)
-    if hasImage then
+    if images[class] and (originals.imageSeen or persisted) then
         add(object, "ImageTransparency", originals.ImageTransparency)
     end
-    local hasText = text[class] and (nonempty(object.Text) or class == "TextBox" and nonempty(object.PlaceholderText))
-    if hasText then
+    local useText = text[class] and (originals.textSeen or persisted)
+    if useText then
         add(object, "TextTransparency", originals.TextTransparency)
         add(object, "TextStrokeTransparency", originals.TextStrokeTransparency)
     end
@@ -91,7 +99,7 @@ function Appearance:_own(record, strokes)
         local borders = not text[class] or tostring(stroke.ApplyStrokeMode):match("Border$") ~= nil
         local original = self.originals[stroke] and self.originals[stroke].Transparency
         if stroke.Parent == object and strokeNames[stroke.Name] == 1 and stroke.Enabled ~= false
-            and Util.finite(stroke.Thickness) and stroke.Thickness > 0 and (borders or hasText) then
+            and Util.finite(stroke.Thickness) and stroke.Thickness > 0 and (borders or useText) then
             local path = Identity.key({path = {{name = stroke.Name, class = "UIStroke", ordinal = 1}}})
             add(stroke, "Transparency", original, path .. "/Transparency")
         end
@@ -117,6 +125,13 @@ function Appearance:available(record, strokes)
     return transparency(background) and background < 1 or #self:_own(record, strokes) > 0, self:_group(record) ~= nil
 end
 
+function Appearance:hasNewContent(record)
+    local object, class = record.object, record.object.ClassName
+    local originals = self.originals[object]
+    return originals ~= nil and (images[class] and not originals.imageSeen and SmartLayers.hasImage(object)
+        or text[class] and not originals.textSeen and hasText(object, class))
+end
+
 local function ownedStrokes(discovery, record)
     return discovery:_metadata(record.object).strokes
 end
@@ -140,24 +155,28 @@ function Appearance:plan(keys, scope, options)
         end
     end
 
-    local allowedKeys, relevant, missing
+    local allowedKeys, relevant, hasExactDescendant, missing
     if options.targets then
-        allowedKeys, relevant, missing = {}, {}, 0
+        allowedKeys, relevant, hasExactDescendant, missing = {}, {}, {}, 0
         for _, key in ipairs(options.targets) do
             if not allowedKeys[key] then missing = missing + 1 end
             allowedKeys[key], relevant[key] = true, true
-            for slash in key:gmatch("()/") do relevant[key:sub(1, slash - 1)] = true end
+            for slash in key:gmatch("()/") do
+                local ancestor = key:sub(1, slash - 1)
+                relevant[ancestor], hasExactDescendant[ancestor] = true, true
+            end
         end
     end
+    local flattenGroups = options.flattenGroups or EMPTY
     local targets, affected, seen = {}, {}, {}
     local layers, skipped = 0, 0
-    local function visit(record, covered)
+    local function visit(record, covered, flattened)
         if seen[record.key] then return true end
         seen[record.key] = true
         layers = layers + 1
         if layers > Appearance.MAX_LAYERS then return false, "Choose a smaller set of layers to adjust opacity." end
-        local wanted = not allowedKeys or allowedKeys[record.key]
-        if allowedKeys and wanted then missing = missing - 1 end
+        local wanted = flattened or not allowedKeys or allowedKeys[record.key]
+        if allowedKeys and allowedKeys[record.key] then missing = missing - 1 end
         local editable, reason = not record.descriptor.ambiguous, nil
         if editable and options.canEdit then editable, reason = options.canEdit(record, covered == true) end
         if covered and not editable then return false, reason or "A locked or ambiguous layer is inside this CanvasGroup." end
@@ -169,7 +188,9 @@ function Appearance:plan(keys, scope, options)
                 skipped = skipped + 1
                 return true
             end
-            local group = scope == "contents" and self:_group(record)
+            flattened = flattened or flattenGroups[record.key] == true
+            local group = scope == "contents" and not flattened and not (hasExactDescendant and hasExactDescendant[record.key])
+                and self:_group(record)
             if group then
                 if options.canEdit then
                     local groupEditable, groupReason = options.canEdit(record, true)
@@ -179,7 +200,7 @@ function Appearance:plan(keys, scope, options)
                 affected[#affected + 1] = record.key
                 covered = true
             elseif not options.groupsOnly then
-                local own = self:_own(record, strokes)
+                local own = self:_own(record, strokes, allowedKeys and allowedKeys[record.key])
                 if #own > 0 then affected[#affected + 1] = record.key end
                 for _, target in ipairs(own) do targets[#targets + 1] = target end
             end
@@ -188,10 +209,12 @@ function Appearance:plan(keys, scope, options)
 
         if scope == "contents" then
             for _, key in ipairs(record.childKeys or EMPTY) do
-                local child = discovery:get(key)
-                if child and (covered or not relevant or relevant[key]) then
-                    local ok, message = visit(child, covered)
-                    if not ok then return false, message end
+                if covered or flattened or not relevant or relevant[key] then
+                    local child = discovery:get(key)
+                    if child then
+                        local ok, message = visit(child, covered, flattened)
+                        if not ok then return false, message end
+                    end
                 end
             end
         end
@@ -199,7 +222,7 @@ function Appearance:plan(keys, scope, options)
     end
 
     for _, record in ipairs(roots) do
-        local ok, reason = visit(record, false)
+        local ok, reason = visit(record, false, false)
         if not ok then return nil, reason end
     end
     table.sort(affected)
@@ -208,6 +231,10 @@ function Appearance:plan(keys, scope, options)
         return options.targets and targets or nil, "The selected layers have no supported visible opacity in this scope.", details
     end
     return targets, nil, details
+end
+
+function Appearance:flattenGroup(key, canEdit)
+    return self:plan({key}, "contents", {flattenGroups = {[key] = true}, canEdit = canEdit})
 end
 
 return Appearance

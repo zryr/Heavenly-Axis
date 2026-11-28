@@ -130,10 +130,7 @@ end
 function Storage:load()
     if not self:_available() then return nil, "Persistent storage unavailable; profiles stay in memory until exported." end
     local raw, err = self:_read(self.FILES.saved)
-    if not raw and err == "missing" then
-        self.blocked, self.partialWrites[self.FILES.saved] = false, nil
-        return nil, "No saved V3 configuration."
-    end
+    local missing = not raw and err == "missing"
     local data, reason
     if raw then data, reason = self:import(raw) else reason = err end
     if data then
@@ -142,9 +139,16 @@ function Storage:load()
         self.capabilities.storage.detail = "Saved JSON read and validated; next Save verifies writes."
         return data
     end
-    self.blocked = true
     local backup = self:_read(self.FILES.backup)
     local recovered = backup and self:import(backup)
+    if missing then
+        self.blocked, self.partialWrites[self.FILES.saved] = false, nil
+        if not recovered then return nil, "No saved V3 configuration." end
+        local message = "Loaded the validated backup. Save to restore the missing layout file."
+        self.capabilities.storage.status, self.capabilities.storage.detail = "Available but unverified", message
+        return recovered, message
+    end
+    self.blocked = true
     local message = recovered and "Loaded valid backup in memory. Damaged saved file preserved; export before repairing storage manually." or "Saved configuration could not be validated. Original file preserved; Save is blocked until it is repaired or moved manually."
     self:_fail(message)
     return recovered, reason or message
@@ -157,11 +161,12 @@ function Storage:_verifiedWrite(path, raw)
     return readOk and actual == raw
 end
 
-function Storage:_saveDocument(raw, files, decode, expected)
+function Storage:_saveDocument(raw, files, decode, requested, expected)
     -- Validate every existing primary before any overwrite, including saves before load.
     local path = files.saved
     local previous, readError = self:_read(path)
     if not previous and readError ~= "missing" then return false, readError end
+    local observed = previous
     local retryingFirstWrite = previous ~= nil and previous == self.partialWrites[path]
     if not retryingFirstWrite then self.partialWrites[path] = nil end
     if previous then
@@ -169,15 +174,32 @@ function Storage:_saveDocument(raw, files, decode, expected)
         if not previousData then
             if not retryingFirstWrite then return false, "Save blocked. Existing configuration is invalid and has been preserved.", true end
             previous = nil
+        elseif Util.equal(previousData, requested) then
+            return true, nil, false, true
         elseif expected and not Util.equal(previousData, expected) then
-            return false, "Saved editor preferences changed in another session. Rejoin to load them."
+            local subject = files == self.FILES and "Saved layouts" or "Saved editor preferences"
+            return false, subject .. " changed in another session. Rejoin to load them."
         end
     end
     if not self:_verifiedWrite(files.pending, raw) then return false, "Save failed while staging configuration. Previous save preserved.", false end
-    if previous and not self:_verifiedWrite(files.backup, previous) then return false, "Save failed while preserving backup. Previous save preserved.", false end
+    local latest, latestError = self:_read(path)
+    if latest ~= observed or (not latest and latestError ~= "missing") then
+        return false, "The saved configuration changed during Save. The current file was preserved."
+    end
+    local olderBackup
+    if previous then
+        local backupError
+        olderBackup, backupError = self:_read(files.backup)
+        if not olderBackup and backupError ~= "missing" then return false, backupError end
+        if not self:_verifiedWrite(files.backup, previous) then
+            if olderBackup then self:_verifiedWrite(files.backup, olderBackup) end
+            return false, "Save failed while preserving backup. Previous save preserved.", false
+        end
+    end
     if not self:_verifiedWrite(path, raw) then
         if previous then
             if self:_verifiedWrite(path, previous) then
+                if olderBackup and olderBackup ~= previous then self:_verifiedWrite(files.backup, olderBackup) end
                 return false, "Save failed during final write. The previous configuration was restored and verified.", false
             end
             return false, "Save failed during final write. Previous backup and staged data remain available.", false
@@ -197,14 +219,18 @@ function Storage:_saveDocument(raw, files, decode, expected)
     return true
 end
 
-function Storage:save(data)
+function Storage:save(data, expected)
     local raw, err = self:export(data)
     if not raw then return false, err end
     if not self:_available() then return false, "Checkpoint is in memory only. Export JSON for a durable copy.", true end
-    local saved, reason, blocked = self:_saveDocument(raw, self.FILES, self.import)
+    local saved, reason, blocked, unchanged = self:_saveDocument(raw, self.FILES, self.import, data, expected)
     if blocked ~= nil or saved then self.blocked = blocked == true end
     if not saved then return self:_fail(reason) end
     self.capabilities.storage.status = "Supported and verified"
+    if unchanged then
+        self.capabilities.storage.detail = "Existing saved JSON was validated. The previous backup was retained."
+        return true, "Layout is already saved."
+    end
     self.capabilities.storage.detail = "Last Save wrote and read back validated JSON."
     return true, "Profile persisted locally and verified by readback. Automatic execution must be configured separately."
 end
@@ -221,10 +247,7 @@ function Storage:loadEditorPreferences()
     if not self:_available() then return nil, "Editor preferences will apply for this session only." end
     local files = self.EDITOR_FILES
     local raw, reason = self:_read(files.saved)
-    if not raw and reason == "missing" then
-        self.partialWrites[files.saved] = nil
-        return nil
-    end
+    local missing = not raw and reason == "missing"
     local data = raw and self:_decodeEditorPreferences(raw)
     if data then
         self.partialWrites[files.saved] = nil
@@ -232,6 +255,11 @@ function Storage:loadEditorPreferences()
     end
     local backupRaw = self:_read(files.backup)
     local backup = backupRaw and self:_decodeEditorPreferences(backupRaw)
+    if missing then
+        self.partialWrites[files.saved] = nil
+        if backup then return backup, "Loaded editor preferences from the validated backup. The primary file is missing." end
+        return nil
+    end
     if backup then return backup, "Loaded editor preference backup. The original file was preserved." end
     return nil, "Editor preferences could not be read. The original file was preserved."
 end
@@ -242,7 +270,7 @@ function Storage:saveEditorPreferences(data, expected)
     if not self:_available() then return false, "Local file storage is unavailable." end
     local raw, err = self:_encode(data)
     if not raw then return false, err end
-    local saved, problem = self:_saveDocument(raw, self.EDITOR_FILES, self._decodeEditorPreferences, expected)
+    local saved, problem = self:_saveDocument(raw, self.EDITOR_FILES, self._decodeEditorPreferences, data, expected)
     return saved, problem
 end
 

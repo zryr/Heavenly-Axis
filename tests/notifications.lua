@@ -1,6 +1,7 @@
 -- Layout and lifecycle with structural Roblox mocks. Native input/rendering needs Roblox.
 local mock = require("support/Roblox").new(640, 360)
 local Coordinates = require("Coordinates")
+local Design = require("Design")
 local Notifications = require("Notifications")
 local checks = 0
 local function check(value, reason)
@@ -47,7 +48,8 @@ local function within(area, rect)
     return area.x <= rect.x and area.y <= rect.y and rect.x + rect.w <= area.x + area.w and rect.y + rect.h <= area.y + area.h
 end
 
-check(toast.frame.Parent == root and not toast.frame.Visible, "constructs a hidden native toast")
+check(toast.frame.Parent == root and not toast.frame.Visible and toast.frame.BackgroundColor3 == Design.colors.surface,
+    "constructs a hidden native toast with the shared editor surface color")
 toast:layout(safe)
 check(not toast:show("   \n "), "blank content is ignored")
 check(toast:show("Adjust the selection."), "ordinary editor feedback is accepted")
@@ -78,6 +80,10 @@ check(not toast:show("Selection cleared."), "transient status preserves a visibl
 check(toast:show("Check the file path.", {kind = "error"}) and toast.title.Text == "Action failed" and toast.glyph.Text == "X",
     "newer important messages replace old warnings and expose their category")
 check(not toast:show("Export copied.", {kind = "success"}), "secondary success does not eclipse unresolved errors")
+check(toast:show("Changes restored.", {kind = "success", replace = true}) and toast.body.Text == "Changes restored.",
+    "a verified recovery result replaces an earlier warning or error when requested")
+check(not toast:show("Changes restored.", {kind = "success", replace = true}), "replacement still deduplicates identical feedback")
+toast:show("Check the file path.", {kind = "error"})
 
 check(toast:show("Layout saved on this device.", {kind = "success", title = "Saved", keepOnClose = true}),
     "an explicit keep-on-close result can replace older important status")

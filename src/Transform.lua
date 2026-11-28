@@ -140,6 +140,15 @@ local function effectiveDimensions(object, size, root, projected)
     return basisX * size.xs * own + size.xo * sizeScale, basisY * size.ys * own + size.yo * sizeScale
 end
 
+local function supportedDimensions(object, width, height, root, originalSize, projected)
+    if not Util.finite(width) or not Util.finite(height) or width <= 0 or height <= 0
+        or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE then return false end
+    if width >= Geometry.MIN_SIZE and height >= Geometry.MIN_SIZE then return true end
+    local originalWidth, originalHeight = effectiveDimensions(object, originalSize, root, projected)
+    return Util.finite(originalWidth) and Util.finite(originalHeight)
+        and width >= Geometry.minimumSize(originalWidth) and height >= Geometry.minimumSize(originalHeight)
+end
+
 local function rectClose(actual, expected)
     if not actual then return false end
     for _, key in ipairs(rectKeys) do
@@ -175,12 +184,13 @@ local function fitRect(reference, target, after)
     after.size.xo = normalizedOffset(start.size.xo + (target.w - rect.w) / sizeScale)
     after.size.yo = normalizedOffset(start.size.yo + (target.h - rect.h) / sizeScale)
     if integerOffsets then
-        if target.w >= Geometry.MIN_SIZE then
-            local minOffset = start.size.xo + (Geometry.MIN_SIZE - rect.w) / sizeScale
+        local minimumWidth, minimumHeight = Geometry.minimumSize(rect.w), Geometry.minimumSize(rect.h)
+        if target.w >= minimumWidth then
+            local minOffset = start.size.xo + (minimumWidth - rect.w) / sizeScale
             after.size.xo = math.max(after.size.xo, math.ceil(minOffset - 0.000001))
         end
-        if target.h >= Geometry.MIN_SIZE then
-            local minOffset = start.size.yo + (Geometry.MIN_SIZE - rect.h) / sizeScale
+        if target.h >= minimumHeight then
+            local minOffset = start.size.yo + (minimumHeight - rect.h) / sizeScale
             after.size.yo = math.max(after.size.yo, math.ceil(minOffset - 0.000001))
         end
     end
@@ -397,8 +407,7 @@ function Transform:_observation(operation)
     if operation.checkSize then
         local width, height = effectiveDimensions(object, operation.after.size, self.discovery.root)
         local rect = Coordinates.rect(object)
-        if not rect or not Util.finite(width) or not Util.finite(height)
-            or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE
+        if not rect or not supportedDimensions(object, width, height, self.discovery.root, operation.record.baseline.size)
             or math.abs(rect.w - width) > MAX_RECT_ERROR or math.abs(rect.h - height) > MAX_RECT_ERROR then
             return "The layout did not honor the requested dimensions.", {size = true}, "geometry", rect
         end
@@ -664,9 +673,11 @@ function Transform:setRects(keys, rects, operation)
                 if not canResize then error(resizeReason or "Independent resizing is unavailable") end
             end
             if not useSize and not canMove then error(moveReason or "Independent movement is unavailable") end
-            if useSize and ((target.w < Geometry.MIN_SIZE and math.abs(target.w - reference.rect.w) > 0.001)
-                or (target.h < Geometry.MIN_SIZE and math.abs(target.h - reference.rect.h) > 0.001)) then
-                error("Minimum resized dimension is 16 screen units")
+            local floorWidth = resizeMode and Geometry.minimumSize(reference.rect.w) or Geometry.MIN_SIZE
+            local floorHeight = resizeMode and Geometry.minimumSize(reference.rect.h) or Geometry.MIN_SIZE
+            if useSize and ((target.w + 0.001 < floorWidth and math.abs(target.w - reference.rect.w) > 0.001)
+                or (target.h + 0.001 < floorHeight and math.abs(target.h - reference.rect.h) > 0.001)) then
+                error("The target is below its minimum editable size")
             end
             local after = {position = Util.copy(before.position), size = Util.copy(before.size)}
             local expected = fitRect(reference, target, after)
@@ -827,11 +838,11 @@ function Transform:setOpacity(snapshot, factor)
         operation.portable = portableEntry(record, before, operation.previousTracked)
         operation.portable.opacity, operation.forcePortable = opacity, true
         operations[#operations + 1] = operation
-        edits[#edits + 1] = {record = record, spec = opacity, targets = group.targets}
+        edits[#edits + 1] = {record = record, spec = opacity, targets = group.targets, canEdit = snapshot.canEdit}
     end
     snapshot.revision = revision
-    local change = self.opacity:prepare(edits)
-    if not change or #operations == 0 then return false, "There are no supported opacity surfaces." end
+    local change, preparationError = self.opacity:prepare(edits)
+    if not change or #operations == 0 then return false, preparationError or "There are no supported opacity surfaces." end
     if not self.opacity:changed(change) then return true end
     if not self.opacity:surfaceChanged(change) and factor == 1 then
         local existing = false
@@ -904,7 +915,7 @@ function Transform:apply(layout, options)
                         end
                         if not self:_writeBatch({operation}) then self.log("Original properties could not be restored for " .. tostring(record.object.Name)) end
                     end
-                end
+                else self.opacity:forget(key) end
             end
         end
         for key in pairs(self.tracked) do if not layout[key] then self.tracked[key] = nil end end
@@ -943,19 +954,19 @@ function Transform:apply(layout, options)
                 if projected[ancestor] then parentResized = true break end
                 ancestor = ancestor.Parent
             end
-            if checkSize and (not dimensionsOK or not Util.finite(width) or not Util.finite(height)
-                or width < Geometry.MIN_SIZE or height < Geometry.MIN_SIZE or width > Geometry.MAX_SIZE or height > Geometry.MAX_SIZE)
+            if checkSize and (not dimensionsOK or not supportedDimensions(object, width, height, self.discovery.root, record.baseline.size, projected))
                 and not parentResized then
                 after.size, checkSize, width, height = nil, false, nil, nil
                 reason = reason or "Saved dimensions fall outside the supported range"
             end
         end
-        if reason then skipped = skipped + 1; self.log("Skipped part of " .. tostring(object.Name) .. ": " .. reason) end
-        local appearance
+        local appearance, appearanceError
         if before and (entry.opacity or self.opacity:hasScope(record.key) or after.transparency ~= nil) then
-            appearance = self.opacity:prepare({{record = record, spec = entry.opacity,
+            appearance, appearanceError = self.opacity:prepare({{record = record, spec = entry.opacity,
                 legacy = entry.transparency ~= nil and entry.transparency or false}}, options.onlyNew)
         end
+        reason = reason or appearanceError
+        if reason then skipped = skipped + 1; self.log("Skipped part of " .. tostring(object.Name) .. ": " .. reason) end
         local changedAppearance = appearance and (#appearance.writes > 0 or self.opacity:changed(appearance))
         if before and ((not reason and not item.appearanceOnly) or not matchesProperties(before, after) or changedAppearance) then
             local operation = self:_operation(record, before, after)
@@ -997,12 +1008,13 @@ function Transform:applyHistory(previous, desired, callback)
         if not Util.equal(entry, desired[key]) then changed[key] = true end
     end
     for key in pairs(desired) do if not previous[key] then changed[key] = true end end
-    local operations, opacityEdits, skipped = {}, {}, 0
+    local operations, opacityEdits, forgotten, skipped = {}, {}, {}, 0
     for key in pairs(changed) do
         local entry = desired[key]
         local record = self:_record(key, entry or previous[key])
         if not record or not record.object.Parent then
             skipped = skipped + 1
+            forgotten[#forgotten + 1] = key
         else
             local pending = self.pendingByObject[record.object]
             if pending then self:_finish(pending) end
@@ -1030,17 +1042,26 @@ function Transform:applyHistory(previous, desired, callback)
             end
         end
     end
-    if #operations == 0 then callback(true, nil, skipped); return true end
+    local function complete(success, reason)
+        if success then
+            for _, key in ipairs(forgotten) do
+                self.tracked[key] = nil
+                self.opacity:forget(key)
+            end
+        end
+        callback(success, reason, skipped)
+    end
+    if #operations == 0 then complete(true); return true end
     table.sort(operations, function(a, b) return #a.record.descriptor.path < #b.record.descriptor.path end)
     if #opacityEdits > 0 then
-        local appearance = self.opacity:prepare(opacityEdits)
+        local appearance, reason = self.opacity:prepare(opacityEdits)
+        if reason then callback(false, reason, skipped); return true end
         operations[1].appearance = appearance
         for _, operation in ipairs(operations) do operation.appearanceExpected = appearance end
     end
     local ok, problem = self:_writeBatch(operations, true)
     if not ok then callback(false, problem, skipped); return true end
-    local job = {operations = operations, replay = true,
-        callback = function(success, reason) callback(success, reason, skipped) end}
+    local job = {operations = operations, replay = true, callback = complete}
     self.interactivePending = job
     self:_queue(job)
     return true
@@ -1085,7 +1106,8 @@ function Transform:_editProperties(keys, createEntry, capability, rootOnly)
         if operation.appearanceEdit then appearanceEdits[#appearanceEdits + 1] = operation.appearanceEdit end
     end
     if #appearanceEdits > 0 then
-        local appearance = self.opacity:prepare(appearanceEdits)
+        local appearance, reason = self.opacity:prepare(appearanceEdits)
+        if reason then self.log(reason); return 0, failed + #operations end
         operations[1].appearance = appearance
         for _, operation in ipairs(operations) do operation.appearanceExpected = appearance end
     end
@@ -1105,6 +1127,7 @@ function Transform:setProperty(keys, property, value)
     if property ~= "rotation" and property ~= "transparency" then return 0, #keys end
     if not Util.finite(value) then return 0, #keys end
     return self:_editProperties(keys, function(record, before)
+        if property == "transparency" and self.opacity:owns(record.object, "BackgroundTransparency") then return nil end
         local after = {[property] = value}
         local previous = self.tracked[record.key]
         local portable = portableEntry(record, before, previous)
@@ -1115,6 +1138,21 @@ function Transform:setProperty(keys, property, value)
         if property == "transparency" then appearance = {record = record, legacy = value, keep = true} end
         return after, portable, appearance
     end, property, property == "rotation")
+end
+
+function Transform:opacityOwnsBackground(key)
+    local record = self.discovery:get(key)
+    return record and self.opacity:owns(record.object, "BackgroundTransparency") or false
+end
+
+function Transform:canResetEntry(key, entry)
+    local record = self:_record(key, entry)
+    if not record or not record.object.Parent then return true end
+    local before = Discovery.serialize(record.object)
+    if not before then return false, "The original properties are unavailable." end
+    self.discovery:_classify(record)
+    local _, _, problem = self:_savedFields(record, before, nil, entry, {delta = true, replace = true})
+    return problem == nil, problem
 end
 
 function Transform:resetRotation(keys)
@@ -1173,6 +1211,7 @@ function Transform:destroy()
     self.destroyed, self.tracked, self.pendingByObject = true, {}, {}
     self.pendingStabilization, self.stabilizationScheduled, self.transaction, self.interactivePending = nil, false, nil, nil
     self.receipts = setmetatable({}, {__mode = "k"})
+    self.opacity:destroy()
 end
 
 return Transform

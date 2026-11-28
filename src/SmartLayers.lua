@@ -21,6 +21,18 @@ local function paintedAlpha(value)
     return type(value) == "number" and value < 0.99
 end
 
+function SmartLayers.hasImage(object)
+    local class = object.ClassName
+    if class == "ViewportFrame" then return object.CurrentCamera ~= nil end
+    if not imageClasses[class] then return false end
+    if nonempty(object.Image) then return true end
+    local ok, hasContent = pcall(function()
+        local content = object.ImageContent
+        return content ~= nil and (content.Object ~= nil or nonempty(content.Uri))
+    end)
+    return ok and hasContent
+end
+
 function SmartLayers.name(record)
     local builtin = builtins[record.builtin]
     local object = record.object
@@ -38,8 +50,7 @@ function SmartLayers.painted(object, strokes)
     if textClasses[class] then
         text = object.MaxVisibleGraphemes ~= 0 and (nonempty(object.Text) or class == "TextBox" and nonempty(object.PlaceholderText))
         if text and (paintedAlpha(object.TextTransparency) or paintedAlpha(object.TextStrokeTransparency)) then return true end
-    elseif imageClasses[class] and nonempty(object.Image) and paintedAlpha(object.ImageTransparency) then return true
-    elseif class == "ViewportFrame" and object.CurrentCamera and paintedAlpha(object.ImageTransparency) then return true
+    elseif (imageClasses[class] or class == "ViewportFrame") and paintedAlpha(object.ImageTransparency) and SmartLayers.hasImage(object) then return true
     elseif class == "VideoFrame" and nonempty(object.Video) then return true end
     local borderWidth = 0
     for _, stroke in ipairs(strokes or {}) do

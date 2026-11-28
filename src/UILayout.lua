@@ -63,7 +63,7 @@ function Layout.plan(safe, touch, keyboardHeight)
     local portrait = safe.w < safe.h
     local keyboard = (keyboardHeight or 0) > 0
     local compactLandscape = touch and not portrait and safe.w < 700
-    local toolbarW = math.min(w, compactLandscape and 426 or (w < 438 and 372 or 440))
+    local toolbarW = math.min(w, w < 400 and 372 or 414)
     local toolbar = {x = area.x, y = area.y, w = toolbarW, h = math.min(48, h)}
     local occupied = keyboard and 0 or toolbar.h + gap
     local content = {x = area.x, y = area.y + occupied, w = w, h = math.max(1, h - occupied)}

@@ -22,8 +22,8 @@ function Profiles.new(data, storage, context, log)
     local valid, reason = Config.validate(data)
     assert(valid, "Invalid initial configuration: " .. tostring(reason))
     data = Util.copy(data)
-    data.preferences = data.preferences or {}
-    return setmetatable({data = data, checkpoint = Util.copy(data), storage = storage, context = context,
+    local checkpoint = Util.copy(data)
+    return setmetatable({data = data, checkpoint = checkpoint, diskCheckpoint = checkpoint, storage = storage, context = context,
         log = log or function() end, serial = 0, suspended = false, editTargets = {}}, Profiles)
 end
 
@@ -314,12 +314,13 @@ function Profiles:save(layout, groups, preferences, baseline, context, options)
         end
     end
     self.saving = true
-    local ran, saved, message, memoryOnly = pcall(self.storage.save, self.storage, candidate)
+    local ran, saved, message, memoryOnly = pcall(self.storage.save, self.storage, candidate, self.diskCheckpoint)
     self.saving = nil
     if not ran then return false, "Save could not complete. Your edits are still open." end
     if saved or memoryOnly then
         self.data = candidate
         self.checkpoint = Util.copy(candidate)
+        if saved then self.diskCheckpoint = self.checkpoint end
         if resetProfileId then self:setEditTarget(resetProfileId, context) end
     end
     self.log(message)
@@ -341,8 +342,9 @@ function Profiles:beginImport(text, overwriteConfirmed, context)
         local existing = find(candidate, profile.id)
         if existing and not Util.equal(existing, profile) then conflicts = true end
     end
-    for key, value in pairs(incoming.preferences or {}) do
-        if candidate.preferences[key] ~= nil and not Util.equal(candidate.preferences[key], value) then conflicts = true end
+    local currentPreferences, incomingPreferences = candidate.preferences or {}, incoming.preferences or {}
+    for key, value in pairs(incomingPreferences) do
+        if currentPreferences[key] ~= nil and not Util.equal(currentPreferences[key], value) then conflicts = true end
     end
     for key, id in pairs(incoming.active) do
         if candidate.active[key] ~= nil and candidate.active[key] ~= id then conflicts = true end
@@ -362,7 +364,10 @@ function Profiles:beginImport(text, overwriteConfirmed, context)
         end
     end
     for key, id in pairs(incoming.active) do candidate.active[key] = id end
-    for key, value in pairs(incoming.preferences or {}) do candidate.preferences[key] = Util.copy(value) end
+    if next(incomingPreferences) then
+        for key, value in pairs(incomingPreferences) do currentPreferences[key] = Util.copy(value) end
+        candidate.preferences = currentPreferences
+    end
     if incoming.groups then
         candidate.groups = candidate.groups or {}
         for name, members in pairs(incoming.groups) do candidate.groups[name] = Util.copy(members) end

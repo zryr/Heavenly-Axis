@@ -92,6 +92,16 @@ test("Proportional shrinking respects narrow members without distorting aspect",
     near(scaled[1].w, 80)
     near(scaled[1].h, 16)
 end)
+test("An inward transform never expands a control that starts below the ordinary floor", function()
+    local tiny = {x = 30, y = 18, w = 8, h = 10}
+    local resized = Geometry.resize(tiny, "se", -7, -9, true, false)
+    near(resized.w, 8)
+    near(resized.h, 10)
+    equal(Geometry.scale({tiny}, {x = tiny.x, y = tiny.y, w = 7, h = 8}, false)[1], tiny)
+    local growth = Geometry.resize(tiny, "se", 2, 0, false, false)
+    near(growth.w, 10)
+    near(growth.h, 10)
+end)
 test("Clamped group scaling preserves the opposite handle corner", function()
     local source = { { x = 0, y = 0, w = 20, h = 20 }, { x = 40, y = 40, w = 40, h = 40 } }
     local scaled = Geometry.scale(source, { x = 60, y = 60, w = 20, h = 20 })
