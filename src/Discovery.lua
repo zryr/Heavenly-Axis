@@ -1,6 +1,7 @@
 -- Heavenly Axis V3. Original project by Syshi; V2 inspired by Danechka.
 -- Discovery stays inside the local PlayerGui.
 local Appearance = require("Appearance")
+local ControlScopes = require("ControlScopes")
 local Coordinates = require("Coordinates")
 local Identity = require("Identity")
 local SmartLayers = require("SmartLayers")
@@ -720,13 +721,12 @@ local function frontmost(a, b)
     return a.record.key < b.record.key
 end
 
-function Discovery:_hits(x, y, selectedKeys, through)
+function Discovery:_hits(x, y, through)
     if not Util.finite(x) or not Util.finite(y) then return {}, false, {} end
     local hitX, hitY = Coordinates.hitPoint(x, y)
     local ok, objects = pcall(function() return self.root:GetGuiObjectsAtPosition(hitX, hitY) end)
     local native = ok and type(objects) == "table"
-    local candidates, seen, screenBounds, byKey, selected = {}, {}, {}, {}, {}
-    for _, key in ipairs(selectedKeys or EMPTY) do selected[key] = true end
+    local candidates, seen, screenBounds, byKey = {}, {}, {}, {}
     local deviceArea = self:_deviceArea()
     local function consider(record, index)
         if not record or seen[record] or not self.byObject[record.object] then return end
@@ -746,7 +746,7 @@ function Discovery:_hits(x, y, selectedKeys, through)
         local metadata = self:_metadata(record.object)
         local area = screenBounds[record.screen]
         local broad = structural(record, clipped, area, metadata)
-        local compact = not area or clipped.w * clipped.h < area.w * area.h * 0.4
+        local compact = not area or clipped.w * clipped.h < area.w * area.h * 0.22
         local visibility, borderWidth = self:_inspectPresentation(record, shown, clipped, deviceArea)
         local paintedAtPoint = visibility == "visible"
         if paintedAtPoint and borderWidth and not rotated(angle) then
@@ -769,73 +769,103 @@ function Discovery:_hits(x, y, selectedKeys, through)
         for _, record in ipairs(self.ordered) do consider(record) end
     end
     local policy = self.selectionPolicy
-    local function actionableAncestor(record)
-        local parent = self.records[record.parentKey]
-        while parent and not SmartLayers.actionable(parent) do parent = self.records[parent.parentKey] end
-        return parent
-    end
-    if policy.smartSelection and native and not through then
+    local point, repeated = {x = x, y = y}, {}
+    if policy.smartSelection then
         local originalCount = #candidates
         for i = 1, originalCount do
             local candidate = candidates[i]
-            if candidate.painted and SmartLayers.decorative(candidate.record) then
-                local parent = actionableAncestor(candidate.record)
-                if parent and not seen[parent] then consider(parent, candidate.nativeIndex + 0.01) end
+            local record = candidate.record
+            local composed = #record.childKeys > 1 and candidate.compact
+            local actionPart = candidate.actionable and candidate.compact and record.parentKey and not record.builtin
+            if not record.ignored and (candidate.painted and (SmartLayers.decorative(record) or composed)
+                or actionPart and not candidate.faded) then
+                local scopes = ControlScopes.resolve(self, candidate.record, point, repeated)
+                local whole = scopes.whole
+                if whole and whole == candidate.record then candidate.inferred = composed end
+                if whole and whole ~= candidate.record then
+                    if not seen[whole] then consider(whole, candidate.nativeIndex and candidate.nativeIndex + 0.01 or nil) end
+                    local owner = byKey[whole.key]
+                    if owner and owner.shown and not owner.faded then
+                        candidate.controlOwner = owner
+                        owner.inferred = true
+                        if candidate.painted then
+                            local current = owner.controlLayer
+                            local first = not current or candidate.nativeIndex and current.nativeIndex
+                                and candidate.nativeIndex < current.nativeIndex
+                                or not candidate.nativeIndex and current and not current.nativeIndex and frontmost(candidate, current)
+                            if first then owner.controlLayer = candidate end
+                        end
+                        if candidate.nativeIndex and owner.nativeIndex then
+                            owner.nativeIndex = math.min(owner.nativeIndex, candidate.nativeIndex + 0.01)
+                        end
+                    end
+                end
             end
         end
     end
     for _, candidate in ipairs(candidates) do
         local record = candidate.record
-        local actionParent
-        if SmartLayers.decorative(record) then
-            local parent = actionableAncestor(record)
-            local parentCandidate = parent and byKey[parent.key]
-            if parentCandidate and parentCandidate.shown then
-                actionParent = parentCandidate
-                if candidate.painted and candidate.nativeIndex and actionParent.nativeIndex then
-                    actionParent.nativeIndex = math.min(actionParent.nativeIndex, candidate.nativeIndex + 0.01)
-                end
-            end
-        end
+        local actionParent = candidate.controlOwner
         local dynamic = record.builtin == "DynamicThumbstickFrame"
-        local transparent = not candidate.painted and not (candidate.actionable and candidate.compact) and not (record.builtin and not dynamic)
+        local transparent = not candidate.inferred and not candidate.painted and not (candidate.actionable and candidate.compact)
+            and not (record.builtin and not dynamic)
         candidate.skip = not candidate.shown or record.ignored or policy.skipTransparent and (dynamic or transparent or candidate.faded)
             or policy.smartSelection and actionParent and actionParent.record.ignored
         local priority = 7
         if not candidate.shown then priority = 9
         elseif dynamic then priority = 6
-        elseif record.builtin and (candidate.painted or candidate.container) then priority = 1
-        elseif candidate.actionable and (candidate.painted or candidate.container) then priority = 2
+        elseif (record.builtin or not actionParent and candidate.actionable and candidate.compact) and (candidate.painted or candidate.container)
+            or candidate.inferred then priority = 2
         elseif candidate.painted and not actionParent and not candidate.broad then priority = 3
         elseif candidate.actionable and candidate.compact then priority = 4
         elseif candidate.painted then priority = 5 end
-        candidate.priority = priority + (record.editable and 0 or 9)
+        candidate.priority = priority
     end
     table.sort(candidates, function(a, b)
         if policy.smartSelection and a.priority ~= b.priority then return a.priority < b.priority end
-        if policy.smartSelection and selected[a.record.key] ~= selected[b.record.key] then return selected[a.record.key] == true end
         if a.nativeIndex and b.nativeIndex then return a.nativeIndex < b.nativeIndex end
         if a.nativeIndex or b.nativeIndex then return a.nativeIndex ~= nil end
         return frontmost(a, b)
     end)
-    local result, primary, dragEligible = {}, false, {}
+    local result, primary, dragEligible, primaryCandidate = {}, false, {}, nil
     for index, candidate in ipairs(candidates) do
         result[index] = candidate.record
-        if not primary and not candidate.skip then primary = candidate.record end
+        if not primary and not candidate.skip then primary, primaryCandidate = candidate.record, candidate end
         if candidate.shown and not candidate.record.ignored and not (policy.skipTransparent and candidate.faded) then
             dragEligible[candidate.record.key] = true
         end
+    end
+    local chosen = primaryCandidate or candidates[1]
+    if chosen then
+        local layer = chosen.controlLayer and chosen.controlLayer.record or chosen.record
+        local scopes = ControlScopes.resolve(self, layer, point, repeated)
+        if primary and scopes.whole == primary then scopes.current = "whole" end
+        result.controlScopes = scopes
     end
     -- Transparent gameplay containers remain available through explicit overlap selection.
     return result, primary, dragEligible
 end
 
-function Discovery:hit(x, y, selectedKeys)
-    return self:_hits(x, y, selectedKeys)
+function Discovery:controlScopes(key)
+    local record = self:get(key)
+    if not record then return nil end
+    if record.controlScopeRevision ~= self.revision then
+        record.controlScope = ControlScopes.resolve(self, record)
+        record.controlScopeRevision = self.revision
+    end
+    return record.controlScope
 end
 
-function Discovery:hitThrough(x, y, selectedKeys)
-    return self:_hits(x, y, selectedKeys, true)
+function Discovery:controlLayers(key)
+    return ControlScopes.layers(self, self:get(key))
+end
+
+function Discovery:hit(x, y)
+    return self:_hits(x, y)
+end
+
+function Discovery:hitThrough(x, y)
+    return self:_hits(x, y, true)
 end
 
 function Discovery:alignmentRects(keys, focusBounds, limit)

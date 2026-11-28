@@ -59,7 +59,7 @@ local function label(parent, name, text, position, size)
     }, parent)
 end
 local hud, abilityScenarios, appearanceScenarios
-local abilityScenariosVisible, appearanceScenariosVisible = false, false
+local abilityPage, appearanceScenariosVisible = 0, false
 local function pointer(input)
     return input.UserInputType == Enum.UserInputType.Touch or input.UserInputType == Enum.UserInputType.MouseButton1
 end
@@ -93,46 +93,81 @@ local function activate(name)
     status.Text = "Gameplay activations: " .. count .. " · " .. name
 end
 
+local abilityNames = {"Leap", "Burst", "Ward", "Dash"}
 local function makeAbilityScenarios(parent)
     local region = rounded(make("Frame", {
-        Name = "AbilityFixtures", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.48),
-        Size = UDim2.new(1, -26, 0, 227), BackgroundColor3 = Color3.fromRGB(28, 45, 57),
-        Visible = abilityScenariosVisible, ZIndex = 4,
+        Name = "AbilityFixtures", AnchorPoint = Vector2.new(0.5, 0.5), Position = UDim2.fromScale(0.5, 0.53),
+        Size = UDim2.new(1, -26, 0, 188), BackgroundColor3 = Color3.fromRGB(28, 45, 57),
+        Visible = abilityPage > 0, ZIndex = 4,
     }, parent))
-    make("UISizeConstraint", {MaxSize = Vector2.new(420, 227)}, region)
-    local function bar(name, title, top, class, props)
-        label(region, name .. "Caption", title, UDim2.fromOffset(8, top), UDim2.new(1, -16, 0, 19))
+    make("UISizeConstraint", {MaxSize = Vector2.new(420, 188)}, region)
+    local firstPage = make("Frame", {Name = "FreeAndList", Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, Visible = abilityPage == 1}, region)
+    local secondPage = make("Frame", {Name = "FlexAndGrid", Size = UDim2.fromScale(1, 1),
+        BackgroundTransparency = 1, Visible = abilityPage == 2}, region)
+    local function decorate(control, index)
+        control.BackgroundColor3 = Color3.fromRGB(23, 54, 67)
+        make("UIStroke", {ApplyStrokeMode = Enum.ApplyStrokeMode.Border, Color = cyan, Thickness = 1, Transparency = 0.36}, control)
+        local visuals = make("Frame", {Name = "Visuals", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1, Active = false}, control)
+        local number = label(visuals, "Number", tostring(index), UDim2.fromScale(.04, .04), UDim2.fromScale(.23, .25))
+        number.TextColor3, number.TextScaled, number.Active = cyan, true, false
+        local icon = make("ImageLabel", {Name = "Icon", Position = UDim2.fromScale(.29, .19), Size = UDim2.fromScale(.42, .43),
+            BackgroundTransparency = 1, Image = "rbxasset://textures/ui/GuiImagePlaceholder.png", ImageTransparency = .18,
+            ImageColor3 = cyan, ScaleType = Enum.ScaleType.Fit, Active = false}, visuals)
+        icon.ZIndex = 2
+        local caption = label(visuals, "AbilityName", abilityNames[index], UDim2.fromScale(.10, .71), UDim2.fromScale(.8, .23))
+        caption.TextScaled, caption.Active = true, false
+        local cover = make("Frame", {Name = "CooldownOverlay", Size = UDim2.fromScale(1, 1), BackgroundTransparency = 1,
+            Active = false, ZIndex = 5}, control)
+        local cooldown = label(cover, "Cooldown", (index == 3 and "2s" or "Ready"), UDim2.fromScale(.55, .03), UDim2.fromScale(.4, .23))
+        cooldown.TextScaled, cooldown.TextTransparency, cooldown.Active = true, .15, false
+        if index ~= 3 then cooldown.TextColor3 = Color3.fromRGB(169, 198, 206) end
+    end
+    local function bar(page, name, title, top, class, props)
+        label(page, name .. "Caption", title, UDim2.fromOffset(8, top), UDim2.new(1, -16, 0, 19))
         local frame = rounded(make("Frame", {
-            Name = name, Position = UDim2.fromOffset(12, top + 20), Size = UDim2.new(1, -24, 0, 45),
+            Name = name, Position = UDim2.fromOffset(12, top + 20), Size = UDim2.new(1, -24, 0, 60),
             BackgroundColor3 = Color3.fromRGB(42, 64, 78),
-        }, region), 8)
-        make(class, props, frame)
+        }, page), 8)
+        if class then make(class, props, frame) end
         local buttons = {}
         for index = 1, 4 do
-            buttons[index] = button(frame, "Ability" .. index, tostring(index), UDim2.new(), UDim2.fromOffset(43, 40),
-                function() activate(title .. " ability " .. index) end)
-            buttons[index].LayoutOrder = index
+            local function activateAbility() activate(name .. " · " .. abilityNames[index]) end
+            local control
+            if class then
+                control = button(frame, "Ability" .. index, "", UDim2.new(), UDim2.fromOffset(58, 53), activateAbility)
+                control.Active = true
+            else
+                control = rounded(make("Frame", {Name = "Ability" .. index, Position = UDim2.fromScale((index - .5) / 4, .5),
+                    Size = UDim2.fromOffset(58, 53), AnchorPoint = Vector2.new(.5, .5), Active = false}, frame), 12)
+                local hit = button(control, "TapRegion", "", UDim2.new(), UDim2.fromScale(1, 1), activateAbility)
+                hit.BackgroundTransparency, hit.AutoButtonColor, hit.Active = 1, false, true
+            end
+            control.LayoutOrder = index
+            decorate(control, index)
+            buttons[index] = control
         end
+        make("Frame", {Name = name .. "TransparentCover", Position = frame.Position, Size = frame.Size,
+            BackgroundTransparency = 1, Active = false, ZIndex = 8}, page)
         return buttons
     end
-    local plain = bar("PlainListAbilityBar", "List · Resize ability 1 or move the bar", 5, "UIListLayout", {
+    bar(firstPage, "FreeAbilityBar", "Free · Move, resize, or pinch an ability", 5)
+    local plain = bar(firstPage, "PlainListAbilityBar", "List · Resize an ability or move the bar", 94, "UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal, HorizontalAlignment = Enum.HorizontalAlignment.Center,
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
         Padding = UDim.new(0, 5),
     })
-    local icon = label(plain[1], "DecorativeIcon", "✦", UDim2.fromOffset(2, 2), UDim2.fromOffset(12, 12))
-    icon.TextColor3 = cyan
     plain[2].AutomaticSize = Enum.AutomaticSize.X
     make("UIAspectRatioConstraint", {AspectRatio = 1.1}, plain[3])
     make("UISizeConstraint", {MinSize = Vector2.new(28, 28), MaxSize = Vector2.new(64, 64)}, plain[3])
     make("UIScale", {Scale = 0.85}, plain[4])
-    bar("FlexAbilityBar", "Flex · Move the bar or change a button's transparency", 79, "UIListLayout", {
+    bar(secondPage, "FlexAbilityBar", "Flex · The row owns the ability positions and widths", 5, "UIListLayout", {
         FillDirection = Enum.FillDirection.Horizontal, HorizontalFlex = Enum.UIFlexAlignment.Fill,
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
         Padding = UDim.new(0, 5),
     })
-    bar("GridAbilityBar", "Grid · Cell size belongs to the layout", 153, "UIGridLayout", {
-        CellSize = UDim2.new(0.225, 0, 0, 40), CellPadding = UDim2.new(0.02, 0, 0, 0),
+    bar(secondPage, "GridAbilityBar", "Grid · The layout owns cell dimensions", 94, "UIGridLayout", {
+        CellSize = UDim2.new(0.225, 0, 0, 53), CellPadding = UDim2.new(0.02, 0, 0, 0),
         FillDirectionMaxCells = 4, HorizontalAlignment = Enum.HorizontalAlignment.Center,
         VerticalAlignment = Enum.VerticalAlignment.Center, SortOrder = Enum.SortOrder.LayoutOrder,
     })
@@ -393,20 +428,24 @@ adminButton(5, "ToggleCollection", "240 items", function()
 end)
 
 adminButton(6, "AbilityScenarios", "Bars", function()
-    abilityScenariosVisible = not abilityScenariosVisible
-    if abilityScenariosVisible then
+    abilityPage = (abilityPage + 1) % 3
+    if abilityPage > 0 then
         appearanceScenariosVisible = false
         if appearanceScenarios and appearanceScenarios.Parent then appearanceScenarios.Visible = false end
     end
-    if abilityScenarios and abilityScenarios.Parent then abilityScenarios.Visible = abilityScenariosVisible end
-    status.Text = abilityScenariosVisible and "Ability bars shown. Edit and then tap their buttons to check activation."
-        or "Ability bars hidden."
+    if abilityScenarios and abilityScenarios.Parent then
+        abilityScenarios.Visible = abilityPage > 0
+        abilityScenarios.FreeAndList.Visible = abilityPage == 1
+        abilityScenarios.FlexAndGrid.Visible = abilityPage == 2
+    end
+    status.Text = ({"Ability bars hidden.", "Tap a number or icon. Select Through exposes the layers and bar.",
+        "Flex and Grid own ability positions. Tap Bars to hide the fixture."})[abilityPage + 1]
 end)
 
 adminButton(7, "AppearanceScenarios", "Fade", function()
     appearanceScenariosVisible = not appearanceScenariosVisible
     if appearanceScenariosVisible then
-        abilityScenariosVisible = false
+        abilityPage = 0
         if abilityScenarios and abilityScenarios.Parent then abilityScenarios.Visible = false end
     end
     if appearanceScenarios and appearanceScenarios.Parent then appearanceScenarios.Visible = appearanceScenariosVisible end

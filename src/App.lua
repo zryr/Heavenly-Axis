@@ -14,7 +14,7 @@ local Transform = require("Transform")
 
 local App = {}
 App.__index = App
-App.VERSION = "3.4.0"
+App.VERSION = "3.5.0"
 local defaults = {
     grid = true, snapping = false, gridSize = 24, snapThreshold = 6,
     multiSelect = false, boxSelect = false, aspectLock = true,
@@ -147,8 +147,7 @@ function App:_discoveryChanged(reason)
         end
         if #selected ~= #self.selection then
             if self.input then self.input:cancel() else self:cancelGesture() end
-            self.selection = selected
-            self.sizeReference = nil
+            self.selection, self.sizeReference, self.controlContext = selected, nil, nil
         end
         self.unmatched = self.transform:matches(self.layout)
         if self.ui then self.ui:refresh() end
@@ -289,6 +288,9 @@ function App:changed()
     if self.dirty then self:_draftLater() end
 end
 function App:_selectionChanged()
+    if self.controlContext and (#self.selection ~= 1 or self.selection[1] ~= self.controlContext.key) then
+        self.controlContext = nil
+    end
     self.sizeReference = nil
     if self.input and self.input.selectionChanged then self.input:selectionChanged() end
     if self.ui then
@@ -420,12 +422,81 @@ function App:resetEditorLayout()
 end
 
 function App:canvasHits(x, y, explicit)
-    if explicit and self.discovery.hitThrough then return self.discovery:hitThrough(x, y, self.selection) end
-    return self.discovery:hit(x, y, self.selection)
+    if explicit and self.discovery.hitThrough then return self.discovery:hitThrough(x, y) end
+    return self.discovery:hit(x, y)
+end
+
+local scopeKinds = {"whole", "layer", "container"}
+
+local function scopeOf(scopes, key)
+    local current = scopes[scopes.current]
+    if current and current.key == key then return scopes.current end
+    for _, kind in ipairs(scopeKinds) do
+        if scopes[kind] and scopes[kind].key == key then return kind end
+    end
+end
+
+function App:_rememberControlContext(key, scopes)
+    if not scopes or not scopeOf(scopes, key) then return false end
+    local origin = scopes.layer or scopes.whole or scopes.container
+    local whole = scopes.whole and scopes.whole.key
+    local old = self.controlContext
+    if old and old.key == key and old.origin == origin.key and old.whole == whole then return false end
+    self.controlContext = {key = key, origin = origin.key, whole = whole}
+    return true
+end
+
+function App:selectionScopes(key)
+    if not key then
+        if #self.selection ~= 1 then return nil end
+        key = self.selection[1]
+    end
+    local discovery = self.discovery
+    if not discovery.controlScopes then return nil end
+    local context = self.controlContext
+    if context and context.key == key and context.origin ~= key then
+        local remembered = discovery:controlScopes(context.origin)
+        local current = remembered and scopeOf(remembered, key)
+        if not current and context.whole and context.whole ~= context.origin and context.whole ~= key then
+            remembered = discovery:controlScopes(context.whole)
+            current = remembered and scopeOf(remembered, key)
+        end
+        if current then
+            return {current = current, whole = remembered.whole, layer = remembered.layer, container = remembered.container}
+        end
+    end
+    return discovery:controlScopes(key)
+end
+
+function App:scopeLayers(key)
+    local scopes = self:selectionScopes(key)
+    return scopes and scopes.whole and self.discovery.controlLayers and self.discovery:controlLayers(scopes.whole.key) or {}
+end
+
+function App:selectScope(kind, layerKey)
+    if self.resettingLayout then return false end
+    if kind ~= "whole" and kind ~= "layer" and kind ~= "container" then return false end
+    local scopes = self:selectionScopes()
+    if not scopes then return false end
+    local target = scopes[kind]
+    if layerKey and kind == "layer" then
+        target = nil
+        for _, layer in ipairs(self:scopeLayers()) do
+            if layer.key == layerKey then target = layer; break end
+        end
+        if target then scopes = self.discovery:controlScopes(target.key) or scopes end
+    end
+    if not target or not self.discovery:get(target.key) then return false end
+    self:selectMany({target.key}, false, scopes)
+    return true
+end
+
+function App:selectCanvas(key, toggle, scopes)
+    return self:select(key, toggle, scopes)
 end
 
 function App:openSelectThrough(hits, point)
-    if self.ui and self.ui.openSelectThrough then return self.ui:openSelectThrough(hits, point) end
+    if self.ui and self.ui.openSelectThrough then return self.ui:openSelectThrough(hits, hits and hits.controlScopes, point) end
 end
 
 function App:armSelectThrough()
@@ -481,6 +552,7 @@ function App:capabilitiesForSelection()
             result[operation] = result[operation] or capability.supported
             result.locked = result.locked or capability.locked
             if not capability.supported then result.reason = result.reason or capability.reason end
+            if operation == "move" and not capability.supported then result.moveReason = capability.reason end
             if operation == "opacity" and not capability.supported then result.opacityReason = capability.reason end
             if operation == "opacityContents" and not capability.supported then result.opacityContentsReason = capability.reason end
         end
@@ -498,8 +570,11 @@ function App:capabilitiesForSelection()
         if record then
             result.layout = record.layoutController ~= nil
             local parent = record.parentKey
+            local scopes = self:selectionScopes(record.key)
+            local container = scopes and scopes.whole and scopes.container
             while parent do
                 if self:capability(parent, "move").supported then result.parentKey = parent; break end
+                if container and parent == container.key then break end
                 local nextRecord = self.discovery:get(parent)
                 parent = nextRecord and nextRecord.parentKey
             end
@@ -545,7 +620,7 @@ function App:copyLayerDetails(key)
     if ok then self:status("The layer report is on the clipboard.", {kind = "success", title = "Details copied"}) end
     return ok, message, details
 end
-function App:select(key, toggle)
+function App:select(key, toggle, scopes)
     if self.resettingLayout then return end
     if not key then return self:clearSelection() end
     local record = self.discovery:get(key)
@@ -558,17 +633,24 @@ function App:select(key, toggle)
         end
         selected[#selected + 1] = key
         self.selection = selected
-    elseif #self.selection == 1 and self.selection[1] == key then return
+    elseif #self.selection == 1 and self.selection[1] == key then
+        if self:_rememberControlContext(key, scopes) and self.ui and self.ui.selectionChanged then self.ui:selectionChanged() end
+        return
     else self.selection, self.groupFocus = {key}, nil end
+    if #self.selection == 1 and self.selection[1] == key then self:_rememberControlContext(key, scopes) end
     self:_selectionChanged()
 end
-function App:selectMany(keys, keepGroup)
+function App:selectMany(keys, keepGroup, scopes)
     if self.resettingLayout then return false end
     local selection, seen = {}, {}
     for _, key in ipairs(keys) do
         if not seen[key] and self.discovery:get(key) then selection[#selection + 1] = key; seen[key] = true end
     end
-    if Util.equal(selection, self.selection) then return false end
+    local contextChanged = #selection == 1 and self:_rememberControlContext(selection[1], scopes)
+    if Util.equal(selection, self.selection) then
+        if contextChanged and self.ui and self.ui.selectionChanged then self.ui:selectionChanged() end
+        return false
+    end
     if not keepGroup then self.groupFocus = nil end
     self.selection = selection
     self:_selectionChanged()

@@ -388,15 +388,188 @@ do
         "Discard restores the prior durable checkpoint after direct transformations")
 end
 
+local function abilityBar(name, y, managed)
+    local bar = make("Frame", name, hud)
+    bar.Position, bar.Size = UDim2.fromOffset(570, y), UDim2.fromOffset(320, 62)
+    if managed then make("UIListLayout", "Row", bar).Padding = UDim.new(0, 8) end
+    local cover = make("Frame", name .. "Cover", hud)
+    cover.Position, cover.Size, cover.BackgroundTransparency, cover.ZIndex = bar.Position, bar.Size, 1, 40
+    local cards = {}
+    for i, title in ipairs({"Leap", "Burst", "Ward", "Dash"}) do
+        local control = make(managed and "TextButton" or "Frame", "Ability" .. i, bar)
+        control.Position, control.Size = UDim2.fromOffset((i - 1) * 76, 4), UDim2.fromOffset(62, 54)
+        if not managed then
+            local actionRegion = make("TextButton", "TapRegion", control)
+            actionRegion.Size, actionRegion.BackgroundTransparency = UDim2.fromScale(1, 1), 1
+        end
+        local body = make("Frame", "Visuals", control)
+        body.Size, body.BackgroundTransparency = UDim2.fromScale(1, 1), 1
+        local overlayParts = make("Frame", "CooldownOverlay", control)
+        overlayParts.Size, overlayParts.BackgroundTransparency, overlayParts.ZIndex = UDim2.fromScale(1, 1), 1, 4
+        local function text(parent, labelName, value, x, y, width, height)
+            local label = make("TextLabel", labelName, parent)
+            label.Position, label.Size = UDim2.fromScale(x, y), UDim2.fromScale(width, height)
+            label.Text, label.BackgroundTransparency, label.TextTransparency = value, 1, 0
+            return label
+        end
+        local number = text(body, "Number", tostring(i), .04, .04, .22, .24)
+        local icon = make("ImageLabel", "Icon", body)
+        icon.Position, icon.Size = UDim2.fromScale(.30, .30), UDim2.fromScale(.4, .35)
+        icon.Image, icon.BackgroundTransparency, icon.ImageTransparency = "rbxasset://textures/ui/GuiImagePlaceholder.png", 1, .18
+        local caption = text(body, "AbilityName", title, .10, .72, .8, .22)
+        local cooldown = text(overlayParts, "Cooldown", "2s", .50, .04, .45, .24)
+        cards[i] = {root = control, components = {number, icon, caption, cooldown}}
+    end
+    return {bar = bar, cover = cover, cards = cards}
+end
+
+local free = abilityBar("FreeAbilityBar", 111, false)
+local managed = abilityBar("ManagedAbilityBar", 185, true)
+local function hitRect(object, x, y)
+    local p, s = object.AbsolutePosition, object.AbsoluteSize
+    return x >= p.X and y >= p.Y and x <= p.X + s.X and y <= p.Y + s.Y
+end
+function mock.playerGui:GetGuiObjectsAtPosition(x, y)
+    for _, row in ipairs({free, managed}) do
+        for _, card in ipairs(row.cards) do
+            if hitRect(card.root, x, y) then
+                -- The native result may only expose a painted component and a
+                -- higher transparent sibling, even though the root owns it.
+                for _, component in ipairs(card.components) do
+                    if hitRect(component, x, y) then return {row.cover, component} end
+                end
+                return {row.cover, card.root}
+            end
+        end
+    end
+    error("Use rectangle-based fallback outside the simulated ability area")
+end
+mock:flush()
+local function abilityPointer(object)
+    local position, size = object.AbsolutePosition, object.AbsoluteSize
+    return begin(ui.canvas, position.X + size.X / 2, position.Y + size.Y / 2)
+end
+local function selectedObject()
+    local record = app.discovery:get(app.selection[1])
+    return record and record.object
+end
+ui:setTransformTool("size")
+app:clearSelection()
+local abilityHistory = #app.history.past
+for i, card in ipairs(free.cards) do
+    local component = card.components[i]
+    releasePointer(abilityPointer(component))
+    local scopes = app:selectionScopes()
+    check(selectedObject() == card.root and scopes and scopes.current == "whole" and scopes.whole.object == card.root
+        and scopes.layer.object == component and scopes.container.object == free.bar,
+        "number, icon, name and cooldown each identify their whole ability at the actual touched point (" .. i .. ")")
+end
+check(ui.quickScopeButton.Visible and ui.quickScopeButton.Text == "Whole" and #app.history.past == abilityHistory,
+    "whole-control scope is visible in Quick Edit without writing layout changes or history")
+
+local right = free.cards[4]
+local cooldown = right.components[4]
+local originalDetail = cooldown.Position
+check(app:armSelectThrough(), "the composite ability can open Select Through")
+releasePointer(abilityPointer(cooldown))
+local previewRow
+for _, row in ipairs(ui.pickerRows or {}) do
+    if row.record.object == cooldown then previewRow = row; break end
+end
+check(previewRow and previewRow.preview and selectedObject() == right.root, "Select Through shows the actual component beside the whole control")
+previewRow.preview.Activated:Fire()
+check(ui.pickerPreviewOutline.Visible and selectedObject() == right.root and #app.history.past == abilityHistory,
+    "preview highlights an individual component without changing selection or geometry")
+action("Close")
+check(not ui.modalOpen and not ui.pickerPreviewOutline, "closing Select Through frees its preview overlay")
+ui.quickScopeButton.Activated:Fire()
+action("Individual layer")
+check(selectedObject() == cooldown and ui.quickScopeButton.Text == "Layer", "the scope menu focuses the original touched component")
+pointer = abilityPointer(cooldown)
+move(pointer, -11, 0)
+releasePointer(pointer)
+check(cooldown.Position.X.Offset == originalDetail.X.Offset - 11 and right.root.Position.X.Offset == 228,
+    "explicit component drag edits the component without moving its ability")
+releasePointer(abilityPointer(right.components[2]))
+check(selectedObject() == right.root and app:selectionScopes().layer.object == right.components[2],
+    "an ordinary tap returns to the whole ability and updates the originating detail")
+
+local leftBefore = free.cards[1].root.AbsolutePosition
+local cardBefore, labelBefore = right.root.AbsolutePosition, right.components[3].AbsolutePosition
+pointer = abilityPointer(right.components[3])
+move(pointer, -12, 9)
+releasePointer(pointer)
+check(right.root.AbsolutePosition.X == cardBefore.X - 12 and right.components[3].AbsolutePosition.X == labelBefore.X - 12
+    and free.cards[1].root.AbsolutePosition.X == leftBefore.X, "an ordinary drag moves the whole composed ability but leaves its peer fixed")
+local p, size = right.root.AbsolutePosition, right.root.AbsoluteSize
+local first = begin(ui.canvas, p.X + 10, p.Y + 20)
+local second = begin(ui.canvas, p.X + 45, p.Y + 20)
+move(second, 13, 0)
+local expanded = right.root.AbsoluteSize.X
+move(second, -21, 0)
+releasePointer(first)
+releasePointer(second)
+check(expanded > size.X and right.root.AbsoluteSize.X < size.X and #app.history.past == abilityHistory + 3,
+    "one bundled pinch expands and contracts the composed ability without duplicate history")
+
+app:clearSelection()
+local managedCard = managed.cards[2]
+local managedPosition = managedCard.root.Position
+local barPosition = managed.bar.Position
+pointer = abilityPointer(managedCard.components[2])
+move(pointer, 12, 0)
+releasePointer(pointer)
+local managedCaps = app:capabilitiesForSelection()
+check(selectedObject() == managedCard.root and not managedCaps.move and managedCaps.resize and managedCaps.parentKey,
+    "first drag on a layout-owned ability focuses the whole and shows separate supported operations")
+check(managedCard.root.Position == managedPosition and managed.bar.Position == barPosition and #app.history.past == abilityHistory + 3,
+    "blocked position editing never substitutes a layer or parent adjustment")
+local managedInfo, managedTrack = app:sizeInfo(), ui:sliderTrackRect()
+local managedThumb = (managedInfo.scale - managedInfo.minimum) / (managedInfo.maximum - managedInfo.minimum)
+pointer = begin(ui.slider, managedTrack.x + managedTrack.w * managedThumb, managedTrack.y + managedTrack.h / 2)
+move(pointer, managedTrack.w * .08, 0)
+releasePointer(pointer)
+check(managedCard.root.Position == managedPosition and managedCard.root.AbsoluteSize.X > 62,
+    "supported managed resize changes the whole ability size without writing its Position")
+ui.quickScopeButton.Activated:Fire()
+action("Entire container")
+check(selectedObject() == managed.bar and ui.quickScopeButton.Text == "Container", "scope menu deliberately selects the complete ability bar")
+pointer = abilityPointer(managedCard.components[1])
+move(pointer, -13, 0)
+releasePointer(pointer)
+check(managed.bar.Position.X.Offset == barPosition.X.Offset - 13 and managedCard.root.Position == managedPosition,
+    "container drag works over a visual child even when its enclosing bar is absent from the native hit list")
+releasePointer(abilityPointer(managedCard.components[1]))
+check(selectedObject() == managedCard.root and ui.quickScopeButton.Text == "Whole", "ordinary canvas selection returns from container scope to one ability")
+
+local savedAbility = {freeX = right.root.Position.X.Offset, freeW = right.root.AbsoluteSize.X,
+    detailX = cooldown.Position.X.Offset, managedW = managedCard.root.AbsoluteSize.X, barX = managed.bar.Position.X.Offset}
+ui.saveButton.Activated:Fire()
+mock:flush()
+check(not app.dirty and files[path] ~= checkpoint, "Save durably checkpoints composed controls, component and container edits")
+checkpoint = files[path]
+ui.doneButton.Activated:Fire()
+releasePointer(begin(ui.launcher))
+check(app.editing and right.root.Position.X.Offset == savedAbility.freeX and managed.bar.Position.X.Offset == savedAbility.barX,
+    "Done and launcher reopen retain the saved composite layout")
+
 app:Destroy()
 mock:flush()
 check(env.__HEAVENLY_AXIS_V3 == nil and mock.activeConnections == 0 and jump.AbsolutePosition.X == origin.X and jump.AbsoluteSize.X == 96,
     "destroy releases every runtime connection and restores originals")
+for _, row in ipairs({free, managed}) do row.bar:Destroy(); row.cover:Destroy() end
+free = abilityBar("FreeAbilityBar", 111, false)
+managed = abilityBar("ManagedAbilityBar", 185, true)
 env.HeavenlyAxisOptions = {LoaderOnly = true}
 local restored = source()
 mock:flush()
 check(restored and not restored.ui and restored:VerifyStartup().mode == "loader" and jump.AbsolutePosition.X == editedPosition.X
     and jump.AbsoluteSize.X == savedSize, "legacy Source cold loader restores checkpoint without creating UI")
+right, managedCard = free.cards[4], managed.cards[2]
+check(right.root.Position.X.Offset == savedAbility.freeX and right.root.AbsoluteSize.X == savedAbility.freeW
+    and right.components[4].Position.X.Offset == savedAbility.detailX and managedCard.root.AbsoluteSize.X == savedAbility.managedW
+    and managed.bar.Position.X.Offset == savedAbility.barX,
+    "cold loader restores composite changes onto recreated abilities with matching identities")
 check(restored:hasSeenTutorial(), "cold startup remembers completed or skipped onboarding")
 check(release() == restored and not restored.ui and jump.AbsoluteSize.X == savedSize,
     "duplicate loader execution does not construct an editor or compound properties")

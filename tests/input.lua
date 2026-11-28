@@ -455,6 +455,94 @@ check(app.selection[1] == "b" and app.rects.b.x == 25 and app.rects.a.x == 0 and
     "a selected faded or ignored layer cannot capture a drag intended for the exposed control")
 controller:destroy()
 
+local function setupComposite(current)
+    return setup(function(app)
+        local layer = app.discovery:get("a")
+        local whole, container = {key = "whole", editable = true}, {key = "container", editable = true}
+        local scopes = {current = "whole", layer = layer, whole = whole, container = container}
+        app.rects.whole = {x = 0, y = 0, w = 100, h = 100}
+        app.rects.container = {x = 0, y = 0, w = 230, h = 110}
+        app.scopeMode = current
+        function app:selectionScopes()
+            return {current = self.scopeMode, layer = layer, whole = whole, container = container}
+        end
+        function app:canvasHits()
+            return {layer, whole, container, controlScopes = scopes}, whole, {a = true, whole = true, container = true}
+        end
+        function app:selectCanvas(key, additive, context)
+            self.hitContext = context
+            self:select(key, additive)
+        end
+        function app:openSelectThrough(hits, point, context)
+            self.explicitHit = {hits = hits, point = point, context = context}
+        end
+    end)
+end
+
+app, ui, uis, controller = setupComposite("whole")
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 50, Y = 45}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "whole" and app.rects.whole.x == 25 and app.rects.a.x == 0 and app.hitContext.layer.key == "a",
+    "ordinary direct movement chooses the whole ability instead of a previously selected descendant")
+controller:destroy()
+
+app, ui, uis, controller = setupComposite("layer")
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 50, Y = 45}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "a" and app.rects.a.x == 25 and app.rects.whole.x == 0,
+    "dragging an explicitly focused detail changes only that layer")
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "whole" and app.hitContext.layer.key == "a" and app.ends == 1,
+    "an ordinary tap returns to the whole ability and preserves the touched component context")
+app.hitContext = nil
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.hitContext.layer.key == "a", "a repeated whole tap still refreshes the originating component for scope switching")
+check(controller:armSelectThrough(), "a composite can be opened explicitly without changing its current selection")
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.explicitHit.context.whole.key == "whole" and app.explicitHit.context.container.key == "container"
+    and app.explicitHit.context.layer.key == "a" and app.selection[1] == "whole",
+    "Select Through forwards whole, layer and container from the exact touched point")
+controller:destroy()
+
+app, ui, uis, controller = setupComposite("container")
+app.selection = {"container"}
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 50, Y = 45}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.selection[1] == "container" and app.rects.container.x == 25 and app.rects.whole.x == 0,
+    "a drag can move an explicitly selected container without changing an ability's authored local geometry")
+controller:destroy()
+
+app, ui, uis, controller = setupComposite("whole")
+app.selection = {"whole"}
+function app:capability(key, operation)
+    return {supported = key ~= "whole" or operation ~= "move", reason = "The bar owns this ability's position."}
+end
+function app:status(reason) self.lastStatus = reason end
+finger = pointer("touch", 25, 25)
+ui.canvas.InputBegan:Fire(finger)
+finger.Position = {X = 50, Y = 45}
+uis.InputChanged:Fire(finger)
+uis.InputEnded:Fire(finger)
+check(app.starts == 0 and app.selection[1] == "whole" and app.rects.container.x == 0 and app.rects.a.x == 0
+    and app.lastStatus == "The bar owns this ability's position.",
+    "a managed whole ability never moves an editable child or ancestor as a silent fallback")
+controller:destroy()
+
 app, ui, uis, controller = setup()
 finger = pointer("touch", 375, 510)
 ui.slider.InputBegan:Fire(finger)

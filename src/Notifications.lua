@@ -1,5 +1,6 @@
 local Coordinates = require("Coordinates")
 local Design = require("Design")
+local Lucide = require("Lucide")
 local Util = require("Util")
 
 local Notifications = {}
@@ -84,10 +85,10 @@ end
 function Notifications.new(parent, services)
     local self = setmetatable({parent = parent, services = services or {}, generation = 0, obstacles = {}}, Notifications)
     self.styles = {
-        info = {accent = C.cyan, title = "", glyph = "i", duration = 3.0},
-        success = {accent = C.success, title = "Complete", glyph = "", duration = 3.2},
-        warning = {accent = C.warning, title = "Needs attention", glyph = "!", duration = 4.7, important = true},
-        error = {accent = C.danger, title = "Action failed", glyph = "X", duration = 5.2, important = true},
+        info = {accent = C.cyan, title = "", icon = "info", duration = 3.0},
+        success = {accent = C.success, title = "Complete", icon = "check", duration = 3.2},
+        warning = {accent = C.warning, title = "Needs attention", icon = "triangle-alert", duration = 4.7, important = true},
+        error = {accent = C.danger, title = "Action failed", icon = "circle-alert", duration = 5.2, important = true},
     }
     self.frame = make("Frame", {
         Name = "Toast", Visible = false, ClipsDescendants = true, BorderSizePixel = 0,
@@ -101,17 +102,11 @@ function Notifications.new(parent, services)
         BackgroundColor3 = self.styles.info.accent, BackgroundTransparency = .86, ZIndex = LAYER + 1,
     }, self.frame)
     Design.round(badge, 14)
-    self.badge = badge
-    self.glyph = label(badge, "Glyph", Design.text.section, F.strong, LAYER + 2)
-    self.glyph.Size = UDim2.fromScale(1, 1)
-    self.glyph.TextXAlignment, self.glyph.TextYAlignment = Enum.TextXAlignment.Center, Enum.TextYAlignment.Center
-
-    self.tick = make("Frame", {Name = "Check", Size = UDim2.fromScale(1, 1), Visible = false,
-        BackgroundTransparency = 1, ZIndex = LAYER + 2}, badge)
-    for _, segment in ipairs({{6, 15, 7, 44}, {10, 12, 13, -44}}) do
-        local line = make("Frame", {Position = UDim2.fromOffset(segment[1], segment[2]), Size = UDim2.fromOffset(segment[3], 2),
-            BackgroundColor3 = self.styles.success.accent, BorderSizePixel = 0, Rotation = segment[4], ZIndex = LAYER + 3}, self.tick)
-        Design.round(line, 1)
+    self.badge, self.icons = badge, {}
+    for kind, style in pairs(self.styles) do
+        local icon = Lucide.mount(badge, style.icon, {size = 17, color = style.accent,
+            position = UDim2.fromScale(.5, .5), anchor = Vector2.new(.5, .5), zIndex = LAYER + 2})
+        if icon then icon.Visible = false; self.icons[kind] = icon end
     end
 
     self.title = label(self.frame, "Title", Design.text.body, F.strong, LAYER + 1)
@@ -229,8 +224,7 @@ function Notifications:show(message, options)
     self.current = {kind = kind, style = style, title = title, body = body, keepOnClose = keep}
     self.rect, self.measuredWidth = nil, nil
     self.badge.BackgroundColor3 = style.accent
-    self.glyph.Text, self.glyph.TextColor3 = style.glyph, style.accent
-    self.tick.Visible = kind == "success"
+    for iconKind, icon in pairs(self.icons) do icon.Visible = iconKind == kind end
     self.title.Text, self.title.TextColor3, self.title.Visible = title, style.accent, title ~= ""
     self.body.Text = body
     self:layout(self.area, self.obstacles)

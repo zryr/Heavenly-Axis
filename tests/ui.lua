@@ -94,6 +94,15 @@ check(not app.preferences.snapping, "grid does not force snapping")
 app:select("a")
 check(ui.panel.Visible and ui.quickBody.Visible and not ui.workspace.Visible, "compatible selection opens contextual Quick Edit")
 check(ui.quickName.Text == "Jump Mock" and ui.percent.Text == "100%", "visual size percentage matches selected element")
+check(ui.buttonIcons[ui.elementsButton] and ui.elementsButton.Text == "Layers"
+    and ui.buttonIcons[ui.transformButtons.size] and ui.transformButtons.size.Text == "Size",
+    "Lucide actions retain permanently readable labels")
+local lucide = require("Lucide")
+local originalTint, tintCalls = lucide.setColor, 0
+lucide.setColor = function(...) tintCalls = tintCalls + 1; return originalTint(...) end
+ui:updateSelection(); ui:updateSelection()
+lucide.setColor = originalTint
+check(tintCalls == 0, "stable gesture frames do not rewrite unchanged tool icon tints")
 check(not ui.canvasHint.Visible and ui.sliderTitle.Text == "Size" and ui.sliderReference.Text == "100% original"
     and ui.quickSize.Text == "100 × 100", "selection replaces the empty hint with percentage and pixel size context")
 check(ui.quickHint.Text == "Pinch in or out to resize", "the active Size tool teaches bidirectional pinch at the point of use")
@@ -267,8 +276,15 @@ check(listCalls == rows and mock.activeConnections == connections, "unchanged el
 ui:setOverlaps({record, record2})
 check(ui.overlapList.Visible and ui:openSelectThrough(), "touch overlap opens the explicit layer picker")
 check(ui.modalOpen and #ui.pickerRows == 2, "layer picker shows all valid candidates")
+ui.pickerRows[2].preview.Activated:Fire()
+check(ui.previewLayerKey == "b" and ui.pickerPreviewOutline.Visible and app.selection[1] == "a"
+    and ui.pickerPreviewOutline.AbsolutePosition.X == second.AbsolutePosition.X,
+    "preview draws the candidate outline without changing selection")
+ui.pickerRows[2].preview.Activated:Fire()
+check(ui.previewLayerKey == nil and not ui.pickerPreviewOutline.Visible and app.selection[1] == "a",
+    "stopping preview leaves the previous selection unchanged")
 ui.pickerRows[2].button.Activated:Fire()
-check(app.selection[1] == "b" and not ui.modalOpen and not ui.workspace.Visible,
+check(app.selection[1] == "b" and not ui.modalOpen and not ui.workspace.Visible and ui.pickerPreviewOutline == nil,
     "choosing a deeper layer updates the selection immediately")
 ui:setTab("Elements")
 
@@ -314,7 +330,7 @@ end
 record2.displayName = "Ability slot 2"
 record2.capabilities = {move = {supported = false}, resize = {supported = true}}
 app:select("b")
-check(ui.quickName.Text == "Ability slot 2" and ui.sliderEnabled and ui.quickHint.Text == "Layout sets the position",
+check(ui.quickName.Text == "Ability slot 2" and ui.sliderEnabled and ui.quickHint.Text == "Position set by layout",
     "compatible layout-owned control keeps its size editor and explains fixed position")
 ui:setTab("Advanced")
 check(ui.fields.X.TextEditable == false and ui.fields.W.TextEditable == true,
@@ -330,6 +346,82 @@ ui.quickMore.Activated:Fire()
 check(not app:layerState("a").locked and ui.sliderEnabled, "Unlock restores compatible tools")
 app:setLayerState("a", "ignored", false)
 app.capabilitiesForSelection = nil
+
+local barObject, glyphObject = Instance.new("Frame"), Instance.new("TextLabel")
+barObject.Name, barObject.Parent = "SkillFrame", playerGui
+barObject.Size, barObject.Position = UDim2.fromOffset(140, 55), UDim2.fromOffset(425, 166)
+glyphObject.Name, glyphObject.Parent = "Text", target
+glyphObject.Size, glyphObject.Position = UDim2.fromOffset(45, 21), UDim2.fromOffset(11, 8)
+local bar = {key = "bar", object = barObject, displayName = "Ability bar", visibility = "container", editable = true,
+    descriptor = {path = {{name = "SkillFrame"}}, class = "Frame"}}
+local glyph = {key = "glyph", object = glyphObject, displayName = "Ability name", parentKey = record.key, editable = true,
+    descriptor = {path = {{name = "Jump Mock"}, {name = "Text"}}, class = "TextLabel"}}
+records[#records + 1], records[#records + 2] = bar, glyph
+record.childKeys = {glyph.key}
+local function scopeRecord(key)
+    return key == glyph.key and "layer" or key == bar.key and "container" or "whole"
+end
+function app:selectionScopes(key)
+    key = key or self.selection[1]
+    return {current = scopeRecord(key), whole = record, layer = key == glyph.key and glyph or nil, container = bar}
+end
+function app:scopeLayers() return {glyph} end
+function app:selectScope(scope, key)
+    self:select(key or (scope == "container" and bar.key or record.key))
+    return true
+end
+app:select(record.key)
+check(ui.quickScopeButton.Visible and ui.quickScopeButton.Text == "Whole", "Quick Edit exposes the active edit scope")
+function app:capabilitiesForSelection()
+    return {move = false, resize = true, visual = true, reset = true, parentKey = bar.key, layout = true}
+end
+bar.displayName = "Hot Bar"
+ui:selectionChanged()
+check(ui.quickHint.Text == "Bar sets position" and ui.quickMore.Text == "Select entire bar",
+    "managed control explains which layout positions it and offers its entire bar")
+local formerX, formerY = view.X, view.Y
+for _, dims in ipairs({{640, 360}, {360, 640}}) do
+    view.X, view.Y = dims[1], dims[2]
+    ui:layout()
+    local action, body = Coordinates.rect(ui.quickMore), Coordinates.rect(ui.quickBody)
+    check(ui.quickMore.Visible and action.w >= 44 and action.h >= 44 and action.y + action.h <= body.y + body.h,
+        "managed bar action remains touch-sized and fully visible without scrolling")
+end
+view.X, view.Y = formerX, formerY
+app.capabilitiesForSelection = nil
+ui:selectionChanged(); ui:layout()
+ui.quickScopeButton.Activated:Fire()
+check(buttonByText(ui.modalGui, "Whole control") and buttonByText(ui.modalGui, "Entire container"), "scope menu distinguishes the control and container")
+buttonByText(ui.modalGui, "Individual layer").Activated:Fire()
+check(ui.dialogHeading.Text == "Choose an individual layer" and ui.pickerRows[1].record.key == glyph.key,
+    "selecting an individual scope can choose among visible descendants")
+ui.pickerRows[1].button.Activated:Fire()
+check(app.selection[1] == glyph.key and ui.quickScopeButton.Text == "Layer", "explicit layer choice updates the scope label and selection")
+ui.quickScopeButton.Activated:Fire()
+buttonByText(ui.modalGui, "Entire container").Activated:Fire()
+check(app.selection[1] == bar.key and ui.quickScopeButton.Text == "Container", "container scope stays within the same editing inspector")
+record2.visibility = "hidden"
+bar.visibility = "visible"
+local lookupScope = app.selectionScopes
+function app:selectionScopes(candidate)
+    if candidate == bar.key then return {current = "layer", layer = bar} end
+    return lookupScope(self, candidate)
+end
+local grouped = {record, bar, glyph, record2, controlScopes = {whole = record, layer = glyph, container = bar}}
+ui:openSelectThrough(grouped)
+local sections = {}
+for _, object in ipairs(ui.modalGui:GetDescendants()) do
+    if object:IsA("TextLabel") then sections[object.Text] = true end
+end
+check(sections.Controls and sections.Containers and sections["Individual layers"] and sections["Hidden or inspection only"],
+    "Select Through groups controls, containers, layers, and hidden objects")
+check(ui.pickerRows[1].record == record and ui.pickerRows[2].record == glyph and ui.pickerRows[3].record == bar,
+    "Select Through keeps the contextual bar under Containers even when its own scope has no layout")
+ui:closeModal()
+record2.visibility = nil
+app.selectionScopes, app.scopeLayers, app.selectScope = nil, nil, nil
+record.childKeys = nil
+app:select(record.key)
 app.previewState = {}
 ui:updateSelection()
 check(not ui.sliderEnabled and visibleHandles(ui) == 0 and ui.quickHint.Text == "Profile preview",
@@ -378,12 +470,16 @@ check(app.lastGroup[1] == "select" and app.lastGroup[2] == "Test" and not ui.wor
     "saved group row returns directly to the editing canvas")
 
 ui:setOverlaps({record, record2})
+ui:openSelectThrough()
+ui.pickerRows[1].preview.Activated:Fire()
+check(ui.previewLayerKey ~= nil, "transient candidate preview is open before reset cleanup")
 ui:setBox({x = 300, y = 300, w = 20, h = 20})
 ui:setGuides({{axis = "x", value = 200}})
 app:clearSelection()
 ui:clearSelectionFeedback()
-check(#ui.overlapKeys == 0 and not ui.box.Visible and not ui.guideObjects[1].Visible and not ui.selectionBounds.Visible,
-    "reset cleanup clears selection outlines, transient guides, and overlap candidates")
+check(#ui.overlapKeys == 0 and not ui.box.Visible and not ui.guideObjects[1].Visible and not ui.selectionBounds.Visible
+    and not ui.modalOpen and ui.pickerPreviewOutline == nil,
+    "reset cleanup clears selection outlines, picker preview, guides, and overlap candidates")
 
 ui:setVisible(false)
 check(not ui.modalOpen and not ui.overlay.Visible and #ui.selectionConnections == 0, "closing releases selection events and editing surfaces")
@@ -508,5 +604,6 @@ check(ui.gui.Destroyed and mock.destroyed > beforeDestroy, "destroy tears down G
 check(mock.activeConnections == 0, "destroy releases every UI connection")
 target:Destroy()
 second:Destroy()
+barObject:Destroy()
 
 return checks

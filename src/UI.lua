@@ -7,6 +7,7 @@ local Notifications = require("Notifications")
 local Onboarding = require("Onboarding")
 local ActionReference = require("ActionReference")
 local Design = require("Design")
+local Lucide = require("Lucide")
 local UI = {}
 UI.__index = UI
 
@@ -104,11 +105,32 @@ function UI:button(parent, text, callback, width, x, color, dynamic)
     return b
 end
 
-function UI:enable(button, enabled)
+function UI:buttonIcon(button, iconName, size)
+    local icon = Lucide.mount(button, iconName, {size = size or 17, color = button.TextColor3,
+        position = UDim2.new(.5, 0, 0, 6), anchor = Vector2.new(.5, 0)})
+    if not icon then return end
+    button.TextYAlignment = Enum.TextYAlignment.Bottom
+    button.TextSize = Text.caption
+    make("UIPadding", {PaddingBottom = UDim.new(0, 4)}, button)
+    self.buttonIcons[button] = icon
+    self.buttonIconColors[button] = button.TextColor3
+end
+
+function UI:tintButtonIcon(button)
+    local icon = self.buttonIcons[button]
+    local color = button.TextColor3
+    if icon and self.buttonIconColors[button] ~= color then
+        self.buttonIconColors[button] = color
+        Lucide.setColor(icon, color)
+    end
+end
+
+function UI:enable(button, enabled, enabledColor)
     self.disabled[button] = not enabled or nil
     button.AutoButtonColor = enabled
     pcall(function() button.Interactable = enabled or self.helpMode == true end)
-    button.TextColor3 = enabled and C.text or C.quiet
+    button.TextColor3 = enabled and (enabledColor or C.text) or C.quiet
+    self:tintButtonIcon(button)
 end
 
 function UI:textbox(parent, placeholder, initial, callback, width, x, dynamic)
@@ -289,13 +311,22 @@ end
 function UI:layoutDialog()
     if not self.dialogCard or not self.layoutPlan then return end
     local area = self.layoutPlan.area
-    local w, h = math.min(area.w, 490), math.min(area.h, self.dialogMaxHeight or (self.dialogHasText and 364 or 172))
+    local w, h = math.min(area.w, self.dialogWidth or 490), math.min(area.h, self.dialogMaxHeight or (self.dialogHasText and 364 or 172))
     local headingVisible = h >= 118
     local bodyTop = headingVisible and 36 or 7
     self.dialogHeading.Visible = headingVisible
     self.dialogScroller.Position = UDim2.fromOffset(12, bodyTop)
     self.dialogScroller.Size = UDim2.new(1, -24, 0, math.max(1, h - bodyTop - 56))
-    localRect(self.dialogCard, {x = area.x + (area.w - w) / 2, y = area.y + (area.h - h) / 2, w = w, h = h})
+    local rect = {x = area.x + (area.w - w) / 2, y = area.y + (area.h - h) / 2, w = w, h = h}
+    if self.previewLayer and self.previewLayer.object.Parent then
+        local bounds = Coordinates.rect(self.previewLayer.object)
+        if bounds then
+            rect = Layout.avoid(rect, area, bounds)
+            localRect(self.pickerPreviewOutline, bounds)
+            self.pickerPreviewOutline.Rotation = self.previewLayer.object.AbsoluteRotation or self.previewLayer.object.Rotation or 0
+        end
+    end
+    localRect(self.dialogCard, rect)
 end
 
 function UI:modal(title, message, text, actionText, action)
@@ -318,8 +349,9 @@ end
 function UI:closeModal()
     for _, c in ipairs(self.modalConnections or {}) do c:Disconnect() end
     self.modalConnections, self.modalOpen, self.pickerRows = {}, false, nil
+    self.previewLayer, self.previewLayerKey, self.pickerPreviewOutline, self.pickerLayerOnly, self.pickerContext = nil, nil, nil, nil, nil
     if self.modalGui then self.modalGui:Destroy(); self.modalGui = nil end
-    self.dialogCard, self.dialogHeading, self.dialogScroller, self.dialogMaxHeight = nil, nil, nil, nil
+    self.dialogCard, self.dialogHeading, self.dialogScroller, self.dialogMaxHeight, self.dialogWidth = nil, nil, nil, nil, nil
 end
 
 function UI:chooseElement(key)
@@ -357,7 +389,7 @@ function UI:contextMenu(title, description, entries)
         self:button(body, entry[1], function()
             self:closeModal()
             entry[2]()
-        end, nil, nil, nil, self.modalConnections)
+        end, nil, nil, entry[3], self.modalConnections)
     end
     self:layoutDialog()
 end
@@ -534,6 +566,14 @@ end
 
 function UI:selectContainer()
     local caps = self.selectionCapabilities or {}
+    local container = self.quickScopes and self.quickScopes.container
+    if container and self.app.selectScope then
+        local canMove = self.app.capability and self.app:capability(container.key, "move")
+        if container.key == caps.parentKey or (canMove and canMove.supported) then
+            if self.app:selectScope("container") then self:setWorkspace(false) end
+            return
+        end
+    end
     if not caps.parentKey then return self:selectParent() end
     self.app:selectMany({caps.parentKey})
     self:setWorkspace(false)
@@ -1101,13 +1141,15 @@ function UI:makeToolbar()
             else self.app:setEditing(false) end
         end, 46},
     }
+    local toolbarIcons = {Elements = "layers", Multi = "group", Undo = "undo-2", Redo = "redo-2",
+        History = "history", Tools = "ellipsis", Save = "save", Done = "check"}
     self.toolbarButtons = {}
     for _, action in ipairs(actions) do
         local name, callback, width = action[1], action[2], action[3]
         local button = self:button(toolbar, name, callback)
         button.BackgroundTransparency = name == "Done" and 0 or 1
-        button.TextSize = 12
         truncate(button)
+        self:buttonIcon(button, toolbarIcons[name], 16)
         self.toolbarButtons[#self.toolbarButtons + 1] = {name = name, button = button, width = width}
         self[name:lower() .. "Button"] = button
     end
@@ -1136,7 +1178,8 @@ function UI:makeToolbar()
     self.helpExit.TextColor3, self.helpExit.ZIndex, self.helpExit.Visible = C.ink, 36, false
 end
 
-local transformTools = {{"move", "Move"}, {"size", "Size"}, {"rotate", "Rotate"}, {"opacity", "Opacity"}}
+local transformTools = {{"move", "Move", "move"}, {"size", "Size", "maximize"},
+    {"rotate", "Rotate", "rotate-cw"}, {"opacity", "Opacity", "droplet"}}
 
 function UI:getTransformTool()
     return self.transformTool
@@ -1249,6 +1292,10 @@ function UI:makeQuickEdit()
     hide.Position, hide.Size = UDim2.new(1, -52, 0, 4), UDim2.fromOffset(44, 44)
     hide.BackgroundTransparency, hide.TextColor3 = 1, C.muted
     self.quickHide = hide
+    self.quickScopeButton = self:button(panel, "Scope", function() self:openScopeMenu() end, nil, nil, C.selected)
+    self.quickScopeButton.Position, self.quickScopeButton.Size = UDim2.new(1, -119, 0, 4), UDim2.fromOffset(67, 44)
+    self.quickScopeButton.TextSize, self.quickScopeButton.TextColor3, self.quickScopeButton.Visible = Text.caption, C.cyan, false
+    self:buttonIcon(self.quickScopeButton, "layers", 14)
     local tabs = make("Frame", {Name = "TransformTools", BackgroundColor3 = C.field, BorderSizePixel = 0,
         Position = UDim2.fromOffset(8, 47), Size = UDim2.new(1, -16, 0, 44), ZIndex = 25}, panel)
     corners(tabs, 10)
@@ -1257,6 +1304,7 @@ function UI:makeQuickEdit()
         local tool = item[1]
         local button = self:button(tabs, item[2], function() self:setTransformTool(tool) end, .25, (i - 1) / 4)
         button.Size = UDim2.new(.25, i == #transformTools and 0 or -2, 0, 44)
+        self:buttonIcon(button, item[3], 15)
         self.transformButtons[tool] = button
     end
     local body = make("ScrollingFrame", {Name = "QuickControls", BackgroundTransparency = 1, BorderSizePixel = 0,
@@ -1308,14 +1356,14 @@ function UI:makeQuickEdit()
         self:updateSelection()
     end)
     self.percent.Position, self.percent.Size = UDim2.fromOffset(44, 0), UDim2.fromOffset(67, 44)
-    self.percent.Font = Enum.Font.GothamMedium
+    self.percent.Font, self.percent.TextSize = Fonts.medium, Text.section
     local plus = self:button(stepper, "+", function()
         if self.app.stepSize then self.app:stepSize(1) else self.app:scale(1.01) end
     end)
     plus.Name = "IncreaseSize"
     plus.Position, plus.Size = UDim2.fromOffset(111, 0), UDim2.fromOffset(44, 44)
     plus.BackgroundTransparency, plus.TextSize = 1, 19
-    self.quickSize = label(values, "", 44, 13)
+    self.quickSize = label(values, "", 44, Text.body)
     self.quickSize.Position, self.quickSize.Size = UDim2.fromOffset(160, 0), UDim2.new(1, -160, 0, 44)
     self.quickSize.TextXAlignment, self.quickSize.TextColor3, self.quickSize.ZIndex = Enum.TextXAlignment.Center, C.muted, 28
     truncate(self.quickSize)
@@ -1335,6 +1383,58 @@ function UI:makeQuickEdit()
     self.quickEdits = {minus, plus, self.quickLock}
     self.quickValues, self.quickActions = values, actions
     self.sliderEnabled = false
+end
+
+local scopeLabels = {whole = "Whole control", layer = "Individual layer", container = "Entire container"}
+local shortScopeLabels = {whole = "Whole", layer = "Layer", container = "Container"}
+
+function UI:refreshScopeButton()
+    local options
+    if #self.app.selection == 1 and self.app.selectionScopes then options = self.app:selectionScopes() end
+    self.quickScopes = options
+    local whole, layer, container = options and options.whole, options and options.layer, options and options.container
+    self.scopeAvailable = options ~= nil and ((whole and container and whole.key ~= container.key)
+        or (whole and layer and whole.key ~= layer.key) or (options.current == "layer" and whole ~= nil)
+        or (whole and self.app.scopeLayers and #(whole.childKeys or {}) > 0)) or false
+    self.quickScopeButton.Visible = self.scopeAvailable and not self.quickKeyboard
+    self.quickScopeButton.Text = options and shortScopeLabels[options.current] or "Scope"
+    self.inspectorGrip.Size = UDim2.new(1, self.scopeAvailable and -130 or -64, 0, Touch.minimum)
+end
+
+function UI:openScopeMenu()
+    local scopes = self.quickScopes
+    if not scopes or not self.app.selectScope then return end
+    local entries = {}
+    for _, mode in ipairs({"whole", "layer", "container"}) do
+        local record = scopes[mode]
+        if record or (mode == "layer" and scopes.whole and self.app.scopeLayers) then
+            local caption = scopeLabels[mode]
+            entries[#entries + 1] = {caption, function()
+                if mode == "layer" and (not record or record.key == self.app.selection[1]) and scopes.whole then
+                    self:openScopeLayers(scopes.whole.key)
+                else self.app:selectScope(mode) end
+            end, scopes.current == mode and C.selected or nil}
+        end
+    end
+    self:contextMenu("Edit scope", "Choose which part of the control you want to edit.", entries)
+end
+
+function UI:openScopeLayers(wholeKey)
+    local records = self.app:scopeLayers(wholeKey)
+    if not records or #records == 0 then return self.app:status("This control has no available individual layers.") end
+    self:openCandidateDialog("Choose an individual layer", records, nil, true)
+end
+
+function UI:scopedMoveCopy()
+    local scopes = self.quickScopes
+    local container = scopes and scopes.container
+    if container then
+        local name = displayName(container):lower():gsub("[^%a]", "")
+        for _, bar in ipairs({"abilitybar", "hotbar", "skillbar", "actionbar"}) do
+            if name:find(bar, 1, true) then return "Select entire bar" end
+        end
+    end
+    return "Select container"
 end
 
 function UI:openQuickAction()
@@ -1473,7 +1573,8 @@ function UI.new(app, playerGui, services)
     local self = setmetatable({app = app, services = services, connections = {}, elementConnections = {}, groupConnections = {},
         profileConnections = {}, missingConnections = {}, selectionConnections = {}, groupMemberConnections = {}, toggles = {},
         handles = {}, guideObjects = {}, gridObjects = {}, disabled = setmetatable({}, {__mode = "k"}),
-        presentedText = setmetatable({}, {__mode = "k"}), helpActions = setmetatable({}, {__mode = "k"}), referenceConnections = {},
+        presentedText = setmetatable({}, {__mode = "k"}), buttonIcons = setmetatable({}, {__mode = "k"}),
+        buttonIconColors = setmetatable({}, {__mode = "k"}), helpActions = setmetatable({}, {__mode = "k"}), referenceConnections = {},
         visible = false, tab = "Elements", collapsed = false, elementPage = 1, builtinKeys = {},
         layerFilter = "Visible", collapsedLayers = {}, transformTool = "size", opacityScope = "element", surfaceRects = {}}, UI)
     local ok, result = pcall(function()
@@ -1804,6 +1905,7 @@ end
 function UI:layoutKeyboard(keyboard)
     local quickFocused = keyboard and self.percent:IsFocused()
     self.inspectorGrip.Visible, self.quickHide.Visible = not quickFocused, not quickFocused
+    self.quickScopeButton.Visible = not quickFocused and self.scopeAvailable == true
     local wasKeyboard = self.quickKeyboard
     self.quickKeyboard = quickFocused
     self:positionQuickControls()
@@ -2137,20 +2239,24 @@ function UI:updateSelection()
     local focus = self.app.groupFocus
     local group = #self.app.selection > 1
     local directLock = self.selectionLayerState and self.selectionLayerState.locked
-    local hint = group and "Drag the group to move" or "Drag on the canvas to move"
+    local hint = group and "Drag the group to move" or (self.scopeAvailable and "Drag to move" or "Drag on the canvas to move")
     if self.app.previewState then hint = "Profile preview"
     elseif suspended then hint = "Profiles suspended"
     elseif checking then hint = "Checking layout"
     elseif directLock then hint = "Locked in the editor"
     elseif caps.locked and group then hint = "Some group members are locked"
     elseif caps.locked then hint = "Contains a locked layer"
-    elseif caps.parentKey and not caps.move then hint = caps.layout and "Layout sets the position" or "Try its container"
-    elseif tool == "rotate" and enabled.rotate then hint = "Drag handle to rotate"
-    elseif tool == "size" and enabled.size then hint = self.mobile and "Pinch in or out to resize" or "Drag a handle to resize"
+    elseif caps.parentKey and not caps.move then
+        if self:scopedMoveCopy() == "Select entire bar" then hint = "Bar sets position"
+        elseif caps.layout then hint = self.scopeAvailable and "Fixed by layout" or "Position set by layout"
+        else hint = "Try its container" end
+    elseif tool == "rotate" and enabled.rotate then hint = self.scopeAvailable and "Drag to rotate" or "Drag handle to rotate"
+    elseif tool == "size" and enabled.size then
+        hint = self.mobile and (self.scopeAvailable and "Pinch to resize" or "Pinch in or out to resize") or "Drag to resize"
     elseif tool == "opacity" and enabled.opacity then
         if opacityInfo and (opacityInfo.percent or opacityInfo.value) == 0 then hint = "Still tappable at 0%"
         elseif not opacityInfo then hint = "Try Include contents"
-        elseif self.opacityScope == "contents" then hint = "Fades the layer and contents"
+        elseif self.opacityScope == "contents" then hint = self.scopeAvailable and "Includes contents" or "Fades the layer and contents"
         else hint = "100% is original" end
     elseif not caps.move and caps.resize then hint = "Size can be edited"
     elseif not caps.move then hint = "View details in Tools"
@@ -2217,10 +2323,9 @@ function UI:updateSelection()
     self.quickBody.Visible = mode ~= "inspect"
     for key, panel in pairs(self.toolPanels) do panel.Visible = tool == key and enabled[key] end
     for key, button in pairs(self.transformButtons) do
-        self:enable(button, enabled[key])
+        self:enable(button, enabled[key], key == tool and C.cyan or nil)
         button.BackgroundTransparency = key == tool and 0 or 1
         button.BackgroundColor3 = C.selected
-        if key == tool and enabled[key] then button.TextColor3 = C.cyan end
     end
     local visualOffset = mode == "move" and 48 or (mode == "full" and 96 or 0)
     self.quickActions.Position = UDim2.fromOffset(0, visualOffset)
@@ -2252,7 +2357,7 @@ function UI:updateSelection()
     end
     local more = "More"
     if directLock then more = "Unlock"
-    elseif caps.parentKey and not caps.move then more = "Select container"
+    elseif caps.parentKey and not caps.move then more = self:scopedMoveCopy()
     elseif focus and focus.member then more = "Back to group"
     elseif group and self.app.quickGroup then more = focus and "Group tools" or "Quick group" end
     self.quickMore.Text = more
@@ -2305,6 +2410,7 @@ function UI:describeSelection()
         caps = {move = editable, resize = editable, reset = editable, visual = record and record.editable == true}
     end
     self.selectionCapabilities = caps
+    self:refreshScopeButton()
     local available = {move = caps.move, size = caps.resize, rotate = caps.rotate, opacity = caps.opacity or caps.opacityContents}
     if not available[self.transformTool] then
         for _, name in ipairs({"size", "move", "rotate", "opacity"}) do
@@ -2323,9 +2429,11 @@ function UI:describeSelection()
         local description
         if self.selectionLayerState.locked then description = "Unlock this layer to change it."
         elseif caps.locked then description = "A locked layer depends on this one. Unlock it before changing the arrangement."
-        elseif caps.parentKey and not caps.move then description = caps.layout
-            and "The layout sets this control's position. Select its container to move the arrangement."
-            or "This layer has limited editing. Its container may support movement."
+        elseif caps.parentKey and not caps.move then
+            if self:scopedMoveCopy() == "Select entire bar" then
+                description = "The bar controls this button's position. Select the entire bar to move it."
+            elseif caps.layout then description = "The layout sets this control's position. Select its container to move the arrangement."
+            else description = caps.moveReason or "This layer has limited editing. Its container may support movement." end
         elseif caps.move and caps.resize then description = "Move and resize are available."
         elseif caps.resize then description = "Resize is available. The current position is fixed."
         elseif caps.move then description = "Move is available. The current size is fixed."
@@ -2416,6 +2524,7 @@ function UI:selectionChanged()
 end
 
 function UI:clearSelectionFeedback()
+    if self.pickerRows or self.pickerPreviewOutline then self:closeModal() end
     self:setOverlaps()
     self:setBox()
     self:setGuides()
@@ -2454,6 +2563,10 @@ local function layerGlyph(parent, class, x)
     local tile = make("Frame", {Name = "LayerType", BackgroundColor3 = C.field, BorderSizePixel = 0,
         Position = UDim2.fromOffset(x, 12), Size = UDim2.fromOffset(28, 28)}, parent)
     corners(tile, 8)
+    local icons = {TextButton = "mouse-pointer-2", ImageButton = "mouse-pointer-2", TextLabel = "text",
+        TextBox = "text", ImageLabel = "image", Frame = "layers", CanvasGroup = "group", ScrollingFrame = "panel-right"}
+    if Lucide.mount(tile, icons[class] or "layers", {size = 15, position = UDim2.fromOffset(6, 6),
+        anchor = Vector2.new(0, 0), color = C.cyan}) then return end
     local glyph = make("Frame", {BackgroundTransparency = 1, Position = UDim2.fromOffset(7, 7), Size = UDim2.fromOffset(14, 14)}, tile)
     if class:find("Text") and not class:find("Button") then
         for y = 2, 12, 5 do
@@ -2479,18 +2592,27 @@ function UI:configureLayerRow(row, record)
     row.marker.Visible = active
 end
 
-function UI:elementRow(parent, record, connections, picker)
+function UI:elementRow(parent, record, connections, picker, recommended)
     local key = record.key
     local depth = picker and 0 or math.max(0, math.min(3, (record.depth or 0) - 1))
     local hasChildren = record.childKeys and #record.childKeys > 0
-    local right = picker and 57 or (hasChildren and 44 or 0)
+    local right = picker and 78 or (hasChildren and 44 or 0)
     local row = frame(parent, 52)
     row.Name = "LayerRow"
     local button = self:button(row, "", function()
         if self.app.preferences.multiSelect then
             self.app:select(key, true)
             if picker then self:refreshPickerHighlights() end
-        elseif picker then self:closeModal(); self:chooseElement(key)
+        elseif picker then
+            local layerOnly, context = self.pickerLayerOnly, self.pickerContext
+            self:closeModal()
+            if layerOnly and self.app.selectScope then
+                self.app:selectScope("layer", key)
+                self:setWorkspace(false)
+            elseif context then
+                self.app:selectMany({key}, false, context)
+                self:setWorkspace(false)
+            else self:chooseElement(key) end
         else self:chooseElement(key) end
     end, nil, nil, nil, connections)
     button.Name, button.Size = "SelectLayer", UDim2.new(1, -right, 1, 0)
@@ -2504,12 +2626,14 @@ function UI:elementRow(parent, record, connections, picker)
     title.Position, title.Size, title.Font = UDim2.fromOffset(x, 6), UDim2.new(1, -x - 8, 0, 20), Enum.Font.GothamBold
     truncate(title)
     local summary, marked = self:layerMeta(record)
+    if recommended then summary = "Recommended / " .. summary end
     local subtitle = label(button, summary, 16, 11)
     subtitle.Position, subtitle.Size, subtitle.TextColor3 = UDim2.fromOffset(x, 27), UDim2.new(1, -x - 8, 0, 16), marked and C.warning or C.muted
     truncate(subtitle)
+    local preview
     if picker or hasChildren then
-        local action = self:button(row, picker and "Details" or (self.collapsedLayers[key] and "Show" or "Hide"), function()
-            if picker then self:showLayerDetails(record)
+        local action = self:button(row, picker and "Preview" or (self.collapsedLayers[key] and "Show" or "Hide"), function()
+            if picker then self:previewCandidate(record)
             else
                 self.collapsedLayers[key] = not self.collapsedLayers[key] or nil
                 self.elementSignature, self.elementFilter = nil, nil
@@ -2517,16 +2641,33 @@ function UI:elementRow(parent, record, connections, picker)
             end
         end, nil, nil, nil, connections)
         action.Position, action.Size = UDim2.new(1, -right + 4, 0, 4), UDim2.fromOffset(right - 4, 44)
+        if picker then
+            preview = action
+            self:buttonIcon(action, "eye", 15)
+        else
+            local expanded = not self.collapsedLayers[key]
+            local glyph = Lucide.mount(action, expanded and "chevron-down" or "chevron-right", {size = 16, color = C.muted})
+            if glyph then
+                action.Name, action.Text = expanded and "CollapseLayer" or "ExpandLayer", ""
+            end
+        end
     end
-    local result = {root = row, button = button, title = title, record = record, marker = marker}
+    local result = {root = row, button = button, title = title, record = record, marker = marker, preview = preview}
     self:configureLayerRow(result, record)
     return result
 end
 
 function UI:updateElementSelection()
     local record = self.app.discovery:get(self.app.selection[1])
-    self.elementPath.Text = self.childParent and ("Children of " .. self.childParent.Name)
-        or (record and elementPath(record) or "Tap a layer below to edit it.")
+    local parent = self.childParent and self.app.discovery.byObject and self.app.discovery.byObject[self.childParent]
+    local path = {}
+    local item = record
+    while item and #path < 3 do
+        table.insert(path, 1, displayName(item))
+        item = item.parentKey and self.app.discovery:get(item.parentKey)
+    end
+    self.elementPath.Text = self.childParent and ("Children of " .. (parent and displayName(parent) or self.childParent.Name))
+        or (record and table.concat(path, " / ") or "Tap a layer below to edit it.")
     self.layerActions.Visible = #self.app.selection > 0 or self.childParent ~= nil
     self.layerActions.Text = self.childParent and "Layer actions and hierarchy" or "Layer actions"
     for _, row in pairs(self.elementRows) do self:configureLayerRow(row, row.record) end
@@ -2551,10 +2692,92 @@ function UI:refreshOverlaps()
 end
 
 function UI:refreshPickerHighlights()
-    for _, row in ipairs(self.pickerRows or {}) do self:configureLayerRow(row, row.record) end
+    for _, row in ipairs(self.pickerRows or {}) do
+        self:configureLayerRow(row, row.record)
+        local showing = self.previewLayerKey == row.record.key
+        if row.preview then
+            row.preview.Text = showing and "Stop preview" or "Preview"
+            row.preview.BackgroundColor3 = showing and C.selected or C.raised
+            row.preview.TextColor3 = showing and C.cyan or C.muted
+            self:tintButtonIcon(row.preview)
+        end
+    end
 end
 
-function UI:openSelectThrough(records)
+function UI:previewCandidate(record)
+    if not self.modalOpen or not self.pickerPreviewOutline then return end
+    if self.previewLayerKey == record.key then
+        self.previewLayer, self.previewLayerKey = nil, nil
+        self.pickerPreviewOutline.Visible = false
+    else
+        local current = self.app.discovery:get(record.key)
+        if not current or not Coordinates.rect(current.object) then
+            self.app:status("This layer is no longer available to preview.")
+            return
+        end
+        self.previewLayer, self.previewLayerKey = current, current.key
+        self.pickerPreviewOutline.Visible = true
+    end
+    self:refreshPickerHighlights()
+    self:layoutDialog()
+end
+
+local candidateTitles = {"Controls", "Individual layers", "Containers", "Hidden or inspection only"}
+
+function UI:candidateKind(record, scopes, context)
+    if record.visibility == "hidden" or record.visibility == "clipped" or self:layerState(record).locked
+        or (not hasOperation(record, "move") and not hasOperation(record, "resize") and not hasOperation(record, "visual")
+            and not (record.capabilities and record.capabilities.opacity and record.capabilities.opacity.supported)) then
+        return 4
+    end
+    local relatedContainer = context and context.container
+    if (relatedContainer and relatedContainer.key == record.key)
+        or (scopes and scopes.container and scopes.container.key == record.key) then return 3 end
+    if scopes and scopes.whole and scopes.whole.key == record.key then return 1 end
+    if scopes and scopes.current == "layer" and scopes.whole then return 2 end
+    if record.visibility == "container" then return 3 end
+    if string.find(record.object.ClassName, "Button", 1, true) then return 1 end
+    return 2
+end
+
+function UI:openCandidateDialog(title, records, context, layerOnly)
+    local _, body = self:dialog(title, "Tap a row to select it. Preview shows its outline.", nil, {{label = "Close"}})
+    self.modalGui.BackgroundTransparency = .64
+    self.dialogWidth = 418
+    self.pickerPreviewOutline = make("Frame", {Name = "LayerPreview", Active = false, BorderSizePixel = 0,
+        BackgroundTransparency = 1, Visible = false, ZIndex = 71}, self.modalGui)
+    Design.stroke(self.pickerPreviewOutline, C.cyan, 2, .04)
+    self.pickerRows, self.pickerLayerOnly, self.pickerContext = {}, layerOnly, context
+    local sections = {{}, {}, {}, {}}
+    local seen, count = {}, 0
+    local recommended = context and context.whole
+    for i, record in ipairs(records) do
+        if i > 36 then break end
+        if not seen[record.key] then
+            local scopes = self.app.selectionScopes and self.app:selectionScopes(record.key)
+            local category = layerOnly and 2 or self:candidateKind(record, scopes, context)
+            sections[category][#sections[category] + 1] = record
+            seen[record.key], count = true, count + 1
+        end
+    end
+    self.dialogMaxHeight = math.min(392, 130 + count * 59 + 28)
+    for i, group in ipairs(sections) do
+        if #group > 0 then
+            if not layerOnly then self:section(body, candidateTitles[i]) end
+            for _, record in ipairs(group) do
+                self.pickerRows[#self.pickerRows + 1] = self:elementRow(body, record, self.modalConnections, true,
+                    recommended and recommended.key == record.key)
+            end
+        end
+    end
+    if #records > 36 then
+        label(body, "More nearby layers are available in Layers.", 34, Text.control).TextColor3 = C.muted
+    end
+    self:layoutDialog()
+    return true
+end
+
+function UI:openSelectThrough(records, context)
     if not records then
         records = {}
         for _, key in ipairs(self.overlapKeys or {}) do
@@ -2567,18 +2790,8 @@ function UI:openSelectThrough(records)
         return false
     end
     self:setOverlaps(records)
-    local _, body = self:dialog("Select through", "Pick a layer at this point. Other layers stay where they are.", nil, {{label = "Close"}})
-    self.dialogMaxHeight = math.min(382, 130 + #records * 56)
-    self.pickerRows = {}
-    for i, record in ipairs(records) do
-        if i > 24 then break end
-        self.pickerRows[#self.pickerRows + 1] = self:elementRow(body, record, self.modalConnections, true)
-    end
-    if #records > 24 then
-        label(body, "More nearby layers are available in the Layers browser.", 34, 12).TextColor3 = C.muted
-    end
-    self:layoutDialog()
-    return true
+    context = records.controlScopes or (context and context.controlScopes) or context
+    return self:openCandidateDialog("Select through", records, context, false)
 end
 
 function UI:refreshMissing()
@@ -2632,9 +2845,10 @@ function UI:refreshElements()
     if revision ~= self.elementRevision or self.elementPolicy ~= policy then
         self.elementRevision, self.elementPolicy = revision, policy
         self.layerRecords = fallback or discovery:list("all")
-        self.layerIndex, self.builtinKeys = {}, {}
+        self.layerIndex, self.layerPaths, self.builtinKeys = {}, {}, {}
         for _, record in ipairs(self.layerRecords) do
             self.layerIndex[record.key] = record
+            self.layerPaths[record.key] = (elementPath(record) .. " " .. record.object.ClassName):lower()
             local kind = record.builtin
             if kind and not self.builtinKeys[kind] and record.visibility ~= "hidden" then self.builtinKeys[kind] = record.key end
         end
@@ -2645,7 +2859,8 @@ function UI:refreshElements()
     if filter ~= self.elementFilter then
         self.elementFilter, self.elementMatches = filter, {}
         for _, record in ipairs(self.layerRecords or {}) do
-            local matches = search == "" or (displayName(record) .. " " .. elementPath(record) .. " " .. record.object.ClassName):lower():find(search, 1, true)
+            local matches = search == "" or displayName(record):lower():find(search, 1, true)
+                or self.layerPaths[record.key]:find(search, 1, true)
             local ancestor, expanded = record.parentKey, true
             if search == "" and not self.childParent and self.layerFilter == "Visible" then
                 while ancestor do
@@ -2771,7 +2986,8 @@ function UI:refreshToolbar()
     local history = self.app.history
     self:enable(self.undoButton, not history or #(history.past or {}) > 0)
     self:enable(self.redoButton, not history or #(history.future or {}) > 0)
-    self:enable(self.saveButton, not self.app.previewState and not (self.app.profiles and self.app.profiles.suspended))
+    local ready = not self.app.previewState and not (self.app.profiles and self.app.profiles.suspended)
+    self:enable(self.saveButton, ready, self.app.dirty and C.ink or C.muted)
     local tabs = {
         {self.elementsButton, self.workspaceOpen and self.tab == "Elements"},
         {self.multiButton, self.app.preferences.multiSelect},
@@ -2784,11 +3000,10 @@ function UI:refreshToolbar()
     end
     self.elementsButton.Text = "Layers"
     self.doneButton.BackgroundColor3, self.doneButton.TextColor3 = C.raised, C.text
-    local ready = not self.disabled[self.saveButton]
     self.saveButton.BackgroundTransparency = ready and self.app.dirty and 0 or 1
     self.saveButton.BackgroundColor3 = C.cyan
-    self.saveButton.TextColor3 = ready and (self.app.dirty and C.ink or C.muted) or C.quiet
     self.toolsSaveIndicator.Visible = self.app.dirty and ready and not self.saveButton.Visible or false
+    for _, entry in ipairs(self.toolbarButtons) do self:tintButtonIcon(entry.button) end
 end
 
 function UI:refreshPage()

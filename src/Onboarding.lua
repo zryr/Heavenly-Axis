@@ -4,6 +4,7 @@ local Design = require("Design")
 local Geometry = require("Geometry")
 local Input = require("Input")
 local Layout = require("UILayout")
+local Lucide = require("Lucide")
 local Reference = require("ActionReference")
 
 local Onboarding = {}
@@ -30,22 +31,24 @@ local quick = {
 }
 
 local tour = {
-    {1, lesson("intro", "Your tools at a glance", "toolbar", "The Axis launcher opens the editor. The toolbar holds editing tools and history. Save keeps edits. Done returns you to the game.", nil, {"launcher", "toolbar", "done"})},
+    {1, lesson("intro", "Your tools at a glance", "toolbar", "Open the editor from the Axis launcher. In Quick Edit, the four arrows move, the corner arrows resize, the curved arrow rotates, and the droplet changes opacity. Save keeps edits. Done returns to the game.", nil, {"launcher", "toolbar", "done"})},
     {1, panel},
     {1, lesson("workspace", "Find more in Tools", "tools", "Tools contains Layers, Groups, Profiles, Settings, and Help. Collapse Quick Edit to uncover a control. Canvas takes you back to editing.", nil,
         {"tools", "layers", "groups", "profiles", "settings", "help", "collapse"})},
     {2, selectJump},
     {2, lesson("layers", "Pick a layer underneath", "selectThrough", "Hold still on Jump, then choose it beneath the overlay. You can also tap Layers.", "You selected Jump through the overlay.", {"selectThrough"})},
-    {2, lesson("layerRules", "Choose what you can edit", "layers", "Use Parent or Children to explore related controls. Clear deselects them. Ignore keeps a layer out of ordinary selection. Lock keeps it visible for inspection and blocks edits.", nil, {"layers"})},
+    {2, lesson("scope", "Pick an edit scope", "selectionScope", "Pinch a whole ability to resize it. Pick Individual layer for a badge, or Entire container for the bar.",
+        "You resized a complete ability and found its separate visual layers and the entire bar.", {"quickEdit", "layers"})},
     {3, moveJump},
     {3, resizeJump},
     {4, lesson("rotate", "Turn a control", "rotate", "Drag the curved handle around Jump or move the angle slider. The angle steps make small changes. Reset returns the original angle.", "You turned Jump around its center.", {"rotate"})},
-    {4, lesson("opacity", "Fade a control", "opacity", "Adjust Opacity from 0 to 100%. This element affects one control. Include contents can fade a container's supported visuals. Find a fully faded control through Layers.", "You changed the practice control's visible opacity.", {"opacity"})},
-    {5, lesson("group", "Edit two controls together", "quickGroup", "Tap Multi, select both controls, then tap Group. You can also select related controls with Select Siblings.", "Grouped. Drag either selected control to move both.", {"groups"})},
+    {4, lesson("opacity", "Fade a control", "opacity", "Adjust Opacity from 0 to 100%. Element only fades the control itself. Include contents also fades supported visuals inside it. Find a fully faded control through Layers.", "You changed the practice control's visible opacity.", {"opacity"})},
+    {5, lesson("group", "Group unrelated controls", "quickGroup", "Tap Multi, select Jump and Dash, then tap Quick Group. They can move together even when they belong to different parts of the HUD.", "Grouped. Drag either selected control to move both.", {"groups"})},
     {5, lesson("groupOptions", "Adjust a group or a member", "groups", "Name groups for reuse. Resize the group together or apply the same size change to each member. Groups lets you pick individual members, align, distribute, or ungroup them.", nil, {"groups"})},
     {6, lesson("checkpoints", "Work from a checkpoint", "save", "Save establishes a checkpoint. Undo and Redo step through edits. Done offers Save or Discard if needed. Import and export are in Profiles.", nil, {"save", "undo", "redo", "profiles"})},
     {6, lesson("reset", "Restore original settings", "resetElement", "Reset this practice control. Reset All Changes previews the affected edits. Reset Editor Layout moves only Heavenly Axis panels. Safe Mode suspends saved adjustments and keeps your profiles.", "Practice values restored. Saved profiles were left alone.")},
-    {7, lesson("compatibility", "When a control follows a layout", "compatibility", "A button in a bar may have a fixed position or size. Choose the containing bar and check its available tools. Details explains any blocked action. Restore the edit if it does not hold.", nil, {"quickEdit"})},
+    {7, lesson("compatibility", "Move the ability bar", "compatibility", "The containing bar sets each slot. Tap Select entire bar, then drag it to move all abilities together.",
+        "The bar moved. Its abilities stayed in their assigned slots.", {"quickEdit"})},
     {7, save},
 }
 
@@ -54,6 +57,12 @@ local chapterNames = {"Editor navigation", "Selection", "Moving and resizing", "
 local layer = 89
 local C, F, T = Design.colors, Design.font, Design.text
 local touch = Design.touch.minimum
+local abilityNames = {"Dash", "Guard", "Burst"}
+local abilityIcons = {"move", "shield", "zap"}
+local abilityParts = {"Badge", "Icon", "Label", "Overlay"}
+local scopeNames = {whole = "Whole control", layer = "Individual layer", container = "Entire container"}
+local scopeModes = {"whole", "layer", "container"}
+local managedHelp = "The bar sets where this ability sits. Tap Select entire bar, then drag the bar."
 local function make(class, props, parent)
     local object = Instance.new(class)
     for name, value in pairs(props) do object[name] = value end
@@ -136,6 +145,41 @@ function Onboarding:_target(name)
     return {key = name, object = frame, edge = edge, text = text, editable = true}
 end
 
+function Onboarding:_abilityPart(key, name, scope, parentKey, depth, color, caption, icon)
+    local parent = parentKey and self.targets[parentKey].object or self.canvas
+    local object = make("Frame", {Name = "Practice" .. key, Visible = false, BorderSizePixel = 0,
+        BackgroundColor3 = color or C.field, BackgroundTransparency = color and 0 or 1,
+        ZIndex = layer + depth, Active = false}, parent)
+    pcall(function() object.Interactable = false end)
+    Design.round(object, scope == "layer" and 5 or Design.radius.control)
+    local edge = Design.stroke(object, C.border, 1.5, scope == "layer" and 1 or .4)
+    local part = {key = key, name = name, scope = scope, parentKey = parentKey, object = object, edge = edge, editable = true}
+    self.targets[key] = part
+    if caption then
+        local text = label(object, "Caption", T.caption, C.text, true, layer + depth + 1)
+        text.Text, text.Size, text.TextScaled = caption, UDim2.fromScale(1, 1), true
+        text.TextXAlignment, text.TextYAlignment = Enum.TextXAlignment.Center, Enum.TextYAlignment.Center
+        text.TextWrapped = false
+    elseif icon then
+        local glyph = Lucide.mount(object, icon, {size = 20, color = C.cyan,
+            position = UDim2.fromScale(.5, .5), anchor = Vector2.new(.5, .5), zIndex = layer + depth + 1})
+        if glyph then part.iconScale = make("UIScale", {Scale = 1}, glyph) end
+    end
+end
+
+function Onboarding:_mountAbilities()
+    self:_abilityPart("AbilityBar", "Ability bar", "container", nil, 3, C.raised)
+    for index, name in ipairs(abilityNames) do
+        local key = "Ability" .. index
+        self:_abilityPart(key, name, "whole", "AbilityBar", 4, C.control)
+        self:_abilityPart(key .. "Badge", name .. " number", "layer", key, 5, C.ink, tostring(index))
+        self:_abilityPart(key .. "Icon", name .. " icon", "layer", key, 5, nil, nil, abilityIcons[index])
+        self:_abilityPart(key .. "Label", name .. " label", "layer", key, 5, nil, name)
+        self:_abilityPart(key .. "Overlay", name .. " accent", "layer", key, 5, C.cyan)
+        self.targets[key .. "Overlay"].object.BackgroundTransparency = .55
+    end
+end
+
 function Onboarding:_meter(name, caption)
     local slider = self:_button(self.controls, name, "", false)
     slider.Size = UDim2.fromScale(1, 1)
@@ -184,12 +228,13 @@ function Onboarding:_mount()
     self.pad = make("Frame", {Name = "PracticePad", BackgroundColor3 = C.surface, BorderSizePixel = 0, ZIndex = layer + 1}, self.shield)
     Design.round(self.pad, Design.radius.dialog)
     Design.stroke(self.pad, C.border)
-    local padTitle = label(self.pad, "PracticeLabel", T.control, C.subtleText, true, layer + 2)
-    padTitle.Text, padTitle.Position, padTitle.Size = "Practice canvas", UDim2.fromOffset(12, 9), UDim2.new(1, -24, 0, 16)
+    self.padTitle = label(self.pad, "PracticeLabel", T.control, C.subtleText, true, layer + 2)
+    self.padTitle.Position, self.padTitle.Size = UDim2.fromOffset(12, 9), UDim2.new(1, -24, 0, 16)
     self.canvas = make("TextButton", {Name = "PracticeSurface", Text = "", Active = true, AutoButtonColor = false,
         BackgroundColor3 = C.field, BorderSizePixel = 0, ClipsDescendants = true, ZIndex = layer + 2}, self.pad)
     Design.round(self.canvas, Design.radius.surface)
     self.targets = {Jump = self:_target("Jump"), Move = self:_target("Move")}
+    self.targets.Move.text.Text = "Dash"
     self.overlay = make("Frame", {Name = "TransparentPracticeLayer", BackgroundColor3 = C.cyan,
         BackgroundTransparency = .91, BorderSizePixel = 0, ZIndex = layer + 5, Visible = false}, self.canvas)
     pcall(function() self.overlay.Interactable = false end)
@@ -203,10 +248,11 @@ function Onboarding:_mount()
     Design.round(self.marker, Design.radius.marker)
     local rotate = self:_button(self.canvas, "PracticeRotation", "", false)
     rotate.BackgroundTransparency = 1
-    local rotateMarker = make("TextLabel", {Name = "RotationMarker", Font = F.strong, Text = "R",
-        TextSize = T.body, TextColor3 = C.ink, BackgroundColor3 = C.cyan, BorderSizePixel = 0,
+    local rotateMarker = make("Frame", {Name = "RotationMarker", BackgroundColor3 = C.cyan, BorderSizePixel = 0,
         AnchorPoint = Vector2.new(.5, .5), Position = UDim2.fromScale(.5, .5), Size = UDim2.fromOffset(23, 23), ZIndex = layer + 7}, rotate)
     Design.round(rotateMarker, 12)
+    Lucide.mount(rotateMarker, "rotate-cw", {size = 15, color = C.ink, position = UDim2.fromScale(.5, .5),
+        anchor = Vector2.new(.5, .5), zIndex = layer + 8})
     self.rotationHandle = {gui = rotate, marker = rotateMarker}
 
     self.practicePanel = make("Frame", {Name = "PracticeInspector", BackgroundColor3 = C.raised,
@@ -221,12 +267,13 @@ function Onboarding:_mount()
     self.angleSlider, self.angleTrack, self.angleThumb, self.angleLabel = self:_meter("PracticeAngle", "Angle")
     self.opacitySlider, self.opacityTrack, self.opacityThumb, self.opacityLabel = self:_meter("PracticeOpacity", "Opacity")
     self.opacitySlider.Size = UDim2.new(1, -96, 1, 0)
-    self.scopeButton = self:_button(self.controls, "PracticeScope", "This element", false, function()
+    self.scopeButton = self:_button(self.controls, "PracticeOpacityScope", "Element only", false, function()
         local contents = self.practiceUI.opacityScope ~= "contents"
         self.practiceUI.opacityScope = contents and "contents" or "element"
-        self.scopeButton.Text = contents and "Contents" or "This element"
+        self.scopeButton.Text = contents and "Include contents" or "Element only"
         self:_drawTargets()
     end)
+    self.scopeButton.TextWrapped, self.scopeButton.TextTruncate = true, Enum.TextTruncate.None
     self.scopeButton.Position, self.scopeButton.Size = UDim2.new(1, -90, 0, 0), UDim2.fromOffset(90, touch)
     self.resetButton = self:_button(self.controls, "ResetPractice", "Reset practice", true, function()
         self.angle, self.opacity = 0, 100
@@ -251,7 +298,7 @@ function Onboarding:_mount()
         self.app.preferences.multiSelect = not self.app.preferences.multiSelect
         self.multi.Text = self.app.preferences.multiSelect and "Multi on" or "Multi"
     end)
-    self.group = self:_button(self.controls, "PracticeGroup", "Group", true, function()
+    self.group = self:_button(self.controls, "PracticeGroup", "Quick Group", true, function()
         if #self.app.selection > 1 then self:_completeLesson()
         else self:_describe("Tap Multi, then tap both practice controls before grouping them.") end
     end)
@@ -259,6 +306,20 @@ function Onboarding:_mount()
     for _, button in ipairs({self.chooseJump, self.group}) do
         button.Position, button.Size = UDim2.new(.5, 3, 0, 0), UDim2.new(.5, -3, 1, 0)
     end
+    self.selectionScopeButtons = {}
+    for index, scope in ipairs(scopeModes) do
+        local button = self:_button(self.controls, "PracticeScope_" .. scope, scopeNames[scope]:gsub(" ", "\n"), false,
+            function() self:_setPracticeScope(scope) end)
+        button.TextWrapped, button.TextTruncate = true, Enum.TextTruncate.None
+        button.Position = UDim2.new((index - 1) / 3, 2, 0, 0)
+        button.Size = UDim2.new(1 / 3, -4, 1, 0)
+        self.selectionScopeButtons[scope] = button
+    end
+    self.selectBar = self:_button(self.controls, "PracticeSelectBar", "Select entire bar", false, function()
+        self.scopeMode = "container"
+        self:_select("AbilityBar")
+    end)
+    self.selectBar.Size = UDim2.fromScale(1, 1)
 end
 
 function Onboarding:_describe(text)
@@ -302,6 +363,12 @@ function Onboarding:_drawTools()
     self.layers.Visible = id == "layers" and not self.layerPicker
     self.chooseOverlay.Visible, self.chooseJump.Visible = self.layerPicker == true, self.layerPicker == true
     self.multi.Visible, self.group.Visible = id == "group", id == "group"
+    for scope, button in pairs(self.selectionScopeButtons) do
+        button.Visible = id == "scope"
+        local active = self.scopeMode == scope
+        button.BackgroundColor3, button.TextColor3 = active and C.selected or C.raised, active and C.cyan or C.text
+    end
+    self.selectBar.Visible = id == "compatibility"
 end
 
 function Onboarding:_showLayers(hits)
@@ -316,36 +383,97 @@ local function selected(keys, value)
     for index, key in ipairs(keys) do if key == value then return index end end
 end
 
+function Onboarding:_scopeComplete()
+    local seen = self.scopeSeen
+    if seen.whole and seen.layer and seen.container and self.scopeResized then self:_completeLesson() end
+end
+
+function Onboarding:_setPracticeScope(scope)
+    if self.scopeMode ~= scope then
+        self.input:cancel()
+        self.scopeMode = scope
+        self.app.selection = {}
+    end
+    if not self.lessonComplete then
+        local hints = {
+            whole = "Tap an ability. The large outline includes its number, icon, label, and decoration. Then pinch to resize them together.",
+            layer = "Tap a number, icon, or label. Drag the small outline to adjust just that layer.",
+            container = "Tap anywhere on the bar. Drag inside the outer outline to move all three abilities together.",
+        }
+        self:_describe(hints[scope])
+    end
+    self:_drawTools()
+    self:_drawTargets()
+end
+
 function Onboarding:_select(key, additive)
     if additive then
         local index = selected(self.app.selection, key)
         if index then table.remove(self.app.selection, index) else self.app.selection[#self.app.selection + 1] = key end
     else self.app.selection = key and {key} or {} end
     if key == "Jump" and self.lesson.id == "select" then self:_completeLesson() end
+    local target = self.targets[key]
+    if target and target.scope and self.lesson.id == "scope" then
+        self.scopeSeen[target.scope] = true
+        self:_scopeComplete()
+    elseif target and self.lesson.id == "compatibility" and not self.lessonComplete then
+        self:_describe(key == "AbilityBar" and "Drag the bar to an open spot. All abilities will keep their slots." or managedHelp)
+    end
     self:_drawTargets()
 end
 
-function Onboarding:_sizeInfo()
-    local jump, canvas = self.rects.Jump, self.canvasRect
-    if not jump or not canvas then return nil end
+function Onboarding:_sizeInfo(rect)
+    local target, canvas = rect or self.rects.Jump, self.canvasRect
+    if not target or not canvas then return nil end
     local maximum = math.min(canvas.w - 12, canvas.h - 8)
     if maximum <= 38 then return nil end
-    return {scale = jump.w, minimum = 38, maximum = maximum, size = jump}
+    return {scale = target.w, minimum = 38, maximum = maximum, size = target}
+end
+
+function Onboarding:_abilityHits(x, y)
+    local bar = self.targets.AbilityBar
+    local barHit = Coordinates.contains(self.rects.AbilityBar, x, y)
+    for index in ipairs(abilityNames) do
+        local ability = "Ability" .. index
+        if self.scopeMode ~= "layer" and Coordinates.contains(self.rects[ability], x, y) then
+            local target = self.scopeMode == "container" and bar or self.targets[ability]
+            return {target}, target
+        end
+        for _, part in ipairs(abilityParts) do
+            local key = ability .. part
+            if Coordinates.contains(self.rects[key], x, y) then
+                local target = self.scopeMode == "container" and bar or self.targets[self.scopeMode == "layer" and key or ability]
+                return {target}, target
+            end
+        end
+    end
+    if barHit and self.scopeMode == "container" then return {bar}, bar end
+    return {}, false
 end
 
 function Onboarding:_drawTargets()
     local canvas = self.canvasRect
     if not canvas then return end
     local keys = self.app.selection
+    local focused = self.targets[keys[1]]
+    self.padTitle.Text = focused and focused.scope and (focused.name .. " · " .. scopeNames[focused.scope]) or "Practice canvas"
     for key, target in pairs(self.targets) do
         local rect = self.rects[key]
-        target.object.Visible = rect ~= nil
+        if target.object.Visible ~= (rect ~= nil) then target.object.Visible = rect ~= nil end
         if rect then
-            target.object.Position, target.object.Size = UDim2.fromOffset(rect.x - canvas.x, rect.y - canvas.y), UDim2.fromOffset(rect.w, rect.h)
-            target.edge.Color = selected(keys, key) and C.cyan or C.border
-            target.object.Rotation = key == "Jump" and self.angle or 0
-            target.object.BackgroundTransparency = key == "Jump" and 1 - self.opacity / 100 or 0
-            target.text.TextTransparency = key == "Jump" and self.practiceUI.opacityScope == "contents" and 1 - self.opacity / 100 or 0
+            local origin = target.parentKey and self.rects[target.parentKey] or canvas
+            target.object.Position = UDim2.fromOffset(rect.x - origin.x, rect.y - origin.y)
+            target.object.Size = UDim2.fromOffset(rect.w, rect.h)
+            local active = selected(keys, key)
+            target.edge.Color = active and C.cyan or C.border
+            if target.scope then
+                target.edge.Transparency = active and 0 or (target.scope == "layer" and 1 or .4)
+                if target.iconScale then target.iconScale.Scale = math.max(.55, math.min(1.65, math.min(rect.w, rect.h) / 22)) end
+            else
+                target.object.Rotation = key == "Jump" and self.angle or 0
+                target.object.BackgroundTransparency = key == "Jump" and 1 - self.opacity / 100 or 0
+                target.text.TextTransparency = key == "Jump" and self.practiceUI.opacityScope == "contents" and 1 - self.opacity / 100 or 0
+            end
         end
     end
     local jump = self.rects.Jump
@@ -387,11 +515,36 @@ function Onboarding:_drawTargets()
     self.opacityLabel.Text = string.format("%d%%", math.floor(self.opacity + .5))
 end
 
+local function relativeRect(child, before, after)
+    local sx, sy = after.w / before.w, after.h / before.h
+    return {x = after.x + (child.x - before.x) * sx, y = after.y + (child.y - before.y) * sy,
+        w = child.w * sx, h = child.h * sy}
+end
+
+function Onboarding:_movePracticeTarget(key, rect)
+    local original = self.before.rects[key]
+    local placed = Layout.place(rect, self.canvasRect, rect.x, rect.y)
+    self.rects[key] = placed
+    if not self.targets[key].scope then return end
+    for partKey, part in pairs(self.targets) do
+        local parent = part.parentKey
+        while parent do
+            if parent == key then
+                local child = self.before.rects[partKey]
+                if child then self.rects[partKey] = relativeRect(child, original, placed) end
+                break
+            end
+            parent = self.targets[parent].parentKey
+        end
+    end
+end
+
 function Onboarding:_createInput()
     local owner = self
     local app = {selection = {}, editing = true, preferences = {aspectLock = true, gridSize = 24}}
     app.discovery = {}
     function app:canvasHits(x, y)
+        if owner.lesson.id == "scope" or owner.lesson.id == "compatibility" then return owner:_abilityHits(x, y) end
         local hits, primary = {}, nil
         for _, key in ipairs({"Jump", "Move"}) do
             if Coordinates.contains(owner.rects[key], x, y) then hits[#hits + 1] = owner.targets[key]; primary = primary or owner.targets[key] end
@@ -402,20 +555,31 @@ function Onboarding:_createInput()
         return hits, primary or false
     end
     function app.discovery:hit(x, y) return app:canvasHits(x, y, false) end
-    function app.discovery:get(key) return owner.targets[key] end
+    function app.discovery:get(key) return owner.targets[key] or (key == "Overlay" and owner.overlayRecord or nil) end
     function app.discovery:list() return {owner.targets.Jump, owner.targets.Move} end
-    function app:getRects()
-        local rects, keys = {}, {}
+    function app:capability(key)
+        local managed = owner.lesson.id == "compatibility" and key ~= "AbilityBar"
+        local record = self.discovery:get(key)
+        return {supported = not managed and record and record.editable == true, reason = managed and managedHelp or nil}
+    end
+    function app:status(text) owner:_describe(text) end
+    function app:getRects(_, operation)
+        local rects, keys, skipped = {}, {}, 0
         for _, key in ipairs(self.selection) do
-            if owner.rects[key] then rects[#rects + 1], keys[#keys + 1] = owner.rects[key], key end
+            local rect = owner.rects[key]
+            if rect and (not operation or self:capability(key).supported) then
+                rects[#rects + 1], keys[#keys + 1] = rect, key
+            else
+                skipped = skipped + 1
+            end
         end
-        return rects, keys, 0
+        return rects, keys, skipped
     end
     function app:currentBounds() return Geometry.bounds(self:getRects()) end
     function app:select(key, additive) owner:_select(key, additive) end
     function app:clearSelection() owner:_select(nil) end
     function app:selectMany(keys) self.selection = keys; owner:_drawTargets() end
-    function app:sizeInfo() return owner:_sizeInfo() end
+    function app:sizeInfo(bounds) return owner:_sizeInfo(bounds) end
     function app:sizeRects(rects, w, h)
         local bounds = Geometry.bounds(rects)
         return Geometry.scale(rects, {x = bounds.x, y = bounds.y, w = w, h = h}, false)
@@ -434,14 +598,14 @@ function Onboarding:_createInput()
         owner:_drawTargets()
         return true
     end
-    function app:beginGesture()
-        owner.before = {rects = {Jump = owner.rects.Jump, Move = owner.rects.Move}, angle = owner.angle, opacity = owner.opacity}
+    function app:beginGesture(label)
+        local rects = {}
+        for key, rect in pairs(owner.rects) do rects[key] = rect end
+        owner.before = {rects = rects, angle = owner.angle, opacity = owner.opacity, label = label}
         return true
     end
     function app:updateGesture(rects, keys)
-        for index, key in ipairs(keys) do
-            owner.rects[key] = Layout.place(rects[index], owner.canvasRect, rects[index].x, rects[index].y)
-        end
+        for index, key in ipairs(keys) do owner:_movePracticeTarget(key, rects[index]) end
         owner:_drawTargets()
         return true
     end
@@ -453,13 +617,25 @@ function Onboarding:_createInput()
         end
     end
     function app:endGesture()
-        local before, state, after = owner.before and owner.before.rects.Jump, owner.before, owner.rects.Jump
+        local state = owner.before
         owner.before = nil
+        if not state then return end
+        local before, after = state.rects.Jump, owner.rects.Jump
         if before and after then
             if (owner.lesson.id == "move" and (math.abs(before.x - after.x) > 5 or math.abs(before.y - after.y) > 5))
                 or (owner.lesson.id == "resize" and math.abs(before.w - after.w) > 2)
                 or (owner.lesson.id == "rotate" and math.abs(state.angle - owner.angle) > 2)
                 or (owner.lesson.id == "opacity" and math.abs(state.opacity - owner.opacity) > 2) then owner:_completeLesson() end
+        end
+        if owner.lesson.id == "scope" and state.label == "Pinch resize" then
+            local key = self.selection[1]
+            if key and state.rects[key] and owner.targets[key].scope == "whole"
+                and math.abs(state.rects[key].w - owner.rects[key].w) > 2 then
+                owner.scopeResized = true
+                owner:_scopeComplete()
+            end
+        elseif owner.lesson.id == "compatibility" and not same(state.rects.AbilityBar, owner.rects.AbilityBar) then
+            owner:_completeLesson()
         end
     end
 
@@ -532,7 +708,8 @@ function Onboarding:_layout()
     self.shield.Visible = true
     self:_highlightTargets(area)
     local landscape = area.w >= 466 and area.w >= area.h * 1.12
-    local practice = self.lesson.done ~= nil and area.h >= (landscape and 190 or 278)
+    local abilities = id == "scope" or id == "compatibility"
+    local practice = self.lesson.done ~= nil and area.h >= (landscape and 190 or 278) and (not abilities or area.w >= 226)
     if self.lesson.done and practice ~= self.practiceAvailable and not self.lessonComplete then
         self:_describe(practice and self.lesson.body or "Make more room to try this exercise, or tap Next to continue.")
     end
@@ -574,7 +751,7 @@ function Onboarding:_layout()
     if not practice then self.rects = {}; return end
     self.padRect = {x = landscape and x + coachWidth + 10 or x, y = landscape and y or y + coachHeight + 10, w = padWidth, h = padHeight}
     place(self.pad, self.padRect)
-    local controls = id == "resize" or id == "layers" or id == "group" or id == "rotate" or id == "opacity" or id == "reset"
+    local controls = abilities or id == "resize" or id == "layers" or id == "group" or id == "rotate" or id == "opacity" or id == "reset"
     self.controls.Visible = controls
     local height = padHeight - (controls and 85 or 42)
     self.canvasRect = {x = self.padRect.x + 10, y = self.padRect.y + 31, w = padWidth - 20, h = height}
@@ -582,9 +759,47 @@ function Onboarding:_layout()
     self:_drawTools()
 end
 
+function Onboarding:_relocateAbilities(oldCanvas)
+    local canvas = self.canvasRect
+    local previous = oldCanvas and self.rects.AbilityBar
+    if previous then
+        local x = canvas.x + (previous.x - oldCanvas.x) / oldCanvas.w * canvas.w
+        local y = canvas.y + (previous.y - oldCanvas.y) / oldCanvas.h * canvas.h
+        local bar = Layout.place(previous, canvas, x, y)
+        local placed = {AbilityBar = bar}
+        for key, rect in pairs(self.rects) do
+            if key ~= "AbilityBar" then placed[key] = relativeRect(rect, previous, bar) end
+        end
+        self.rects = placed
+        return
+    end
+    local w = math.min(242, canvas.w - 26)
+    local h = math.min(90, math.floor(canvas.h * .65))
+    local bar = {x = canvas.x + (canvas.w - w) / 2, y = canvas.y + (canvas.h - h) / 2, w = w, h = h}
+    local result = {AbilityBar = bar}
+    local width = (bar.w - 32) / 3
+    for index in ipairs(abilityNames) do
+        local key = "Ability" .. index
+        local card = {x = bar.x + 8 + (index - 1) * (width + 8), y = bar.y + 8, w = width, h = bar.h - 16}
+        local badgeH = math.min(16, card.h * .30)
+        local iconSize = math.min(23, card.h * .40)
+        result[key] = card
+        result[key .. "Badge"] = {x = card.x + 4, y = card.y + 4, w = 19, h = badgeH}
+        result[key .. "Icon"] = {x = card.x + (card.w - iconSize) * .55, y = card.y + card.h * .25, w = iconSize, h = iconSize}
+        result[key .. "Label"] = {x = card.x + 5, y = card.y + card.h - 17, w = card.w - 10, h = 14}
+        result[key .. "Overlay"] = {x = card.x + card.w - 7, y = card.y + 6, w = 3, h = card.h * .59}
+    end
+    self.rects = result
+end
+
 function Onboarding:_relocate(oldCanvas)
     local canvas = self.canvasRect
     if not canvas then self.rects = {}; return end
+    if self.lesson.id == "scope" or self.lesson.id == "compatibility" then
+        self:_relocateAbilities(oldCanvas)
+        self:_drawTargets()
+        return
+    end
     local targetSize = math.min(64, math.max(16, math.floor(canvas.h * .56)))
     local nextRects = {}
     for _, key in ipairs(self.lesson.id == "group" and {"Jump", "Move"} or {"Jump"}) do
@@ -626,6 +841,12 @@ function Onboarding:_go(step)
     self.progressByMode[self.mode] = step
     local lesson = self.lesson
     local action = Reference.get(lesson.action)
+    if (lesson.id == "scope" or lesson.id == "compatibility") and not self.targets.AbilityBar then self:_mountAbilities() end
+    if self.lessonIcon then self.lessonIcon:Destroy() end
+    self.lessonIcon = action.icon and Lucide.mount(self.coach, action.icon,
+        {size = 18, color = C.cyan, position = UDim2.fromOffset(14, 35), anchor = Vector2.new(0, 0), zIndex = layer + 3}) or nil
+    local headingLeft = self.lessonIcon and 40 or 14
+    self.heading.Position, self.heading.Size = UDim2.fromOffset(headingLeft, 32), UDim2.new(1, -headingLeft - 14, 0, 28)
     self.progress.Text = chapter and string.format("%d / 7  •  %s", chapter, chapterNames[chapter])
         or string.format("QUICK START  %d / %d", step, #self.route)
     self.heading.Text = lesson.title or action.label
@@ -636,7 +857,8 @@ function Onboarding:_go(step)
     self.app.preferences.multiSelect, self.multi.Text = false, "Multi"
     self.app.openSelectThrough = lesson.id == "layers" and function(_, hits) return self:_showLayers(hits) end or nil
     self.angle, self.opacity = lesson.id == "reset" and 28 or 0, lesson.id == "reset" and 55 or 100
-    self.practiceUI.opacityScope, self.scopeButton.Text = "element", "This element"
+    self.scopeMode, self.scopeSeen, self.scopeResized = "whole", {}, false
+    self.practiceUI.opacityScope, self.scopeButton.Text = "element", "Element only"
     self.sampleRect, self.sampleStart, self.practiceAvailable = nil, nil, nil
     local hasSelection = lesson.id == "move" or lesson.id == "resize" or lesson.id == "rotate" or lesson.id == "opacity" or lesson.id == "reset"
     self.app.selection = hasSelection and {"Jump"} or {}
@@ -680,6 +902,7 @@ function Onboarding:close(outcome)
     self.shield:Destroy()
     self.input, self.app, self.practiceUI, self.shield, self.coachRect, self.padRect, self.canvasRect = nil, nil, nil, nil, nil, nil, nil
     self.before, self.rects, self.highlightRects, self.highlightFrames = nil, nil, nil, nil
+    self.lessonIcon, self.targets, self.selectionScopeButtons, self.selectBar, self.padTitle = nil, nil, nil, nil, nil
     self:_notify()
     if self.callbacks.saveProgress then self.callbacks.saveProgress(mode, progress) end
 end

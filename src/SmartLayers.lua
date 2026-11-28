@@ -33,6 +33,12 @@ function SmartLayers.hasImage(object)
     return ok and hasContent
 end
 
+function SmartLayers.hasText(object)
+    local class = object.ClassName
+    return textClasses[class] == true and object.MaxVisibleGraphemes ~= 0
+        and (nonempty(object.Text) or class == "TextBox" and nonempty(object.PlaceholderText))
+end
+
 function SmartLayers.name(record)
     local builtin = builtins[record.builtin]
     local object = record.object
@@ -48,7 +54,7 @@ function SmartLayers.painted(object, strokes)
     local class = object.ClassName
     local text
     if textClasses[class] then
-        text = object.MaxVisibleGraphemes ~= 0 and (nonempty(object.Text) or class == "TextBox" and nonempty(object.PlaceholderText))
+        text = SmartLayers.hasText(object)
         if text and (paintedAlpha(object.TextTransparency) or paintedAlpha(object.TextStrokeTransparency)) then return true end
     elseif (imageClasses[class] or class == "ViewportFrame") and paintedAlpha(object.ImageTransparency) and SmartLayers.hasImage(object) then return true
     elseif class == "VideoFrame" and nonempty(object.Video) then return true end

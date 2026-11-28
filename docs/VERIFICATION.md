@@ -1,8 +1,42 @@
-# V3.4.0 verification
+# V3.5.0 verification
+
+The recording described in the request was unavailable in the workspace. The reported HotBar, Number, and Backpack selections informed the representative fixture. Those observations provide no exact live hierarchy. Roblox Studio, native touch, and Heroes Battlegrounds remained unavailable on the Linux test host.
+
+## Executed V3.5 checks
+
+| Command | Result |
+| --- | --- |
+| `python3 tools/build.py --check` and `cmp Source dist/HeavenlyAxis.lua` | Passed. Both release paths reproduce the same 645,405 bytes. |
+| `python3 tools/test.py` | Passed. Thirteen suites, 1,450 checks, 30 Lua syntax checks, zero failures. |
+| `python3 tools/luau_check.py` | Passed. Luau 0.728 compiled 44 files, including the Studio fixture. |
+| `python3 tools/lucide_subset.py <pinned checkout> --check` | Passed. The 75 locally bundled Lucide glyphs reproduce exactly. |
+
+The 98 bundled checks exercise the verified edit, save, reopen, and cold restore sequence on source-equivalent release paths. The 173 UI checks cover touch targets, panel scrolling and placement, contextual selection, and preview cleanup. The 129 Input checks include pinch handoff, scroll arbitration, focus loss, recreation, and modal cancellation.
+
+## Complete-ability walkthrough
+
+| Step | Evidence |
+| --- | --- |
+| Tap an ability | Discovery tests cover actionable and repeated composite controls, overlapping buttons, transparent decoration, named parts, and whole-control selection with layout-owned position. |
+| Understand restrictions | The inspector shows layout ownership next to the selected ability. Input checks exercise whole-control drag, a managed drag that leaves geometry unchanged, and deliberate layer or container dragging. |
+| Switch scopes | App and UI checks exercise Whole control, Individual layer, Entire container, picker preview, and returning to the same control. Scope navigation stays outside layout history and saves. |
+| Recover and reopen | The release workflow exercises the checkpoint, recreation, direct tools, and Reset All. The configuration schema remains V3. |
+
+Earlier taps could prefer individually editable children over a passive ability wrapper. The transform guard separately refused changes to a slot's layout-owned position. Selection now uses hierarchy, visible bounds, actionable controls, and repeated composite structure. Transform eligibility is checked after selection. Simple lists can still permit a supported size edit. Grid and flex layouts can control both position and size. A user can select an editable container explicitly to move its contents together.
+
+The refreshed native interface uses a pinned Lucide subset without runtime downloads. Icons mount passive geometry, preserve action labels, and use the existing touch owner. Layers enforces a bounded display batch. [Research and architecture choices](REFERENCE-DESIGN.md) · [Icon implementation and license](ICON-SYSTEM.md)
+
+## Layout and allocation review
+
+The source-derived previews ran the shipped bundle and fixture in a shared Roblox API mock. Viewports included 640 × 360, 932 × 360, 393 × 852, 1024 × 768, and 1440 × 900. The review shortened the scoped pinch hint and practice copy, corrected the order and placement of candidates in Select Through, and checked direct access to the managed bar action. Toasts avoid active editing surfaces and are passive. The neutral Reset toast can briefly overlap an inactive HUD control. Native text wrapping, image payloads, CanvasGroup composition, dispatch, and frame timing remain **Not Tested**. [Mock layout contact sheet](visual-qa-v3.5.png) · [Responsive layouts](visual-qa-responsive-v3.5.png)
+
+On a 32-control mock at 640 × 360, the idle editor used 1,138 owned descendants, up from 668 in V3.4.0. The Layers page used 1,886, up from 932. Native icon strokes account for much of the additional GUI geometry. Connections increased from 284 to 285 on the idle editor. Eight reopen cycles left the counted objects and connections stable, and destroy left zero connections. Icon colors update only when they change. The composite tour fixture mounts on demand and clears on close. These comparisons measure structural costs in mocks.
+
+## V3.4.0 baseline
 
 Roblox Studio and physical Android hardware were unavailable in the Linux workspace. The supplied attachments contained written briefs. The referenced screen recording was unavailable. The evidence below covers the bundled editor executed against API mocks and source-derived layout previews. Native rendering, simultaneous touch dispatch, and device performance require the Studio and Android runs. [Roblox Studio system requirements](https://create.roblox.com/docs/studio/setup)
 
-## Executed checks
+### Executed V3.4 checks
 
 | Command | Result |
 | --- | --- |

@@ -1,5 +1,11 @@
 # Release changes
 
+## V3.5.0
+
+- Smart Selection prefers a single complete control even when its movement is layout-managed. Quick Edit and Select Through let you inspect the individual layer, return to the whole control, or deliberately select its containing bar.
+- Rebuilt the toolbar, contextual inspector, and layer browsing around a pinned subset of genuine Lucide icons, native controls, shared visual states, and readable action labels. The standalone release bundles the icon shapes.
+- Added a composite-ability practice chapter and regression workflows for free and layout-managed buttons, scope navigation, and restoration. Existing saved profiles and group definitions use the same format.
+
 ## V3.4.0
 
 - Unified the editor, onboarding, and notifications with shared surface, type, color, and touch-target tokens. The toolbar emphasizes Save when there are edits, Tools reopens the last workspace, and Quick Edit keeps secondary actions in context. Layers, Groups, and Profiles use quieter rows and contextual management actions.

@@ -355,6 +355,112 @@ blend.props.GroupTransparency:Fire()
 flush()
 check(#revisions == noticeCount + 1 and found(discovery:list("all"), blendChild) and record(blendChild).visibility == "hidden",
     "Crossing fully faded refreshes layer visibility but keeps descendants available for recovery")
+
+local rail = create("Frame", "Action Rail", gameGui, 485, 268, 296, 66)
+rail.BackgroundTransparency = 1
+create("UIListLayout", "Rows", rail)
+local buttons, artwork, captions = {}, {}, {}
+for index, title in ipairs({"Sand Split", "Tidal Roll", "Arc Burst", "Air Step"}) do
+    local x = 488 + (index - 1) * 70
+    local button = create("Frame", "Slot" .. index, rail, x, 270, 62, 62)
+    button.BackgroundTransparency = 1
+    local art = create("ImageLabel", "Artwork", button, x + 8, 275, 45, 38)
+    art.BackgroundTransparency, art.ImageTransparency, art.Image = 1, 0, "rbxassetid://4"
+    local caption = create("TextLabel", "Caption", button, x, 312, 60, 17)
+    caption.BackgroundTransparency, caption.TextTransparency, caption.Text = 1, 0, title
+    buttons[index], artwork[index], captions[index] = button, art, caption
+end
+local falseAbility = create("Frame", "Ability7", gameGui, 825, 277, 62, 58)
+falseAbility.BackgroundTransparency = 1
+local falseIcon = create("ImageLabel", "Same shape but independent", falseAbility, 834, 282, 40, 32)
+falseIcon.ImageTransparency, falseIcon.Image = 0, "rbxassetid://3"
+local falseCaption = create("TextLabel", "Caption", falseAbility, 831, 315, 52, 16)
+falseCaption.TextTransparency, falseCaption.Text = 0, "A caption"
+local overlapButton = create("ImageButton", "Foreground button", gameGui, 631, 270, 62, 60)
+discovery:refresh()
+local ability, iconLayer, tray = record(buttons[3]), record(artwork[3]), record(rail)
+function root:GetGuiObjectsAtPosition()
+    return {artwork[3]}
+end
+local projected, projectedPrimary = discovery:hit(651, 286)
+local projectedScopes = projected.controlScopes
+check(projectedPrimary == ability and projectedScopes.current == "whole" and projectedScopes.layer == iconLayer
+    and projectedScopes.whole == ability and projectedScopes.container == tray,
+    "An artwork hit selects the repeated layout control while retaining exact-layer and container routes")
+check(ability.displayName == "Arc Burst (3)" and ability.object.Name == "Slot3"
+    and ability.descriptor.path[#ability.descriptor.path].name == "Slot3",
+    "An unambiguous authored ability title gives a friendly name without changing identity")
+local alternatives = discovery:controlLayers(ability.key)
+check(found(alternatives, artwork[3]) and found(alternatives, captions[3]) and not found(alternatives, artwork[4]),
+    "Layer alternatives stay inside the inferred control")
+local abilityScopes, trayScopes = discovery:controlScopes(ability.key), discovery:controlScopes(tray.key)
+check(abilityScopes.current == "whole" and abilityScopes.layer == nil and trayScopes.current == "container"
+    and trayScopes.layer == nil and trayScopes.container == tray,
+    "Direct scope lookups never present the same record as two alternatives")
+check(not ability.capabilities.move.supported and ability.capabilities.resize.supported,
+    "Whole-control classification does not promise an operation the layout owns")
+discovery:setSelectionPolicy({locked = {[ability.key] = true}})
+local _, lockedAbility = discovery:hit(651, 286)
+check(lockedAbility == ability and lockedAbility.locked, "A locked inferred control remains the normal inspection target")
+discovery:setSelectionPolicy({ignored = {[ability.key] = true}})
+local skippedControl, ignoredAbility = discovery:hit(651, 286)
+check(not ignoredAbility and found(skippedControl, buttons[3]) and found(skippedControl, artwork[3]),
+    "Ignored whole controls leave their layers inspectable without capturing ordinary taps")
+discovery:setSelectionPolicy({})
+function root:GetGuiObjectsAtPosition() return {overlapButton, artwork[3]} end
+local _, foreground = discovery:hit(651, 286, {ability.key})
+check(foreground == record(overlapButton), "Native front-to-back order beats a prior selection when two whole controls overlap")
+function root:GetGuiObjectsAtPosition() return {falseIcon, falseAbility} end
+local namedHits, chosenNamed = discovery:hit(845, 295)
+check(chosenNamed == record(falseIcon) and namedHits.controlScopes.whole == nil,
+    "An ability-like name and solitary decorative wrapper do not establish a whole control")
+function root:GetGuiObjectsAtPosition() return {artwork[3]} end
+discovery:setSelectionPolicy({smartSelection = false})
+local _, raw = discovery:hit(651, 286)
+check(raw == iconLayer, "Disabling Smart Selection still picks the exact native layer")
+
+local transparentActions = {}
+for index, button in ipairs(buttons) do
+    local action = create("ImageButton", "TapRegion", button, 488 + (index - 1) * 70, 270, 62, 62)
+    action.BackgroundTransparency, action.ImageTransparency, action.ZIndex = 1, 1, 50
+    transparentActions[index] = action
+end
+discovery:setSelectionPolicy({})
+discovery:refresh()
+function root:GetGuiObjectsAtPosition() return {transparentActions[3], artwork[3]} end
+local transparentHits, transparentPrimary = discovery:hit(651, 286)
+check(transparentPrimary == ability and transparentHits.controlScopes.layer == iconLayer and found(transparentHits, transparentActions[3]),
+    "A transparent interactive surface is inspectable but does not become the visible layer under a tap")
+
+local actionableRail = create("Frame", "Slots with native buttons", gameGui, 475, 350, 172, 67)
+create("UIListLayout", "Rows", actionableRail)
+local wrappers, innerActions, numbers = {}, {}, {}
+for index = 1, 2 do
+    local x = 478 + (index - 1) * 84
+    local wrapper = create("Frame", "Slot" .. index, actionableRail, x, 353, 74, 62)
+    wrapper.BackgroundTransparency, wrapper.Active = 1, true
+    local action = create("ImageButton", "Action", wrapper, x + 4, 355, 57, 47)
+    action.BackgroundTransparency, action.ImageTransparency, action.Image = 1, 0, "rbxassetid://5"
+    local number = create("TextLabel", "Number", wrapper, x + 55, 398, 16, 13)
+    number.BackgroundTransparency, number.TextTransparency, number.Text = 1, 0, tostring(index)
+    wrappers[index], innerActions[index], numbers[index] = wrapper, action, number
+end
+discovery:setSelectionPolicy({})
+discovery:refresh()
+function root:GetGuiObjectsAtPosition() return {innerActions[1]} end
+local actionHits, actionChoice = discovery:hit(507, 375)
+check(actionChoice == record(wrappers[1]) and actionHits.controlScopes.layer == record(innerActions[1]),
+    "An inner actionable ImageButton promotes to its proven repeated whole slot and stays available as the exact layer")
+function root:GetGuiObjectsAtPosition() return {numbers[1]} end
+local numberHits, numberChoice = discovery:hit(540, 404)
+check(numberChoice == actionChoice and numberHits.controlScopes.layer == record(numbers[1]),
+    "Tapping the sibling slot number and main button chooses the same whole control")
+create("TextButton", "Independent mini action", wrappers[1], 535, 357, 13, 13)
+discovery:refresh()
+function root:GetGuiObjectsAtPosition() return {innerActions[1]} end
+local _, independent = discovery:hit(507, 375)
+check(independent == record(innerActions[1]), "A second actionable layer prevents merging genuinely independent nested controls")
+
 local firstSubscription = discovery.objectConnections[upper][1]
 discovery:destroy()
 check(not firstSubscription.live, "Discovery destroy disconnects retained GUI subscriptions")

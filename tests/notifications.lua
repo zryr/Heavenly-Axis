@@ -71,13 +71,16 @@ check(within(safe, bounds()) and not Coordinates.intersection(bounds(), selectio
 local warning = "The selected button changed during editing. Reopen Tools to review which changes were saved before this session."
 check(toast:show(warning, {kind = "warning", title = "Layout changed"}), "important feedback supersedes ordinary status")
 local warningTimer = scheduled[#scheduled]
-check(toast.title.Visible and toast.title.Text == "Layout changed" and toast.glyph.Text == "!" and toast.body.TextWrapped and toast.body.Size.Y.Offset > 17,
-    "warning uses a semantic title, distinct accent and wrapped body")
+check(toast.title.Visible and toast.title.Text == "Layout changed" and toast.icons.warning.Visible
+    and toast.icons.warning.Name == "Lucide_triangle-alert" and not toast.icons.info.Visible
+    and toast.body.TextWrapped and toast.body.Size.Y.Offset > 17,
+    "warning uses a Lucide alert, semantic title, distinct accent and wrapped body")
 check(not firstTimer.pending and pendingCount() == 1 and warningTimer.duration > firstTimer.duration, "one active expiry remains and warnings stay readable longer")
 tick(firstTimer)
 check(toast.frame.Visible and toast.body.Text == warning, "a late canceled callback cannot hide current content")
 check(not toast:show("Selection cleared."), "transient status preserves a visible warning")
-check(toast:show("Check the file path.", {kind = "error"}) and toast.title.Text == "Action failed" and toast.glyph.Text == "X",
+check(toast:show("Check the file path.", {kind = "error"}) and toast.title.Text == "Action failed"
+    and toast.icons.error.Visible and toast.icons.error.Name == "Lucide_circle-alert" and not toast.icons.warning.Visible,
     "newer important messages replace old warnings and expose their category")
 check(not toast:show("Export copied.", {kind = "success"}), "secondary success does not eclipse unresolved errors")
 check(toast:show("Changes restored.", {kind = "success", replace = true}) and toast.body.Text == "Changes restored.",
@@ -88,7 +91,8 @@ toast:show("Check the file path.", {kind = "error"})
 check(toast:show("Layout saved on this device.", {kind = "success", title = "Saved", keepOnClose = true}),
     "an explicit keep-on-close result can replace older important status")
 local savedTimer = scheduled[#scheduled]
-check(toast.tick.Visible and toast.glyph.Text == "" and toast.title.Text == "Saved", "success uses a native check mark and the supplied title")
+check(toast.icons.success.Visible and toast.icons.success.Name == "Lucide_check" and not toast.icons.error.Visible
+    and toast.title.Text == "Saved", "success uses a Lucide check and the supplied title")
 toast:close()
 check(toast.frame.Visible and savedTimer.pending, "confirmed Save remains briefly visible after leaving the editor")
 tick(savedTimer)

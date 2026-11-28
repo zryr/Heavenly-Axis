@@ -22,9 +22,11 @@ The sources use the Lua/Luau common subset. Lua 5.4 test execution is practical 
 | `EditorPreferences` | Independent appearance and selection preferences, place-scoped exact identity rules, and tutorial completion |
 | `Discovery` | Accessible PlayerGui index, smart hit ranking, clipping and compatibility, per-instance baselines, event cleanup |
 | `SmartLayers` | Presentation-aware layer naming and content classification |
+| `ControlScopes` | Bounded inference and navigation between a whole control, its visual layers and its container |
 | `Appearance`, `TransformOpacity` | Original visual baselines, bounded scope planning, and verified relative-opacity writes and rollbacks |
 | `Transform` | Idempotent property application, root-pruned screen geometry, UDim and UIScale conversion, stabilization and rollback |
 | `UILayout` | Pure responsive placement for the toolbar, Quick Edit and management workspace |
+| `Design`, `Lucide` | Reusable visual roles, corners and borders, plus passive rendering of locally bundled Lucide glyphs |
 | `UI` | Native toolbar, contextual inspector and workspace, launcher, selection overlays and dialogs |
 | `Input` | Interaction ownership, touch and mouse lifecycle, pinch, box/multi selection, sliders and floating surfaces |
 | `Onboarding` | Isolated practice targets using the same gesture owner and no saved HUD state |
@@ -41,11 +43,15 @@ Matching requires a unique exact compatible hierarchy. Changes in name, parent, 
 
 Discovery indexes accessible objects. Ordinary taps use the engine hit set and presentation ranking. Select Through adds geographically relevant hidden and skipped layers on explicit demand. A baseline is captured once per actual object before editor transforms. New instances get new baselines. Saved layouts specify absolute Position/Size UDim components so reapplication does not add offsets repeatedly. Baselines and live objects stay in runtime adapters; portable states survive destruction.
 
+Whole Control uses local hierarchy and presentation evidence. An actionable ancestor or a bounded, structurally repeated composite can represent one control. Explicit Select Through still exposes its component layers. App stores the current scope and originating control as transient keys, so choosing a container retains a route back to the same control even if the tapped decoration disappears. Saved identities and named groups continue to use exact descriptors. The transform layer independently checks each operation after a target is selected.
+
 ## Coordinates and layout
 
 Editing calculations use the Core UI safe-area coordinate system. Roblox documents GUI `AbsolutePosition`, pointer `InputObject.Position`, and `GetGuiObjectsAtPosition()` in that shared space. `GetMouseLocation()` provides an uninset point, so its adapter applies the top-left inset. UI placement subtracts the overlay parent's actual absolute origin before constructing an offset. `GuiService:GetInsetArea()` provides rectangles in the canonical space. The camera viewport describes device-safe dimensions and can differ from the full drawable area. [GuiBase2d API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/GuiBase2d.yaml), [BasePlayerGui API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/BasePlayerGui.yaml), [GuiService insets](https://create.roblox.com/docs/reference/engine/classes/GuiService#GetInsetArea), [Camera viewport source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/Camera.yaml)
 
 The layout planner uses the available safe area. A landscape toolbar leaves room for a floating, contextual inspector that can move away from the selection. Portrait places the inspector low and accounts for the software keyboard. The secondary workspace has its own scrollable body. [UI architecture decision](MOBILE_RESCUE.md#ui-architecture-decision)
+
+`Design`, `UILayout`, and `Lucide` can be used by another native Roblox GUI without App state. Use `Design` roles and the shared corner and stroke constructors, `UILayout` for safe panel placement, and `Lucide.mount` for passive icon decorations on labeled actions. Parent ownership tears down icon instances with their action. Input subscriptions belong to the editor or modal that uses them. `tools/build.py` embeds these modules with the application into one script. [Reference design](REFERENCE-DESIGN.md) · [Icon implementation and license](ICON-SYSTEM.md)
 
 ## Transforms and groups
 

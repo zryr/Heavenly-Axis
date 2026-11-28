@@ -203,8 +203,8 @@ function Input:_cancelHold(gesture)
 end
 
 function Input:_showThrough(hits, p)
-    if self.app.openSelectThrough then self.app:openSelectThrough(hits, p)
-    elseif self.ui.showThrough then self.ui:showThrough(hits, p) end
+    if self.app.openSelectThrough then self.app:openSelectThrough(hits, p, hits.controlScopes)
+    elseif self.ui.showThrough then self.ui:showThrough(hits, p, hits.controlScopes) end
 end
 
 function Input:_startHold(gesture)
@@ -318,9 +318,7 @@ function Input:_prepareTransform(gesture, mode)
     if mode == "move" then key = gesture.dragKey end
     if key and not selected(self.app, key) then
         if gesture.additive then return false end
-        self.selectingForGesture = true
-        self.app:select(key, false)
-        self.selectingForGesture = false
+        self:_adoptCanvasSelection(key, gesture.hits)
     end
     return self:_snapshot(gesture, mode)
 end
@@ -428,13 +426,35 @@ function Input:_canvasBegin(input)
     local moveOperation, resizeOperation = self:_operation("move"), self:_operation("resize")
     if self:_supports(record, selected(self.app, record and record.key) and moveOperation or "move") then dragKey = record.key end
     if self:_supports(record, selected(self.app, record and record.key) and resizeOperation or "resize") then pinchKey = record.key end
+    local scopes = hits.controlScopes
+    local whole = #self.app.selection == 1 and not additive and scopes and scopes.whole
+    whole = whole and record and whole.key == record.key and whole or nil
+    local focused, focusedMode
+    if #self.app.selection == 1 and not additive and self.app.selectionScopes then
+        local current = self.app:selectionScopes()
+        if current and (current.current == "layer" or current.current == "container") then
+            focusedMode, focused = current.current, current[current.current]
+        end
+    end
     local selectedDrag, selectedPinch
     for _, hit in ipairs(hits) do
-        if selected(self.app, hit.key) and (not dragEligible or dragEligible[hit.key]) then
+        -- A normal press over a composite should not hand ownership to a
+        -- previously selected label or bar. Deliberate Layer/Container scope
+        -- still permits a drag of that selected layer if it is under the touch.
+        if selected(self.app, hit.key) and (not dragEligible or dragEligible[hit.key])
+            and (not whole or hit.key == whole.key or focused and hit.key == focused.key) then
             if not selectedDrag and self:_supports(hit, moveOperation) then selectedDrag = hit.key end
             if not selectedPinch and self:_supports(hit, resizeOperation) then selectedPinch = hit.key end
             if selectedDrag and selectedPinch then break end
         end
+    end
+    -- Some native hit lists contain only the visible child. A deliberately
+    -- selected bar still owns an in-bounds drag of its own controls.
+    if focusedMode == "container" and focused and (not record or scopes and scopes.container and scopes.container.key == focused.key) then
+        if not selectedDrag and self:_supports(focused, moveOperation)
+            and contains(self.app:currentBounds(true, moveOperation), p) then selectedDrag = focused.key end
+        if not selectedPinch and self:_supports(focused, resizeOperation)
+            and contains(self.app:currentBounds(true, resizeOperation), p) then selectedPinch = focused.key end
     end
     dragKey, pinchKey = selectedDrag or dragKey, selectedPinch or pinchKey
     local moveGap, resizeGap, pinchNear
@@ -450,6 +470,7 @@ function Input:_canvasBegin(input)
     local kind = (record or dragKey or moveGap or resizeGap or touch(input)) and "canvas" or "box"
     local gesture = self:_claim(input, kind, p)
     gesture.selectionOnly = tool == "rotate" or tool == "opacity"
+    gesture.explicitFocus = focused ~= nil
     gesture.additive, gesture.record, gesture.dragKey, gesture.pinchKey = additive, record, dragKey, pinchKey
     gesture.moveGap, gesture.resizeGap, gesture.pinchNear = moveGap, resizeGap, pinchNear
     gesture.hits = hits
@@ -637,7 +658,13 @@ function Input:_changed(input)
         if (not gesture.dragKey and not gesture.moveGap) or not self:_prepareTransform(gesture, "move") then
             if gesture.record and self.app.capability and self.app.status and not gesture.additive then
                 local capability = self.app:capability(gesture.record.key, "move")
-                if capability and not capability.supported and capability.reason then self.app:status(capability.reason) end
+                if capability and not capability.supported and capability.reason then
+                    local scopes = gesture.hits.controlScopes
+                    if not gesture.explicitFocus and scopes and scopes.whole == gesture.record and not selected(self.app, gesture.record.key) then
+                        self:_adoptCanvasSelection(gesture.record.key, gesture.hits)
+                    end
+                    self.app:status(capability.reason)
+                end
             end
             gesture.kind = (gesture.pinchKey or gesture.resizeGap or gesture.pinchNear) and "pinchPending" or "passive"
             return
@@ -688,10 +715,21 @@ function Input:_boxEnd(gesture)
     self.app:selectMany(keys)
 end
 
+function Input:_selectCanvas(key, additive, hits)
+    if self.app.selectCanvas then return self.app:selectCanvas(key, additive, hits and hits.controlScopes) end
+    return self.app:select(key, additive)
+end
+
+function Input:_adoptCanvasSelection(key, hits)
+    self.selectingForGesture = true
+    self:_selectCanvas(key, false, hits)
+    self.selectingForGesture = false
+end
+
 function Input:_tap(gesture)
     if gesture.record then
-        if gesture.additive or not selected(self.app, gesture.record.key) then
-            self.app:select(gesture.record.key, gesture.additive)
+        if self.app.selectCanvas or gesture.additive or not selected(self.app, gesture.record.key) then
+            self:_selectCanvas(gesture.record.key, gesture.additive, gesture.hits)
         end
     elseif not gesture.moveGap and not gesture.resizeGap and not gesture.additive then
         self.app:clearSelection()

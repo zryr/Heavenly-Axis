@@ -566,6 +566,49 @@ do
         "onboarding progress is separate from HUD checkpoint data")
 end
 
+do
+    local editor = setup()
+    local discovery = editor.discovery
+    local whole = discovery:get(key)
+    local bar = {key = "bar", editable = true, object = {Parent = {}}}
+    local number = {key = "number", parentKey = whole.key, editable = true, object = {Parent = whole.object}}
+    local artwork = {key = "artwork", parentKey = whole.key, editable = true, object = {Parent = whole.object}}
+    whole.parentKey = bar.key
+    discovery.records.bar, discovery.records.number, discovery.records.artwork = bar, number, artwork
+    function discovery:controlScopes(id)
+        local record = self.records[id]
+        if not record then return nil end
+        if record == bar then return {current = "container", container = bar} end
+        if record == whole then return {current = "whole", whole = whole, container = bar} end
+        return {current = "layer", layer = record, whole = whole, container = bar}
+    end
+    function discovery:controlLayers(id)
+        return id == whole.key and {number, artwork} or {}
+    end
+    local before = editor:getState()
+    editor:selectCanvas(whole.key, false, discovery:controlScopes(number.key))
+    local scopes = editor:selectionScopes()
+    check(editor.selection[1] == whole.key and scopes.current == "whole" and scopes.layer == number,
+        "a whole-control tap remembers the underlying visual component without selecting it")
+    check(editor:selectScope("container") and editor.selection[1] == bar.key and editor:selectionScopes().whole == whole,
+        "selecting the containing bar keeps the originating control available")
+    check(editor:selectScope("whole") and editor.selection[1] == whole.key and editor:selectionScopes().layer == number,
+        "returning from the container retains the same ability and touched layer")
+    check(not editor:selectScope("layer", bar.key) and editor:selectScope("layer", artwork.key)
+        and editor.selection[1] == artwork.key and editor:selectionScopes().current == "layer",
+        "an explicit visual-layer choice must belong to the current control")
+    check(Util.equal(before, editor:getState()) and #editor.history.past == 0,
+        "navigating selection scope creates no saved layout changes or history actions")
+    editor:selectScope("container")
+    discovery.records.artwork = nil
+    check(editor:selectionScopes().whole == whole and not editor:selectScope("layer"),
+        "a removed context layer preserves the same whole ability without picking another visual")
+    discovery.records[whole.key] = nil
+    check(not editor:selectionScopes().whole, "a removed ability does not leave a stale return target")
+    editor:clearSelection()
+    check(not editor.controlContext and not editor:selectionScopes(), "deselecting clears the transient control scope")
+end
+
 -- Exercise the release entry separately with a yielding constructor and delayed player.
 local actualApp = package.loaded.App
 local bootstrap = assert(loadfile("src/Bootstrap.lua"))

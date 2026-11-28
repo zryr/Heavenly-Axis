@@ -1,6 +1,6 @@
 # Heavenly Axis
 
-**Roblox HUD & Interface Editor · V3.4.0**
+**Roblox HUD & Interface Editor · V3.5.0**
 
 Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
@@ -20,10 +20,12 @@ The legacy [`Source`](Source) path contains the identical generated script. Do n
 
 ## Editing on Android
 
-1. Open the editor and take or skip the practice tutorial. Tap **Jump** in Layers or tap the jump button on the canvas. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
+1. Open the editor and take or skip the practice tutorial. Tap a gameplay control on the canvas. Smart Selection prefers the whole control when the visible parts and hierarchy identify it. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
 2. Choose **Move**, **Size**, **Rotate**, or **Opacity** in Quick Edit. Drag to move. To pinch, start two fingers on or just outside the selection. Spread them to enlarge or bring them together to shrink, then lift either finger to finish. The handle, slider, and size stepper are also available. To rotate, pull the exterior handle around the selection, use the angle slider, or tap a quarter-turn button. Compatible groups rotate around their combined center.
-3. Hold a spot to **Select Through**, or arm the tool in **Layers** and tap the spot. Layers also offers search, filters, hierarchy navigation, and per-layer Details. Toggle **Multi** to add or remove targets by touch.
+3. Use the Quick Edit scope control to switch between **Whole control**, **Individual layer**, and **Entire container** when those choices are available. Long-press to **Select Through** and see overlapping controls, layers, and containers. Use Layers to search and browse branches. Toggle **Multi** to combine separate controls.
 4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Tools remembers the last destination, and the canvas keeps your selection. Use the **Quick Edit** action menu for related layers, Select Through, grouping, and restoring the selected control.
+
+**One ability or the whole bar.** Moving a freely positioned ability moves its attached artwork, text, and overlays together. When Roblox layout owns a slot's position, its Move tool explains the restriction. Changing its size may be available depending on the layout. **Entire container** selects the bar for a deliberate move when the bar itself is editable. Separate or ambiguous objects remain available for explicit selection and grouping.
 
 Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing normally has a 16-unit floor per axis. An authored dimension already below that floor can grow from its original size. The grid starts on and snapping starts off, with alignment guides available in either mode.
 
@@ -40,6 +42,8 @@ The selection boundary represents screen-space bounds. Pixel changes retain exis
 A compact Heavenly Axis launcher reopens the editor after closing. Drag it to dock along a safe edge. Save its position with the current profile. If hidden, reopen with the public `:Open()` API, rerun the release with `LoaderOnly = false`, or use the configured keyboard shortcut. Tools includes **Recover launcher**.
 
 Editing uses an overlay to intercept intended GUI gestures. A game's global input listeners can still observe input. Check for accidental jump/movement and test normal control behavior after leaving editing mode.
+
+The editor renders pinned Lucide glyphs locally through native Roblox GUI objects. [Reference research and design choices](docs/REFERENCE-DESIGN.md) · [Icon implementation and license](docs/ICON-SYSTEM.md)
 
 ## PC controls
 
@@ -171,4 +175,4 @@ Use [`studio/TestHUD.client.lua`](studio/TestHUD.client.lua) for controlled rend
 - `tools/`, `tests/`, `studio/`, `docs/`: deterministic packaging, automated checks, controlled HUD, and verification instructions.
 
 See the [mobile rescue audit](docs/MOBILE_RESCUE.md), [architecture](docs/ARCHITECTURE.md), and [V2 audit](docs/AUDIT.md).
-See [release changes](docs/CHANGELOG.md) for V3.3.0.
+See the [V3.5.0 release changes](docs/CHANGELOG.md#v350).

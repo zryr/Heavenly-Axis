@@ -6,12 +6,20 @@ local editor = "Changes only Heavenly Axis."
 local selection = "Changes editor selection only."
 local files = "Uses the current saved checkpoint."
 local session = "Changes the session. Save to keep the change."
+local icons = {
+    launcher = "move", toolbar = "grip", quickEdit = "sliders-horizontal", tools = "wrench", canvas = "panel-top-close",
+    dragPanel = "grip", collapse = "chevron-left", help = "circle-help", select = "mouse-pointer-2", layers = "layers",
+    selectThrough = "eye", selectionScope = "layers", wholeControl = "mouse-pointer-2", individualLayer = "layers",
+    entireContainer = "group", ignore = "eye-off", move = "move", size = "scaling", rotate = "rotate-cw", opacity = "droplet",
+    groups = "group", quickGroup = "group", save = "save", done = "check", undo = "undo", redo = "redo",
+    resetElement = "rotate-ccw", resetAll = "rotate-ccw", compatibility = "info", diagnostics = "info",
+}
 local function action(id, label, how, effect, note)
-    return {id = id, label = label, how = how, effect = effect, note = note}
+    return {id = id, label = label, how = how, effect = effect, note = note, icon = icons[id]}
 end
 
 Reference.sections = {
-    {title = "Editor and panels", items = {
+    {title = "Editor and panels", icon = "grip", items = {
         action("launcher", "Axis launcher", "Tap the docked Axis mark to reopen the editor. Drag it along an edge to move it.", editor, "Settings includes Recover launcher if you hid it."),
         action("toolbar", "Main toolbar", "Open Layers or Tools, toggle Multi, work through history, or finish editing.", editor, "On compact screens, History holds Undo and Redo. On the narrowest screens, use Tools → Actions → Save layout."),
         action("quickEdit", "Quick Edit", "Select a visible control to open the compact adjustment panel.", editor, "The panel can move away from the selected control."),
@@ -23,8 +31,16 @@ Reference.sections = {
         action("resetEditor", "Reset Editor Layout", "Restore the default toolbar, Quick Edit, and Tools positions in Settings.", editor, "Preserves game controls and saved HUD profiles."),
         action("help", "Help", "Open Help and choose Quick Start, Guided Tour, or the action reference.", editor),
     }},
-    {title = "Selection and Layers", items = {
-        action("select", "Select a control", "Tap a control on the canvas. The outline shows the current target.", selection),
+    {title = "Selection and Layers", icon = "layers", items = {
+        action("select", "Select a control", "Tap a control on the canvas. The outline shows what will move or resize.", selection),
+        action("selectionScope", "Change selection scope", "Use the scope button in Quick Edit to choose Whole control, Individual layer, or Entire container.", selection,
+            "If something overlaps, open Select Through and choose from Controls, Containers, or Individual layers."),
+        action("wholeControl", "Whole control", "Choose Whole control to select an ability as one button. Its outline includes the badge, icon, and label.", selection,
+            "Move the whole button to keep its visual layers together, when its layout permits movement."),
+        action("individualLayer", "Individual layer", "Choose Individual layer, then tap the badge, icon, or label you want. You can also pick it from Layers or Select Through.", selection,
+            "The smaller outline marks the only visual layer your edit will target."),
+        action("entireContainer", "Entire container", "Choose Entire container to target an ability bar or parent. For a layout-managed button, use Select entire bar or Select container when offered.", selection,
+            "Moving a supported container keeps its controls in their assigned positions inside it."),
         action("clearSelection", "Clear selection", "Tap empty canvas or choose Clear selection in Layer actions. On PC you can press Escape.", selection),
         action("layers", "Layers", "Use search to find a control or open a parent's children. Return to Canvas when ready.", selection, "Layers can locate editable controls that are difficult to tap, including fully faded controls."),
         action("smartSelection", "Smart Selection", "Keep Smart Selection on to prefer visible, useful controls when several overlap.", editor),
@@ -34,7 +50,7 @@ Reference.sections = {
         action("lock", "Lock editing", "Lock a Layer to keep it inspectable while preventing changes. Unlock it to edit again.", editor, "Game visibility and taps stay unchanged."),
         action("boxSelect", "Box Select", "Choose Box Select, then drag around several controls on the canvas.", selection),
     }},
-    {title = "Direct edit", items = {
+    {title = "Direct edit", icon = "move", items = {
         action("move", "Move", "Drag a selected control, or use arrow steps and the position fields under Edit tools.", draft, "Optional snapping and guides can help align it."),
         action("size", "Size", "Start with two fingers on or near the selection. Spread to grow, bring them together to shrink, and lift either finger to finish. You can also drag a handle, move the Size slider, or enter a value.", draft, "The percentage is relative to the original or selected starting size shown beside it."),
         action("aspect", "Aspect lock", "Keep it on to preserve proportions; turn it off for independent width and height.", editor),
@@ -48,11 +64,12 @@ Reference.sections = {
         action("snap", "Snapping", "Enable snapping in Settings to align to the grid or nearby guides during movement.", editor),
         action("compatibility", "Why a tool is unavailable", "Read the explanation beside the disabled action. Open its containing bar or advanced details for supported alternatives.", editor, "Managed layouts and other constraints can control position or size even when a visual change remains available."),
     }},
-    {title = "Groups", items = {
+    {title = "Groups", icon = "group", items = {
         action("groups", "Groups", "Open Groups to return to a named set of controls or manage its members.", selection),
         action("multi", "Multi-select", "Turn on Multi and tap controls to add or remove them from the selection.", selection),
         action("siblings", "Select siblings", "Select a control and use Select Siblings to select other compatible children of the same container.", selection),
-        action("quickGroup", "Quick Group", "Select at least two controls and choose Quick Group to keep them together in the editor.", draft, "Grouping preserves the game's object hierarchy."),
+        action("quickGroup", "Quick Group", "Turn on Multi, select two or more controls, then choose Quick Group in Groups.", draft,
+            "A group can include unrelated controls, such as Jump and an ability. It moves them together without changing the game's hierarchy."),
         action("groupName", "Name or update a group", "Use Groups to name the selection, rename a saved group, or add and remove members.", draft),
         action("groupScale", "Scale a group", "Select the group and resize its combined outline to scale the whole arrangement.", draft),
         action("equalSize", "Apply the same size change", "Choose Adjust each member's size to apply the same size change to each editable member while keeping the arrangement in place.", draft),
@@ -60,7 +77,7 @@ Reference.sections = {
         action("align", "Align and distribute", "Use Alignment and spacing in Groups to organize two or more selected controls.", draft, "Distribution requires at least three supported targets."),
         action("ungroup", "Ungroup", "Remove the grouping from Groups when you no longer want to edit its members together.", draft, "The original controls remain in the game."),
     }},
-    {title = "Save, profiles and recovery", items = {
+    {title = "Save, profiles and recovery", icon = "save", items = {
         action("save", "Save", "Check the edited layout, then tap Save to establish a checkpoint.", "Writes locally only where storage is available.", "Memory-only sessions can export the checkpoint to JSON. Saving does not enable automatic startup."),
         action("done", "Done", "Tap Done to return to gameplay. If edits are waiting, choose Save, Discard, or Continue editing.", "Stores changes only if you choose Save."),
         action("undo", "Undo", "Tap Undo, or choose Undo last change in History, to step back one completed edit.", draft),
@@ -100,7 +117,7 @@ function Reference.search(query)
             local searchable = string.lower(table.concat({item.id, item.label, item.how, item.effect, item.note or "", section.title}, " "))
             if searchable:find(text, 1, true) then items[#items + 1] = item end
         end
-        if #items > 0 then results[#results + 1] = {title = section.title, items = items} end
+        if #items > 0 then results[#results + 1] = {title = section.title, icon = section.icon, items = items} end
     end
     return results
 end

@@ -63,6 +63,7 @@ end
 
 session:layout(landscape)
 check(session:start() and session:isActive() and session.mode == "quick" and session.next.Text == "Start", "first open shows short Quick Start with Start or Skip")
+check(not session.targets.AbilityBar, "first-run Quick Start does not allocate the composite ability fixture")
 check(session.coach.BackgroundColor3 == Design.colors.surface and session.next.BackgroundColor3 == Design.colors.cyan
     and session.next.AbsoluteSize.Y >= Design.touch.minimum, "tutorial uses the shared surface, primary action and touch target tokens")
 check(session.highlightFrames[1].Visible and session.highlightRects[1].x == realToolbar.AbsolutePosition.X,
@@ -154,6 +155,44 @@ session.chooseJump.Activated:Fire()
 check(session.lessonComplete and session.app.selection[1] == "Jump" and session.rects.Jump == covered,
     "selecting through the overlay preserves the control's geometry")
 advance()
+check(session.lesson.id == "scope" and session.selectionScopeButtons.whole.Visible and session.selectionScopeButtons.layer.Visible
+    and session.selectionScopeButtons.container.Visible and session.lessonIcon.Name == "Lucide_layers", "the scope exercise uses native Lucide and three distinct targets")
+check(session.rects.Ability1Badge and session.rects.Ability1Icon and session.rects.Ability1Label and session.rects.Ability1Overlay
+    and session.rects.Ability2 and session.rects.Ability3 and session.rects.AbilityBar,
+    "practice renders three original composite controls with each visual piece represented")
+check(session.targets.Ability1Icon.object.Parent == session.targets.Ability1.object
+    and session.targets.Ability1.object.Parent == session.targets.AbilityBar.object,
+    "the practice visual belongs to its complete ability, which belongs to the bar")
+release(touchTarget("Ability1Badge"))
+check(session.app.selection[1] == "Ability1" and session.padTitle.Text:find("Whole control", 1, true),
+    "tapping a number in Whole control selects the ability including its visual children")
+local wholeBefore, iconBefore, neighborBefore = session.rects.Ability1, session.rects.Ability1Icon, session.rects.Ability2
+finger, second = touchTarget("Ability1", .25), touchTarget("Ability1", .72)
+move(second, -16, 0)
+release(second)
+release(finger)
+check(session.scopeResized and session.rects.Ability1.w < wholeBefore.w and session.rects.Ability1Icon.w < iconBefore.w
+    and session.rects.Ability2 == neighborBefore, "pinch through production Input shrinks one ability and its icon while leaving its neighbor in place")
+session.selectionScopeButtons.layer.Activated:Fire()
+release(touchTarget("Ability1Badge"))
+check(session.app.selection[1] == "Ability1Badge" and session.padTitle.Text:find("Individual layer", 1, true),
+    "Individual layer selects the badge alone")
+local badgeBefore, unchangedWhole = session.rects.Ability1Badge, session.rects.Ability1
+finger = touchTarget("Ability1Badge")
+move(finger, 0, 12)
+release(finger)
+check(session.rects.Ability1Badge.y == badgeBefore.y + 12 and session.rects.Ability1 == unchangedWhole,
+    "dragging an individual layer leaves the ability background and other layers unchanged")
+session.selectionScopeButtons.container.Activated:Fire()
+release(touchTarget("Ability2Icon"))
+check(session.app.selection[1] == "AbilityBar" and session.lessonComplete and session.padTitle.Text:find("Entire container", 1, true),
+    "Entire container targets the whole bar and completes the three-scope exercise")
+local barBefore, secondBefore = session.rects.AbilityBar, session.rects.Ability2
+finger = touchTarget("Ability2")
+move(finger, 12, 9)
+release(finger)
+check(session.rects.AbilityBar.x == barBefore.x + 12 and session.rects.Ability2.x == secondBefore.x + 12,
+    "dragging the entire practice container translates all composite controls with it")
 advance()
 session.skip.Activated:Fire()
 check(not session:isActive() and outcomes[3].mode == "tour" and progress.tour == 7 and mock.activeConnections == 0,
@@ -197,6 +236,22 @@ session.resetButton.Activated:Fire()
 check(session.angle == 0 and session.opacity == 100 and session.lessonComplete, "Reset restores the practice geometry and visual defaults")
 advance()
 check(session.lesson.id == "compatibility" and session.description.Text:find("containing bar", 1, true), "compatibility chapter teaches container fallback and details")
+release(touchTarget("Ability1"))
+local managedBefore = session.rects.Ability1
+finger = touchTarget("Ability1")
+move(finger, 16, 12)
+release(finger)
+check(session.app.selection[1] == "Ability1" and session.rects.Ability1 == managedBefore
+    and session.selectBar.Visible and session.description.Text:find("Select entire bar", 1, true),
+    "trying to drag a managed child gives a safe container alternative and keeps its slot")
+session.selectBar.Activated:Fire()
+local managedBar = session.rects.AbilityBar
+finger = touchTarget("Ability1")
+move(finger, 12, 8)
+release(finger)
+check(session.app.selection[1] == "AbilityBar" and session.lessonComplete and session.rects.AbilityBar.x == managedBar.x + 12
+    and session.rects.Ability1.x - session.rects.AbilityBar.x == managedBefore.x - managedBar.x,
+    "the alternate bar transform carries its children while preserving their managed slots")
 advance()
 advance()
 check(outcomes[4].outcome == "completed" and outcomes[4].mode == "tour" and progress.tour == nil and stateChanges >= 24 and not session:isActive(),
@@ -209,6 +264,9 @@ local opacity = Reference.get("opacity")
 check(opacity.label == "Opacity" and opacity.how:find("100%", 1, true) and opacity.effect and opacity.note,
     "reference states activation, saved-layout effect and limits")
 check(Reference.get("size").how:find("on or near the selection", 1, true), "Help explains the broader near-selection pinch area")
+check(Reference.get("selectionScope").icon == "layers" and Reference.get("individualLayer").label == "Individual layer"
+    and Reference.get("entireContainer").how:find("Select entire bar", 1, true)
+    and Reference.get("quickGroup").note:find("unrelated controls", 1, true), "Help links the real icon and scope labels to distinct editing outcomes")
 check(#Reference.search("Rotate") > 0 and #Reference.search("   ") == #Reference.sections and #Reference.search("[[[no action]]]" ) == 0,
     "reference groups literal case-insensitive search results by category")
 session:start()

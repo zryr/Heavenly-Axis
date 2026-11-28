@@ -20,6 +20,14 @@ Build output must be byte-identical between clean runs and match both tracked ar
 
 ## Controlled Studio fixture
 
+### Complete ability workflow
+
+1. Tap **Bars** to show the Free and List cases. Tap the number, image, and name of a freely positioned ability. Each visual should select the same whole ability. Drag it and confirm its attached parts move together while neighbors stay in place.
+2. Use the Quick Edit scope control to select one visual layer. Inspect its precise boundary, make a small appearance change, and return to the same whole control. Select the containing bar deliberately and return to the canvas. An ordinary tap on an ability returns to Whole control.
+3. Repeat in the layout-managed row. Read the position restriction, confirm a drag keeps both the ability and bar in place, and try supported Size. Select Entire container and move the bar explicitly. Reset or Undo and verify the result.
+4. Long-press an overlapping point. Inspect the recommended control, the individual layers and the container. Compare the preview outline with actual bounds before choosing. Repeat with Ignore and Lock and ensure fixture buttons still activate after Done.
+5. Save where file storage is available, close and reopen, then recreate the fixture HUD. Compare the intended changes and untouched neighbors. In an ordinary Studio LocalScript, use the session checkpoint or the JSON export/import action to test restoration.
+
 Use **Fade** to open a transparent ability row with an image, mixed text transparency and strokes, plus nested existing CanvasGroups. Test **Element only** and **Include contents** separately at 50%, 0%, and 100%. Fade a CanvasGroup to 50%, then change one nested element to 100%. Compare the edited element and its unchanged siblings against the initial render, then Undo twice. Confirm the background stays transparent, a fully faded control stays available through Layers and Select Through, and Recreate applies changes only to the original matched scope.
 
 Use **Rotate** on the labeled sample. Drag the exterior handle across the angle boundary, move the rotated sample, and Undo. Then try rotating a compatible group and confirm center-to-center spacing stays consistent. Drag the toolbar, Quick Edit, and Tools grips near safe-area edges, rotate the device, and reset panel placement in Settings. Confirm **Reset All Changes** with several controls selected, including a named group. Check that the selection, guides, and handles clear. Undo and verify that the previous edits return while the canvas stays clear. Redo, save, and reopen in the same orientation to check inherited modifications and named groups.
