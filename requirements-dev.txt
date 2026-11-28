@@ -1,0 +1,2 @@
+# Lua 5.4 runtime for pure and mocked tests; never loaded by the Roblox release.
+lupa==2.6

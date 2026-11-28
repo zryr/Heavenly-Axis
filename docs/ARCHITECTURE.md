@@ -1,0 +1,116 @@
+# Heavenly Axis V3 architecture
+
+## Source and packaging
+
+Edit `src/*.lua`. `tools/build.py` sorts module filenames, embeds each module in a local factory, caches module return values, rejects missing static dependencies, and calls `Bootstrap`. No `loadstring`, remote module fetch, or file execution is needed by the core release. Both `dist/HeavenlyAxis.lua` and `Source` are generated from the same bytes. The header includes a deterministic source SHA-256 rather than a timestamp.
+
+The sources use the Lua/Luau common subset. Lua 5.4 test execution is practical for pure logic and mocks; Luau compilation independently checks the target language. Roblox API behavior still requires Studio/device validation.
+
+## Responsibility boundaries
+
+| Module | Responsibility |
+| --- | --- |
+| `Util` | Copy/equality and finite-number helpers for portable state |
+| `Geometry` | Screen rectangles, minimum dimensions, relative sizing, nested roots, alignment/distribution, snapping/guides |
+| `Coordinates` | Core UI coordinate space, mouse conversion, overlay-local placement and safe-area rectangles |
+| `Identity` | Escaped hierarchy descriptors and conservative exact matching; recognized built-in identities |
+| `History` | Bounded completed transactions, undo/redo, saved checkpoint, dirty comparison, Cancel |
+| `Config` | Version 3 schema, field/count/range limits, scope keys, applicability and merge order |
+| `Capabilities` | Independent file, clipboard, input, and optional network capability discovery without brand assumptions |
+| `Storage` | Bounded JSON, validated reads, staged/backup saves with readback, export/import, separate draft data |
+| `Profiles` | Named scoped configurations, management, preview candidates, confirmed import overwrites/deletion |
+| `EditorPreferences` | Independent appearance and selection preferences, place-scoped exact identity rules, and tutorial completion |
+| `Discovery` | Accessible PlayerGui index, smart hit ranking, clipping and compatibility, per-instance baselines, event cleanup |
+| `SmartLayers` | Presentation-aware layer naming and content classification |
+| `ControlScopes` | Bounded inference and navigation between a whole control, its visual layers and its container |
+| `Appearance`, `TransformOpacity` | Original visual baselines, bounded scope planning, and verified relative-opacity writes and rollbacks |
+| `Transform` | Idempotent property application, root-pruned screen geometry, UDim and UIScale conversion, stabilization and rollback |
+| `UILayout` | Pure responsive placement for the toolbar, Quick Edit and management workspace |
+| `Design`, `Lucide` | Reusable visual roles, corners and borders, plus passive rendering of locally bundled Lucide glyphs |
+| `UI` | Native toolbar, contextual inspector and workspace, launcher, selection overlays and dialogs |
+| `Input` | Interaction ownership, touch and mouse lifecycle, pinch, box/multi selection, sliders and floating surfaces |
+| `Onboarding` | Isolated practice targets using the same gesture owner and no saved HUD state |
+| `ActionReference` | Shared descriptions for the contextual Help reference and tour |
+| `Notifications` | One passive status surface with semantic styling, safe placement, and bounded expiry |
+| `App` | Live authoritative layout, groups/preferences, checkpoints, previews, recovery, lifecycle and UI coordination |
+| `Bootstrap` | Service/client startup, bounded waits, public session reservation and duplicate prevention |
+
+## Portable state and identities
+
+History and saved configuration contain plain tables, never Instance references. An element descriptor records the names/classes/ordinals of ancestors below PlayerGui, its class, ambiguity information, and an optional recognized built-in control kind. Keys are derived from that descriptor. A same-name hierarchy is deliberately ambiguous even if an ordinal exists; ordinals are not proof that a recreated object is the same control.
+
+Matching requires a unique exact compatible hierarchy. Changes in name, parent, class, or ambiguity leave the entry unresolved. Unresolved entries remain in the profile; users can explicitly remap them and update group membership. Shape/color/screen proximity do not establish identity. Recognized built-in control hints require the actual `TouchGui/TouchControlFrame` lineage and expected classes; fixture mocks are game-specific objects.
+
+Discovery indexes accessible objects. Ordinary taps use the engine hit set and presentation ranking. Select Through adds geographically relevant hidden and skipped layers on explicit demand. A baseline is captured once per actual object before editor transforms. New instances get new baselines. Saved layouts specify absolute Position/Size UDim components so reapplication does not add offsets repeatedly. Baselines and live objects stay in runtime adapters; portable states survive destruction.
+
+Whole Control uses local hierarchy and presentation evidence. An actionable ancestor or a bounded, structurally repeated composite can represent one control. Explicit Select Through still exposes its component layers. App stores the current scope and originating control as transient keys, so choosing a container retains a route back to the same control even if the tapped decoration disappears. Saved identities and named groups continue to use exact descriptors. The transform layer independently checks each operation after a target is selected.
+
+## Coordinates and layout
+
+Editing calculations use the Core UI safe-area coordinate system. Roblox documents GUI `AbsolutePosition`, pointer `InputObject.Position`, and `GetGuiObjectsAtPosition()` in that shared space. `GetMouseLocation()` provides an uninset point, so its adapter applies the top-left inset. UI placement subtracts the overlay parent's actual absolute origin before constructing an offset. `GuiService:GetInsetArea()` provides rectangles in the canonical space. The camera viewport describes device-safe dimensions and can differ from the full drawable area. [GuiBase2d API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/GuiBase2d.yaml), [BasePlayerGui API source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/BasePlayerGui.yaml), [GuiService insets](https://create.roblox.com/docs/reference/engine/classes/GuiService#GetInsetArea), [Camera viewport source](https://github.com/Roblox/creator-docs/blob/main/content/en-us/reference/engine/classes/Camera.yaml)
+
+The layout planner uses the available safe area. A landscape toolbar leaves room for a floating, contextual inspector that can move away from the selection. Portrait places the inspector low and accounts for the software keyboard. The secondary workspace has its own scrollable body. [UI architecture decision](MOBILE_RESCUE.md#ui-architecture-decision)
+
+`Design`, `UILayout`, and `Lucide` can be used by another native Roblox GUI without App state. Use `Design` roles and the shared corner and stroke constructors, `UILayout` for safe panel placement, and `Lucide.mount` for passive icon decorations on labeled actions. Parent ownership tears down icon instances with their action. Input subscriptions belong to the editor or modal that uses them. `tools/build.py` embeds these modules with the application into one script. [Reference design](REFERENCE-DESIGN.md) · [Icon implementation and license](ICON-SYSTEM.md)
+
+## Transforms and groups
+
+Screen rectangles are `{x, y, w, h}`. Target properties remain UDim scale-plus-offset values. Pixel edits use a stable transaction reference to adjust offsets with the object's anchor and supported UIScale factors, preserving scale components. Group transforms prune descendants when a selected ancestor already moves them.
+
+The transform adapter validates intended roots before writing. A completed edit waits for bounded geometry verification. Failure restores the transaction's original properties and leaves history at its prior state. Saved restoration can skip individual unavailable elements, reports counts, and applies ancestors before descendants.
+
+The minimum interactive dimension is 16 Roblox UI units. Invalid values are rejected. Explicit position entry permits offscreen placement, and Recovery can bring a selection back. Group tools can scale the whole selection proportionally or adjust the dimensions of each supported member by the same amount. The anchor preference controls center-based adjustments.
+
+Rotation uses Roblox's authored rectangle center. The handle computes angular changes from an immutable gesture snapshot. Compatible group roots orbit a shared center. A local rotation can coexist with direct movement. A rotated ancestor or layout can limit available operations. [Roblox GuiObject rotation](https://create.roblox.com/docs/reference/engine/classes/GuiObject#Rotation)
+
+Opacity uses `1 - (1 - originalTransparency) × factor` for each supported surface. Explicit contents plans have bounded, exact target identities. Existing compatible CanvasGroups can composite descendants as one surface. Nested scopes choose ownership so the editor avoids double fading. The legacy `transparency` field still represents absolute background transparency. [Roblox CanvasGroup](https://create.roblox.com/docs/reference/engine/classes/CanvasGroup)
+
+Capability checks distinguish movement, resize, group operations, and appearance. A simple list owns position but can permit resizing a member. Verification checks the requested dimensions while allowing list reflow. Grid, flex, table, and other known layout-owned properties are withheld. A supported container can be selected separately. An editor lock also blocks editing an ancestor or reflowing a sibling where the selected action can disturb the locked layer. Reversible experiments apply only to otherwise viable properties affected by game scripts, with bounded rollback and suspension. [Roblox list and flex layout](https://create.roblox.com/docs/ui/list-flex-layouts) · [Grid and table layout](https://create.roblox.com/docs/ui/grid-table-layouts)
+
+## History, checkpoints, and previews
+
+`beginGesture` captures the pre-action portable state after the pointer crosses its motion threshold. Pointer updates modify the live layout. Gesture completion verifies final geometry before committing one before/after entry. Keyboard, numeric and group actions use the same completed-transaction principle. History holds at most 80 actions.
+
+Save waits for bounded stabilization. A successful write and readback establishes the durable checkpoint. Where file APIs are absent, Save establishes an explicitly memory-only checkpoint. A failed write preserves the previous checkpoint and dirty state. JSON export represents the latest accepted checkpoint. Save retains undo entries in the current edit context. Undo, redo and discard verify restoration before changing history. Dirty status compares the resulting layout with the checkpoint.
+
+Profile and import previews carry separate candidate data. Preview chooses the edited scope and retains normal resolution, including more-specific active layers. Cancel restores the prior state and suspension. Apply selects the edit destination in memory. Save persists activation and changes, and detects when a more-specific profile prevents a broader-layer edit from matching the live result. Draft recovery uses preview and requires explicit Apply.
+
+## Configuration precedence
+
+The root schema has `version = 3`, a profile array, an `active` map, and validated editor preferences. Each profile has an ID/name, scope qualifiers, a layout map, named groups, and preferences. An active-map key is derived from `(scope, scopeId, device, orientation)`, permitting one active profile per scope key.
+
+Resolution merges global → experience → place → device → orientation. Device and orientation scopes are place-bound. General orientation entries merge before device-specific orientation entries. Applicable active profiles contribute. Global layout and group entries may reference recognized built-in controls only.
+
+Existing V3 full entries load and resolve with their original precedence. A save can add sparse overrides for inherited properties, explicit removal markers or group removals to preserve layer boundaries. New values use the same staged write and backup process. Earlier V3 readers may reject configurations containing those extensions. Retain the prior validated backup if you need to reopen the configuration with an earlier build.
+
+UDim scale values adapt when parent bounds change, and offsets remain fixed in Roblox units. Rotation during an unsaved editing session retains the original orientation as its save and draft context. Save or discard concludes that session and loads the current orientation's matching overrides.
+
+## Storage and recovery
+
+File capability discovery requires separate readable/writable/existence functions. It makes no detection-time writes. The fixed files are:
+
+- `HeavenlyAxis-v3.json`: saved configuration.
+- `HeavenlyAxis-v3.backup.json`: previous validated save.
+- `HeavenlyAxis-v3.pending.json`: staged checkpoint.
+- `HeavenlyAxis-v3.draft.<experience>.<place>.<device>.<orientation>.json`: recoverable unsaved state, isolated by context and separate from profiles.
+- `HeavenlyAxis-v3.editor.json`: independently validated Smart Layers settings and tutorial progress. Ignore and Lock use exact descriptors scoped to experience and place. This document has its own staging and backup paths.
+
+Editor panel positions use normalized safe-area travel and separate device and orientation buckets in the editor document. Reset All Changes is recorded in HUD history and drafts until accepted. Saving it activates an exact-device orientation layer that resolves the layout from originals while retaining broader saved profiles.
+
+Before overwriting the primary, Storage validates it, stages the new JSON, preserves a backup, writes, and checks exact readback. A damaged primary is retained and blocks overwrite; a valid backup may be loaded in memory. These APIs do not offer a portable atomic filesystem rename, so a crash during final write remains possible; the backup/staged files and manual export are recovery paths. Nothing silently deletes saved profiles.
+
+Imports are JSON only, size-limited to 2 MiB, schema/range/count checked, then merged into a preview. Conflicting existing profile content requires explicit confirmation. No input is evaluated as Lua. Clipboard success means the API accepted the data; the user still verifies pasting.
+
+Draft writes are debounced. Recovery checks the editing context and, for new drafts, its saved profile and baseline reference. A changed reference preserves the stored draft and prevents automatic application. Safe Mode restores available baselines, suspends profile and experimental application, and preserves saved data.
+
+## Startup and cleanup
+
+Bootstrap waits at most 15 seconds each for LocalPlayer and PlayerGui, then reports failure rather than hanging forever. The environment session key is `__HEAVENLY_AXIS_V3`. Re-execution reuses the live session; initialization reserves the singleton before module setup can yield.
+
+`HeavenlyAxisOptions.LoaderOnly` creates the restoration/runtime path without constructing the complete editor. The shared `LoaderOnly` option remains true until explicitly changed; rerunning alone does not open the editor while it is true. Call `:Open()` or set `LoaderOnly = false` before rerunning. `:Open()` lazily adds UI/input; `:Close()` releases editing interactions and keeps restoration available. `:SafeMode()` restores originals and opens recovery controls. `:Destroy()` disconnects subscriptions and restores available originals by default.
+
+Discovery uses debounced structural refreshes and caches tree ordering and classifications. Elements pages render bounded row batches from their current search and discovery revision. Gesture alignment candidates are computed once at drag start. Input and overlay updates during a gesture avoid management list rebuilds. Experimental observations and startup waits are bounded. Owners disconnect subscriptions, destroy their GUI, and invalidate deferred callbacks through lifecycle guards.
+
+## Change discipline
+
+When adding a preference, update Config's allowlist/range validator and tests. When changing the schema, define a new version deliberately; do not reinterpret old input silently. When changing identity, add ambiguous/recreated cases before loosening matching. Keep real internal-control functional verification separate from screen-space property tests. Update the acceptance report and rebuild both tracked release artifacts before opening a PR.

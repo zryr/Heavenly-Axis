@@ -1,84 +1,178 @@
-# Jump Button Editor V2 for Roblox
+# Heavenly Axis
 
-**Customize the on-screen mobile jump button's size and position!**
+**Roblox HUD & Interface Editor · V3.5.0**
 
-This script provides a user-friendly graphical interface (GUI) to visually adjust the default mobile jump button in Roblox games. After making adjustments, you can copy a small script snippet to your clipboard, intended for use with Roblox script executors that support an "autoexecute" folder. This allows your jump button customizations to be applied automatically every time you join a game.
+Heavenly Axis edits compatible, accessible Roblox PlayerGui elements with an Android-first touch interface and PC mouse/keyboard controls. Move and resize controls, work with groups, preview profiles, and recover original layouts. The release is one self-contained script with no required runtime UI library or downloaded code.
 
-**Original by Syshi. V2 inspired by Danechka.**
+**Original by Syshi. V2 inspired by Danechka.** Repository history is preserved. This repository did not contain a license file; this rewrite does not invent or replace a license.
 
-## Features
+> Device verification is pending. Delta, Arceus X, Codex (Roblox executor), other Android environments, PC executors, and the Studio visual fixture are **Not Tested**. Automated and mocked results do not prove effective jump/joystick touch-region resizing. Heavenly Axis does not access protected interfaces or replace Roblox movement code.
 
-*   **Visual Position Adjustment:**
-    *   Enable "Drag Mode" to move the jump button around the screen with your finger or mouse.
-*   **Visual Size Adjustment:**
-    *   Use a slider to easily increase or decrease the size of the jump button.
-*   **Precise Size Input:**
-    *   A text box allows you to input an exact pixel offset for the jump button's size.
-*   **Visual Feedback:**
-    *   When "Drag Mode" is enabled, the jump button will have a green border to indicate it's ready to be moved.
-*   **Reset Functionality:**
-    *   Easily reset the jump button's size and position back to its original state (as it was when the script first ran).
-*   **Save for Auto-Execution:**
-    *   "Save Changes" button generates a small Lua script.
-    *   This script is copied to your clipboard, ready to be pasted into your executor's auto-execute folder.
-    *   The generated script applies your saved X, Y, and Size offsets to the jump button.
-*   **User-Friendly GUI:**
-    *   Draggable window.
-    *   Clear labels and controls.
-    *   Optional notification system (AkaliNotif) for feedback if the library can be loaded.
+## Install and open
 
-## How to Use
+1. Download [`dist/HeavenlyAxis.lua`](dist/HeavenlyAxis.lua) from a reviewed commit or release in this repository.
+2. Run the complete file as client-side Lua in a compatible environment. In your own Studio test place, paste it into a LocalScript in `StarterPlayerScripts`.
+3. Tap a control, make your adjustment in **Quick Edit**, then choose **Save** or **Done**. If the session can save only to memory, export the checkpoint as JSON for a durable copy.
 
-1.  **Execute the Script:** Run the "Jump Button Editor V2" script using your preferred Roblox script executor.
-2.  **The Editor Window:** A window titled "Jump Button Editor V2" will appear on your screen. You can drag this window by its title bar.
-3.  **Adjust Position:**
-    *   Click the "**Enable Drag**" button. The button will turn red and its text will change to "Disable Drag".
-    *   The on-screen jump button will now have a green border.
-    *   Click and drag the actual **Roblox jump button** on your screen to reposition it.
-    *   Click "**Disable Drag**" when you're satisfied with the position.
-4.  **Adjust Size:**
-    *   **Slider:** Drag the nub on the "Size Slider" left or right to decrease or increase the jump button's size.
-    *   **Text Input:** Type a numerical value (e.g., `20` for 20 pixels larger, `-10` for 10 pixels smaller) into the text box next to "**Size Offset (px):**" and press Enter or click away. The slider will update to match.
-5.  **Reset Changes:**
-    *   Click the "**Reset All**" button to revert both the position and size of the jump button to how they were when you first ran the script.
-6.  **Save for Auto-Execute:**
-    *   Once you're happy with your customizations, click the "**Save Changes**" button.
-    *   A small Lua script configured with your current X, Y, and Size offsets will be copied to your computer's clipboard.
-    *   You will receive a notification (either a pop-up or text on the button) confirming the script has been copied.
-    *   **Manually paste this copied script** into a new `.txt` or `.lua` file within your executor's designated "autoexecute" (or similar) folder.
-    *   The next time you start Roblox with your executor, this saved script will run automatically, applying your jump button preferences.
+If an earlier V3 build is already running, save or export its edits and rejoin before starting the new build. Heavenly Axis reports the running version and keeps the existing session intact when you rerun the script.
 
-## Target Jump Button Path
+The legacy [`Source`](Source) path contains the identical generated script. Do not combine modules manually. No network request is required for the core editor. The maintained project URL is **https://github.com/zryr/Heavenly-Axis**.
 
-This script targets the standard Roblox mobile jump button located at:
-`game:GetService("Players").LocalPlayer.PlayerGui.TouchGui.TouchControlFrame.JumpButton`
+## Editing on Android
 
-If the game you are playing uses a custom jump button with a different path, this script will likely not find it, and the editor will show an error or not function correctly for that specific game.
+1. Open the editor and take or skip the practice tutorial. Tap a gameplay control on the canvas. Smart Selection prefers the whole control when the visible parts and hierarchy identify it. Quick Edit appears alongside the selection. Drag its header or hide it to reach a covered control. Portrait moves Quick Edit to the bottom edge.
+2. Choose **Move**, **Size**, **Rotate**, or **Opacity** in Quick Edit. Drag to move. To pinch, start two fingers on or just outside the selection. Spread them to enlarge or bring them together to shrink, then lift either finger to finish. The handle, slider, and size stepper are also available. To rotate, pull the exterior handle around the selection, use the angle slider, or tap a quarter-turn button. Compatible groups rotate around their combined center.
+3. Use the Quick Edit scope control to switch between **Whole control**, **Individual layer**, and **Entire container** when those choices are available. Long-press to **Select Through** and see overlapping controls, layers, and containers. Use Layers to search and browse branches. Toggle **Multi** to combine separate controls.
+4. Use **Tools** for groups, profiles, advanced X/Y and W/H, settings, diagnostics, and recovery. Tools remembers the last destination, and the canvas keeps your selection. Use the **Quick Edit** action menu for related layers, Select Through, grouping, and restoring the selected control.
 
-## Dependencies & Executor Requirements
+**One ability or the whole bar.** Moving a freely positioned ability moves its attached artwork, text, and overlays together. When Roblox layout owns a slot's position, its Move tool explains the restriction. Changing its size may be available depending on the layout. **Entire container** selects the bar for a deliberate move when the bar itself is editable. Separate or ambiguous objects remain available for explicit selection and grouping.
 
-*   **`setclipboard()` function:** Required by your executor for the "Save Changes" feature to copy the script to your clipboard.
-*   **`identifyexecutor()` function (Optional):** If available, its output is used for context in the generated script's comments.
-*   **`HttpGet` or `game.HttpGet` or `HttpService:HttpGetAsync()`:** One of these must be available in your executor's environment if you want the AkaliNotif notification library to load for better on-screen feedback. If not, the script will fall back to using button text for notifications.
-*   **Standard GUI Properties:** The script assumes your executor correctly supports standard Roblox GUI properties like `TextBox.Text`, `UIStroke`, etc.
+Aspect lock preserves proportions. Advanced options show compatibility limits for the selected target. Resizing normally has a 16-unit floor per axis. An authored dimension already below that floor can grow from its original size. The grid starts on and snapping starts off, with alignment guides available in either mode.
 
-## Troubleshooting
+**Opacity** is relative to the original appearance. At 50%, each supported visual surface has half its original opacity. A transparent background stays transparent. **Element only** edits the selection itself. **Include contents** can fade supported descendants or an existing compatible CanvasGroup. A separately edited descendant takes precedence for its own supported surfaces. At 0%, find the control in **Layers** or **Select Through**. It may still respond to gameplay input. Older BackgroundTransparency edits remain available in saved profiles and resume when the relative scope is cleared.
 
-*   **"Error: JumpBtn Not Found"**:
-    *   The game might not be using the default mobile `TouchGui`.
-    *   You might be running the script on a PC where `TouchGui` is not enabled by default or is structured differently.
-    *   The game might have loaded before the script could access `PlayerGui` elements fully (though `WaitForChild` attempts to mitigate this).
-*   **"Save Changes" doesn't copy / No notification library:**
-    *   Your executor might not support `setclipboard()`. In this case, the script should `warn` the generated code to your executor's console, where you can manually copy it.
-    *   Your executor might block `HttpGet` requests, or the AkaliNotif library URL might be down, preventing the notification system from loading.
-*   **Script doesn't work in a specific game:**
-    *   The game might have aggressive anti-cheat measures.
-    *   The game might use a completely custom UI for its controls.
+Drag the grips on the toolbar, Quick Edit, and Tools panels, or drag the launcher itself. Positions are saved separately from HUD edits and adapt to the current orientation and safe area. Edge docking is optional. **Reset Editor Layout** in Settings moves the editor surfaces back to their defaults.
 
-## Disclaimer
+Short notifications confirm saves, show recovery and history results, and flag errors. The verified Save confirmation stays visible briefly when Done returns you to gameplay.
 
-This script is provided for educational and customization purposes. Use it at your own risk. Modifying game clients can sometimes be against a game's Terms of Service. The developers of this script are not responsible for any consequences of its use.
+**Ignore** skips a layer during ordinary taps. **Lock** lets you inspect a layer and prevents edits that would change it through its container. Both are editor-only preferences scoped to the current experience and place. Clear them in Smart Layers settings. **Help** offers Quick Start, the resumable Guided Tour, and a searchable control reference. Practice changes stay separate from the game HUD and undo history.
 
----
+The selection boundary represents screen-space bounds. Pixel changes retain existing UDim scale components; scale-based layout still adapts with its parent while offsets remain fixed. Heavenly Axis does not guess a proportional conversion for offset-based layouts. Use device/orientation profile overrides when you need distinct arrangements.
 
-Feel free to fork, modify, and improve!
+A compact Heavenly Axis launcher reopens the editor after closing. Drag it to dock along a safe edge. Save its position with the current profile. If hidden, reopen with the public `:Open()` API, rerun the release with `LoaderOnly = false`, or use the configured keyboard shortcut. Tools includes **Recover launcher**.
+
+Editing uses an overlay to intercept intended GUI gestures. A game's global input listeners can still observe input. Check for accidental jump/movement and test normal control behavior after leaving editing mode.
+
+The editor renders pinned Lucide glyphs locally through native Roblox GUI objects. [Reference research and design choices](docs/REFERENCE-DESIGN.md) · [Icon implementation and license](docs/ICON-SYSTEM.md)
+
+## PC controls
+
+Use mouse dragging, eight resize handles, numeric inputs, and the same groups/profiles as on Android.
+
+| Action | Input |
+| --- | --- |
+| Open/close editor | F8 by default; configurable in Settings |
+| Add/remove selection | Shift/Ctrl click, or multi-select mode |
+| Choose overlapping element | Right-click opens Select Through. Alt click cycles hits. |
+| Box selection | Drag empty canvas, or toggle box mode with B |
+| Move selected controls | Arrow keys; Shift uses 10-pixel steps |
+| Undo / redo | Ctrl+Z / Ctrl+Y or Ctrl+Shift+Z |
+| Save | Ctrl+S |
+| Cancel active gesture / deselect | Escape |
+
+Shortcuts pause while a textbox has focus. Close editing before normal gameplay. Some games also listen to these keys; editor shortcuts do not promise complete game-input isolation.
+
+## Groups
+
+Select multiple compatible layers, then choose **Quick Group** in Groups to work with them together. Name it to reuse it later. You can work on one member, return to the group, or ungroup while keeping the current geometry. **Select Siblings** previews related controls in the same container.
+
+Enable multi-select and tap/click members. Moving a selection transforms only selected roots so a selected child is not moved twice through its selected parent. Use group controls to align edges/centers and distribute three or more elements evenly.
+
+Proportional scaling resizes the selection as a unit. **Equal size change** applies an equivalent size adjustment to each editable root and keeps the controls at their respective positions. Opposite-corner scaling is the default for handles, with optional center scaling. Named groups support creation, renaming, adding and removing members, and selection. Missing members remain in the saved group for restoration or remapping.
+
+## Save, history, and Cancel
+
+**Reset All Changes** in the Tools **Actions** menu and Recovery restores supported HUD edits to their original values in one undoable action. It clears the selection, handles, guides, and temporary selection modes. Undo restores the previous edits with the canvas still deselected. Locked edits are kept and reported. Save makes the reset effective for this device and orientation, including adjustments inherited from broader profiles. Saved profiles and named groups remain available. **Discard Unsaved Changes** returns to the current checkpoint. **Reset Editor Layout** moves the editor's own panels back to their defaults.
+
+One verified drag, pinch, slider adjustment, or group operation is one history action. History holds up to 80 completed actions. **Save** waits for pending geometry verification and establishes a checkpoint, while keeping undo history for the active layout. Undo after Save changes the live layout and marks it unsaved. Choose Save again to persist it.
+
+**Done** returns to gameplay. With unsaved changes, it offers Save, Discard, and Continue editing. A failed save keeps the session open. With memory-only storage, export the checkpoint before leaving if you need it after restart. **Cancel changes** restores the latest checkpoint and clears that layout's undo history. Profile and import previews have their own Apply and Cancel actions.
+
+## Profiles and portable JSON
+
+Use **Profiles** to create, rename, duplicate, preview, switch, and confirm deletion of named profiles. Only one profile per applicable scope is active. More specific settings override less specific settings:
+
+1. Global defaults: recognized built-in controls and editor preferences only.
+2. Experience-level layouts.
+3. Place-specific layouts.
+4. Place-bound device overrides (`touch` or `desktop`).
+5. Place-bound orientation overrides (`portrait` or `landscape`, optionally device-specific).
+
+Global data is limited to recognized built-in controls and editor preferences. Version 3 JSON from earlier V3 releases still loads. New saves may store individual property overrides or explicit removals. Renamed, reparented, or ambiguous elements remain unresolved until explicitly remapped.
+
+Deleting the active profile resolves the remaining scope defaults immediately. GUI elements remain intact, and the deleted layout is not copied into a less-specific profile. Save persists the deletion; Cancel can restore the latest saved profile data and layout.
+
+**Export** includes the latest accepted checkpoint. Press **Save** first to include current edits. Export also works with a memory-only checkpoint. **Import** validates JSON, previews it before activation, and asks for confirmation before replacing conflicting profiles. Save pending work before applying a different profile. Apply activates the selected profile in its own scope. More-specific active overrides retain precedence. If one masks an edit, choose that profile as the save target. Save writes the changes made in the current scope and keeps inherited properties at their source.
+
+When file APIs are supported, saved profiles, staging/backup data, and unsaved recovery drafts are separate local JSON files. A corrupt existing save is preserved and blocks destructive replacement. If the primary is missing, startup can read the last verified backup. An unchanged save preserves the previous checkpoint backup. Save reports actual write/readback success or a memory-only/manual-export fallback. An available API alone is shown as unverified.
+
+Unsaved drafts are written separately and offered on the next matching session. Recovery opens a preview for confirmation. If the original saved profile changed, Recovery preserves the draft file and reports the mismatch. Rotating with pending changes keeps those changes assigned to the original orientation until Save or Discard, then loads the current orientation's layout.
+
+## Startup and loader-only operation
+
+Saving data does not install automatic execution. If your environment offers a supported autoexecute folder, configure it yourself using that environment's instructions. Place a local copy of the reviewed release there and prepend:
+
+```lua
+getgenv().HeavenlyAxisOptions = { LoaderOnly = true }
+-- Paste the complete HeavenlyAxis.lua release below this line.
+```
+
+`getgenv()` is environment-specific. A Studio LocalScript can set `_G.HeavenlyAxisOptions` instead. Loader-only mode restores saved layouts and lifecycle subscriptions without constructing the full editor. To open it later in the same environment:
+
+```lua
+getgenv().__HEAVENLY_AXIS_V3:Open()
+```
+
+The `LoaderOnly` option remains set in the shared environment. A bare rerun keeps loader-only behavior while it is true. Use `:Open()` as above, or set `getgenv().HeavenlyAxisOptions = { LoaderOnly = false }` before rerunning the release. In Studio, use `_G.__HEAVENLY_AXIS_V3:Open()`. All public API examples use a **colon**. The same session exposes `:Close()`, `:SafeMode()`, `:Destroy()`, and `:VerifyStartup()`.
+
+Restart the Roblox client, then inspect `:VerifyStartup()`. Its version/start timestamp, active profile, loader/editor mode, storage status, and application counts establish that the session actually started. Recheck after another restart to verify your own autoexecute setup. A Save notification or a successful script run is not proof of future automatic execution. Startup support is **Not Tested** on named executors.
+
+Repeated execution reuses the live session; it does not intentionally create extra editors or add saved offsets repeatedly. Delayed/recreated accessible controls are matched through lifecycle discovery. Unknown/missing controls do not block startup.
+
+## Recovery and experimental controls
+
+**Safe Mode** suspends the active profile, stops experimental application, restores available original properties, and opens the editor. It preserves saved profiles. To request recovery before running the release:
+
+```lua
+getgenv().HeavenlyAxisOptions = { SafeMode = true }
+-- Paste the complete release below.
+```
+
+For an existing session, call `getgenv().__HEAVENLY_AXIS_V3:SafeMode()`. Use profile Resume to leave suspension deliberately. **Restore originals** also preserves saved profiles; confirmed deletion is a separate operation. Offscreen recovery controls move selected targets back into the usable display region. `:Destroy()` disconnects the session and restores available originals; `:Destroy(false)` tears down while retaining the current layout.
+
+Each layer reports separate support for movement, resizing, and appearance. A simple list can allow size changes while keeping positions under its control. Flex, grid, table, automatic sizing, and constraints can limit those adjustments. Use **Select container** when offered to move the whole bar. Layout-owned operations remain unavailable through the editor. Details can copy the layer path, its controller, and the latest failed adjustment when clipboard access is available. The live Heroes Battlegrounds layout remains unverified. [Layout and size behavior](https://create.roblox.com/docs/ui/list-flex-layouts)
+
+## Compatibility and diagnostics
+
+| Environment / behavior | Status | Evidence or limit |
+| --- | --- | --- |
+| Pure/mocked model tests | See [verification report](docs/VERIFICATION.md) | Tests run outside Roblox |
+| Self-contained build and Luau compile | See [verification report](docs/VERIFICATION.md) | No runtime device evidence |
+| Studio controlled visual HUD | Not Tested | Fixture and exact protocol provided |
+| Delta / Android | Not Tested | Requires real device and environment checks |
+| Arceus X / Android | Not Tested | Requires independent verification |
+| Codex (Roblox) / Android | Not Tested | This is not OpenAI Codex |
+| Other Android environments | Not Tested | Capability-based, no brand assumptions |
+| PC executor and real Roblox controls | Not Tested | Mouse/keyboard implementation requires actual execution checks |
+| Protected or inaccessible interfaces | Unsupported | No access bypass or movement-module replacement |
+| Universal functional joystick resizing | Unsupported | Visual changes do not establish effective input-region changes |
+
+Supported scope is accessible, compatible PlayerGui descendants. Some layout constraints, automatic sizing, scrolling transforms, rotations, dynamic game scripts, protected controls, or ambiguous identities cannot be edited safely. Jump and joystick names are priority hints, not a guarantee. Built-in visual resizing remains **unverified functionally** until real touch-region checks pass.
+
+Settings contains capability results and an expandable bounded diagnostic log for startup, element matching, saves, recovery, and skipped operations. Keep logs free of private profile contents. Optional update checks retrieve trusted GitHub release metadata in the background; they never download/execute replacement code. If no release/network is available, use the repository's Releases page and replace your local script manually.
+
+## Build and tests
+
+```sh
+python3 -m pip install -r requirements-dev.txt
+python3 tools/build.py
+python3 tools/build.py --check
+python3 tools/test.py
+python3 tools/luau_check.py
+```
+
+The build sorts modules deterministically and emits `dist/HeavenlyAxis.lua` plus the identical `Source` alias. Edit `src/*.lua`, then rebuild. Lupa and the Luau compiler are development tools only. CI checks reproducibility, pure/mocked behavior, Lua syntax, and Luau compilation.
+
+Use [`studio/TestHUD.client.lua`](studio/TestHUD.client.lua) for controlled rendering/interaction tests in a place you own. Follow the full [Android/PC/Studio protocol](docs/TESTING.md), including real jump and joystick effective-region checks. See [verification and acceptance status](docs/VERIFICATION.md) for actual results and limitations.
+
+## Maintainer overview
+
+- `src/Util.lua`, `Geometry.lua`, `Identity.lua`, `History.lua`, `Config.lua`: pure validation, calculations, matching, and transactions.
+- `src/Discovery.lua`, `Transform.lua`: accessible GUI discovery, compatibility, original baselines, and reversible properties.
+- `src/Capabilities.lua`, `Storage.lua`, `Profiles.lua`: actual capability checks, validated storage, hierarchy, and preview management.
+- `src/UI.lua`, `UILayout.lua`, `Input.lua`, `Coordinates.lua`: responsive editing surfaces, selection overlay, owned touch/mouse gestures, and screen-coordinate boundaries.
+- `src/App.lua`, `Bootstrap.lua`: session lifecycle, recovery, profile restoration, public API, and duplicate prevention.
+- `tools/`, `tests/`, `studio/`, `docs/`: deterministic packaging, automated checks, controlled HUD, and verification instructions.
+
+See the [mobile rescue audit](docs/MOBILE_RESCUE.md), [architecture](docs/ARCHITECTURE.md), and [V2 audit](docs/AUDIT.md).
+See the [V3.5.0 release changes](docs/CHANGELOG.md#v350).
